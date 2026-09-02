@@ -1,0 +1,8 @@
+# 生产运行依赖（G9 起锁定到本机 D:/Python 实测版本，纯标准库外仅这三个直接依赖）
+requests==2.34.2
+uiautomation==2.0.29
+websocket-client==1.9.1
+
+# 可选（不装不影响运行）：pytdx —— 第14轮 tdx_bars.py 通达信分钟K冗余源，函数内延迟导入，
+# 仅当公共7709/7727或本机通达信客户端能取到期货时由 probe() 自动点亮，否则零成本跳过。
+# 安装：pip install pytdx>=1.72

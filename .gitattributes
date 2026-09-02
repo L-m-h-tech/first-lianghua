@@ -1,0 +1,8 @@
+# 统一以 LF 入库与检出（项目纪律：生产 .py 保持纯 LF、无 BOM）
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.xlsx binary
+*.db binary
+*.js text eol=lf

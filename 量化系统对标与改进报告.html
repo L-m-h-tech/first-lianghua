@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>futures_monitor × 主流量化系统 对标与改进报告（2026-09-02）</title>
+<style>
+  :root{--ink:#1f2933;--sub:#5b6b7d;--line:#e2e7ee;--bg:#f4f6f9;--card:#fff;
+        --good:#1f8a70;--goodbg:#e7f5f1;--warn:#c47b1f;--warnbg:#fdf3e3;
+        --bad:#c04949;--badbg:#fdeeee;--info:#2f6fb3;--infobg:#eaf2fb;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Microsoft YaHei","Segoe UI",sans-serif;font-size:14px;line-height:1.72}
+  .wrap{max-width:1080px;margin:0 auto;padding:26px 22px 60px}
+  h1{font-size:23px;margin:0 0 6px}
+  h2{font-size:18px;margin:30px 0 10px;padding-left:10px;border-left:4px solid var(--info)}
+  h3{font-size:15.5px;margin:20px 0 6px}
+  .sub{color:var(--sub);font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:14px 0}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;vertical-align:top;text-align:left}
+  th{background:#eef2f7;font-weight:600;white-space:nowrap}
+  td.c,th.c{text-align:center}
+  tr:nth-child(even) td{background:#fafbfd}
+  .pill{display:inline-block;padding:1px 9px;border-radius:11px;color:#fff;font-size:12px;white-space:nowrap}
+  .p0{background:#b04646}.p1{background:#c47b1f}.p2{background:#2f6fb3}.p3{background:#7a8aa0}
+  .s-good{color:var(--good);font-weight:600}.s-mid{color:var(--warn);font-weight:600}.s-bad{color:var(--bad);font-weight:600}
+  .box{border-radius:8px;padding:10px 14px;margin:10px 0;font-size:13.5px}
+  .box.g{background:var(--goodbg);border:1px solid #bfe3da}
+  .box.w{background:var(--warnbg);border:1px solid #f0dcb8}
+  .box.r{background:var(--badbg);border:1px solid #f2c9c9}
+  .box.b{background:var(--infobg);border:1px solid #c4dcf2}
+  .gap{border:1px solid var(--line);border-radius:10px;padding:0 0 12px;margin:14px 0;overflow:hidden;background:#fff}
+  .gap> .gh{background:#eef2f7;padding:8px 16px;font-weight:700;font-size:14.5px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .gap .gb{padding:4px 16px 0}
+  .gap dt{font-weight:700;color:#33414f;margin-top:8px;font-size:13.5px}
+  .gap dd{margin:2px 0 0}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-family:Consolas,monospace;font-size:12.5px}
+  .bar{background:#e9edf2;border-radius:6px;height:11px;width:120px;display:inline-block;vertical-align:middle;overflow:hidden}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,#5aa9e0,#2f6fb3)}
+  .small{font-size:12.5px;color:var(--sub)}
+  ol.tight li,ul.tight li{margin:3px 0}
+  .toc a{color:var(--info);text-decoration:none;margin-right:14px;white-space:nowrap}
+  .keep td:first-child{white-space:nowrap;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>futures_monitor × 全网 / GitHub 主流量化系统 对标与改进报告</h1>
+<div class="sub">生成日期：2026-09-02 ｜ 对标基线：本项目第 23 轮后代码（39 个生产 py 共 14663 行、17 个测试文件 191 用例全绿、9 张 SQLite 表）｜ 方法：全网检索“量化系统组成/架构”，精读 GitHub 15+ 主流量化项目公开文档，逐文件核对本项目现状后形成。配套《对标能力可视化.html》为独立图表，本报告不含图表内嵌。</div>
+
+<div class="card toc">
+<strong>目录：</strong>
+<a href="#s0">〇 核心结论</a><a href="#s1">一 标准组成</a><a href="#s2">二 GitHub格局</a>
+<a href="#s3">三 现状画像</a><a href="#s4">四 差距总览</a><a href="#s5">五 逐项方案</a>
+<a href="#s6">六 三类声明</a><a href="#s7">七 必须保持</a><a href="#s8">八 排期</a><a href="#s9">九 来源</a>
+</div>
+
+<h2 id="s0">〇、核心结论（先看这 5 条）</h2>
+<div class="card">
+<ol class="tight">
+<li><strong>定位决定差距，不是“做得差”。</strong>一个完整量化系统的行业标准是 <em>数据→因子→策略研究→回测→组合→风控→执行→绩效→监控→工程</em> 十层。本项目在前 6 层与第 9 层已经达到个人项目里罕见、部分超过开源框架开箱水平的程度；<span class="s-bad">唯一结构性塌陷是第 7 层“订单执行”——信号止于“建议”，没有纸面/模拟账户，更没有实盘闭环</span>。这是与 vnpy / freqtrade / Lean / nautilus 的最大差异。</li>
+<li><strong>本轮最该补的一件事：零依赖“纸面交易引擎”（G1）。</strong>freqtrade 的 dry-run、vnpy 的 SimNow 都是“回测→实盘”之间的必经中间态。本项目有历史回测、有实时信号、有共享资金池，唯独缺“实时行情下虚拟成交、跑出一条含成本的模拟净值曲线”。它不触碰任何合规红线，却能第一次回答“综合分真照做，账户会怎样”。</li>
+<li><strong>第二件事是把“严谨性短板”补齐：</strong>日线回测目前是“信号当日收盘价成交”（<code>backtest.py</code> L289，已在报告口径诚实声明，属温和乐观而非隐瞒 bug），缺 next-bar 保守成交对照、蒙特卡洛置信区间、回测结果留档（G4）。这正是 awesome-backtesting、freqtrade lookahead-analysis 反复强调的头号陷阱。</li>
+<li><strong>工程上有个零成本、高收益的欠账：项目至今不是 git 仓库（G9）。</strong>191 个测试用例已经很扎实，却没有版本历史、无法一键回滚——与测试纪律不匹配，建议立即补上；同时配置外置（G10）、数据源自动熔断降级链（G11）、数据质量监控（G6）一起把“数据/工程底座”补齐。</li>
+<li><strong>有些“差距”是已经裁决过不要做的，不要被开源热度带偏：</strong>L2 逐笔回放、DRL 实盘、端到端 LLM 决策、Rust/纳秒高频内核、生产环境引入重依赖、直接 CTP 自动下单——这些在本项目场景下要么免费数据不可得、要么有反面证据、要么有法定合规门槛（证监会 2025 年第 12 号公告：程序化交易须报告 + 穿透式测试）。第六节给出完整“不做”清单与理由。</li>
+</ol>
+<div class="box b"><strong>三条不可违背的总原则（沿用《统一改进路线图》，本报告所有方案都在此约束下）：</strong>① 生产运行链路零新增第三方依赖（仅 requests / uiautomation / websocket-client；pandas、sklearn 等只许出现在 tools/ 研究侧；GitHub 算法只读源码、用标准库重写）；② 确定不更差才采纳（默认不改现有输出、先影子模式、可一键回退，策略/ML 必须样本外真实成本后不劣于现状才上线）；③ 每处改动配零网络合成断言 + 真实 <code>main.py --once --no-launch</code> 冒烟，负结果诚实呈现，不编造数据。</div>
+</div>
+
+<h2 id="s1">一、一个完整量化交易系统的标准组成（十层）</h2>
+<div class="card">
+<div class="sub">综合 vnpy 分层、Qlib 四层工作流、QuantConnect Lean、apexphere/quant-trading 六层模型、技术栈“回测到实盘四层方案”及极客时间模块论，收敛为以下十层——这是本次对标的统一坐标系。</div>
+<table>
+<tr><th style="width:130px">层</th><th>职责</th><th>行业标准构件 / 关键词</th></tr>
+<tr><td>1 数据层</td><td>多源采集（tick/分钟/日线、历史+实时）、清洗校验、存储、数据质量</td><td>主备源降级、PIT(point-in-time)数据、时序/列式存储(Parquet/DuckDB/ClickHouse)、缺失率/schema 监控</td></tr>
+<tr><td>2 因子/信号层</td><td>把原始数据变成方向/强度信号</td><td>技术指标、基本面、另类/舆情、时序+横截面因子、因子 IC/ICIR/衰减评估、因子库注册</td></tr>
+<tr><td>3 策略研究层</td><td>组织信号成可复用策略、选参、防过拟合</td><td>策略模板/插件化、网格/贝叶斯超参寻优、Walk-forward、PBO/DSR、前视偏差自动检测</td></tr>
+<tr><td>4 回测引擎</td><td>历史上尽量真实地重演交易</td><td>事件驱动逐 bar / 向量化、next-bar 成交、bid/ask、滑点冲击模型、手续费/平今/保证金、组合回测</td></tr>
+<tr><td>5 组合/仓位层</td><td>把多个信号变成具体手数与资金分配</td><td>sizing、多策略/多品种资金分配、相关性与风险预算、敞口/集中度、调仓再平衡、强平</td></tr>
+<tr><td>6 风险控制层</td><td>独立于策略的事前/事中/事后闸门</td><td>委托流控/撤单上限/自成交、实时风险度、单日亏损熔断、压力测试、VaR/CVaR</td></tr>
+<tr><td>7 订单执行层</td><td>把目标仓位变成真实/模拟委托与成交</td><td>OMS 订单管理、交易网关(CTP 等)、TWAP/VWAP/冰山算法单、纸面(dry-run/SimNow)、实盘合规</td></tr>
+<tr><td>8 绩效分析层</td><td>公平裁判策略与各环节</td><td>Sharpe/Sortino/Calmar/Omega、最大回撤/修复时长、VaR、胜率盈亏比、归因、月度热力、tear sheet</td></tr>
+<tr><td>9 监控/交互层</td><td>人看得懂、离得开、被及时通知</td><td>图表看板、Web/移动端、多渠道告警、心跳看门狗、日志轮转、AI 解读/追问</td></tr>
+<tr><td>10 工程基建层</td><td>可维护、可复现、可恢复</td><td>git 版本、配置外置/.env、依赖锁定、测试/CI、容器/任务计划部署、备份与灾备、文档/CHANGELOG</td></tr>
+</table>
+</div>
+
+<h2 id="s2">二、GitHub 主流量化项目格局，以及各自最该学什么</h2>
+<div class="card">
+<div class="sub">星数为 2026 年中多个公开来源（LibHunt / PyPI / 各项目 README / 第三方榜单）的区间值，不同统计时点有差异，仅作量级参考。</div>
+<table>
+<tr><th>项目</th><th class="c">星数量级</th><th>定位</th><th>对本项目最该借鉴的一点</th></tr>
+<tr><td>vnpy / VeighNa（4.0 十周年）</td><td class="c">42–45k</td><td>国内期货实盘事实标准，事件驱动 + CTP 网关，20+ 应用</td><td>EventEngine 发布订阅、Gateway 适配器、<strong>risk_manager 事前风控</strong>（流控/委托数/撤单数）、spread_trading 价差、cta 回测/实盘同构、data_recorder</td></tr>
+<tr><td>microsoft/qlib</td><td class="c">~46k</td><td>AI 量化全流程研究平台</td><td>“信息提取→预测模型→决策生成→执行环境”工作流、Alpha158 因子、qrun 一键 YAML、模型管理/滚动上线、嵌套决策（日级组合+分钟执行）</td></tr>
+<tr><td>freqtrade</td><td class="c">49–52k</td><td>加密现货机器人，研究到实盘一条龙</td><td><strong>dry-run 纸面交易</strong>（sqlite 持久化）、hyperopt 贝叶斯选参（Sharpe/MaxDD 目标函数）、lookahead/recursive-analysis 自动查前视与过拟合、Telegram、FreqUI</td></tr>
+<tr><td>nautilus_trader</td><td class="c">22–26k</td><td>Rust 内核、机构级多市场交易引擎</td><td>research-to-live parity（回测/实盘同一套策略代码）、Parquet 数据目录、订单 TIF(IOC/GTC/FOK)、Redis 状态持久化——<em>架构理念可学，Rust/纳秒路线不适合本场景</em></td></tr>
+<tr><td>QuantConnect Lean</td><td class="c">~19k</td><td>多资产云端事件驱动引擎</td><td>数据/组合/风险/订单分层、统一经纪商模型、研究回测实盘一致</td></tr>
+<tr><td>hummingbot</td><td class="c">18k+</td><td>加密做市/套利机器人</td><td>做市与价差套利的订单簿逻辑（本项目不做加密，仅理念参考）</td></tr>
+<tr><td>backtrader / vectorbt / zipline</td><td class="c">10–20k</td><td>回测框架三流派代表</td><td>backtrader 逐 bar 事件驱动天然防前视、佣金/滑点粒度细；vectorbt 向量化极快但易引入前视；对比可知<strong>成交时点模型决定回测可信度</strong></td></tr>
+<tr><td>WonderTrader / Hikyuu / QUANTAXIS / RQAlpha</td><td class="c">9–11k 级</td><td>国内框架：C++高频 / 极速研究 / 全栈多账户 / 股票研究</td><td>WonderTrader 的 CTA/SEL/HFT 三引擎分工、QUANTAXIS 的数据-回测-Web-多账户全栈、本地数据治理；高频部分不适用</td></tr>
+<tr><td>TradingAgents / ai-hedge-fund</td><td class="c">60–100k 级</td><td>LLM 多智能体 / AI 投研演示</td><td>只借“多空对立辩论 + 独立风控否决 + 信号→风险→组合三段”结构（第18轮 build_debate/risk_gate 已落地）；<strong>不用 LLM 做端到端交易决策</strong></td></tr>
+<tr><td>akshare / tushare / efinance</td><td class="c">高星数据源</td><td>免费金融数据库</td><td>接口覆盖面（仓单/基差/日历/分钟线）；本项目坚持只用 requests 直连或标准库重写，不装 SDK 进生产</td></tr>
+<tr><td>pyfolio / empyrical</td><td class="c">经典库</td><td>绩效指标与 tear sheet</td><td>Sortino/Calmar/Omega/回撤/月度热力等完整指标清单（G3 用标准库重写）</td></tr>
+</table>
+<div class="box w"><strong>商品 CTA 因子的学术共识（决定因子层补什么）：</strong>跨文献一致认为最稳健的是<strong>时序动量 TSMOM（多 lookback，252 日长期趋势在 2026 年 Bayes-CID 对 41 商品 30 年 126 因子 GBDT 中进入所有模型 top10）、横截面动量、曲线 carry/展期收益（backwardation 多头占优、contango 空头占优）、库存/套保压力/便利收益</strong>。本项目已有横截面、carry、库存，唯独时序动量只有 5/20 日两个短窗口（见 G7）。</div>
+</div>
+
+<h2 id="s3">三、本项目十层现状画像（基于代码事实，不吹不黑）</h2>
+<div class="card">
+<table>
+<tr><th style="width:120px">层</th><th class="c" style="width:70px">自评</th><th>已经有什么（代码事实）</th><th>薄弱点</th></tr>
+<tr><td>1 数据</td><td class="c"><span class="s-good">4/5</span></td><td>新浪主连主源+东财分域兜底+tdx 可选；6 源新闻；OpenVlab 期权；东财基本面；9 张 SQLite 表；分钟库自采；交易日历；全局 Session 连接池；多线程并发预取与缓存</td><td>主备切换靠手工、无自动熔断；无数据质量/缺失率监控；SQLite 长期增长无归档；无一档盘口快照</td></tr>
+<tr><td>2 因子信号</td><td class="c"><span class="s-good">4.5/5</span></td><td>综合分 10 项（新闻/原油/机构/日线动量/技术共振/分钟共振/盘中动量/量仓/基本面）、多周期 RSI/MACD/KDJ/BOLL、IV 曲面+PCR+Greeks、基本面四子项、横截面稳健 z、五维情绪、多空辩论、贝叶斯信号校准、tools 因子 IC 评估</td><td>时序动量仅 5/20 日短窗；因子散在 analyzer/factors 无统一注册；无产业链/跨期价差；库存窗口仅约 3 个月</td></tr>
+<tr><td>3 策略研究</td><td class="c"><span class="s-good">4/5</span></td><td>tools/factor_eval（IC/RankIC/ICIR/单调性）、build_ml_samples（triple-barrier，4.3 万行）、backtest_validation（DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原）——防过拟合严谨度高于多数开源</td><td>非“可插拔多策略”框架（焊死在单一综合分）；无系统化超参寻优；结论是“样本太短暂不上 ML”</td></tr>
+<tr><td>4 回测</td><td class="c"><span class="s-mid">3.5/5</span></td><td>日线回测（换月置零+比例后复权、真实银河费率、滑点、锁板跳过/顺延、3×3 参数扫描、逐笔 CSV）；vnpy 式 bar 内分钟回测（平今按结算交易日、锁板判定）</td><td>信号当日收盘价成交（温和乐观，缺 next-bar 对照）；无蒙特卡洛/bootstrap 区间；回测结果不落库无法纵向对比；无多品种组合历史净值（报告自己已注明）</td></tr>
+<tr><td>5 组合仓位</td><td class="c"><span class="s-good">4/5</span></td><td>共享资金池组合账户、逐 bar 盯市、三种 sizing、强平状态机、板块名义持仓约束、真实保证金/乘数表</td><td>只有一套信号、无多策略分资金；无相关性矩阵/风险预算；无组合 VaR；再平衡规则未系统化</td></tr>
+<tr><td>6 风控</td><td class="c"><span class="s-mid">3/5</span></td><td>risk_gate 独立闸门 pass/warn/veto（默认只标注不改分）、组合强平与板块约束、告警</td><td>因无下单层而无事前委托级风控（流控/撤单/自成交）；熔断只有标注无动作；无压力测试/情景分析</td></tr>
+<tr><td>7 订单执行</td><td class="c"><span class="s-bad">0.5/5</span></td><td class="s-bad">几乎空白：无 OMS、无交易网关、无纸面账户、无实盘；broker 字样仅指“期货公司保证金率”</td><td><strong>最大结构性缺口</strong>：缺实时虚拟成交的 dry-run；实盘还受程序化报告+穿透式测试法定门槛约束</td></tr>
+<tr><td>8 绩效分析</td><td class="c"><span class="s-mid">3/5</span></td><td>胜率/盈亏比/累计/年化/最大回撤/夏普、信号 hit/miss 三周期追踪、ECharts 9 图</td><td>缺 Sortino/Calmar/Omega、Ulcer/回撤修复、VaR/CVaR、连胜连亏、MAE/MFE、月度热力、滚动指标、分板块/分因子归因</td></tr>
+<tr><td>9 监控交互</td><td class="c"><span class="s-good">4/5</span></td><td>14 页签合并看板、ECharts、声音+飞书/钉钉/企微/Server 酱告警与冷却、心跳看门狗+bat 崩溃自重启、日志轮转</td><td>无 Web 服务（只能本机 file://，手机/远程看不了）；无搜索/筛选/历史查询交互；LLM 第二意见未做</td></tr>
+<tr><td>10 工程基建</td><td class="c"><span class="s-mid">3/5</span></td><td>191 个 pytest 用例、零依赖纪律、README/上下文摘要/多份设计文档、固定解释器、看门狗</td><td><strong>不是 git 仓库</strong>；配置未外置；requirements 只用 &gt;= 未锁版本；无 CI、无数据库备份/灾备文档、无版本号/CHANGELOG</td></tr>
+</table>
+</div>
+
+<h2 id="s4">四、差距总览（G1–G20）</h2>
+<div class="card">
+<div class="sub">状态：<span class="s-bad">真缺失</span>＝本轮新识别；<span class="s-mid">已列待做</span>＝路线图已有、本轮重申并细化；成本为 1（很低）–5（很高）的相对工日估计。</div>
+<table>
+<tr><th>编号</th><th>层</th><th>差距</th><th class="c">状态</th><th class="c">优先级</th><th class="c">成本</th><th>主要对标</th></tr>
+<tr><td><strong>G1</strong></td><td>7 执行</td><td>纸面交易引擎（实时虚拟成交+模拟净值）</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p1">P1</span></td><td class="c">3.5</td><td>freqtrade dry-run / vnpy SimNow</td></tr>
+<tr><td><strong>G2</strong></td><td>3 策略</td><td>策略插件化/多策略框架</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p2">P2</span></td><td class="c">3.5</td><td>vnpy CtaTemplate / Qlib workflow</td></tr>
+<tr><td><strong>G3</strong></td><td>8 绩效</td><td>完整绩效指标包 + tear sheet</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p2">P2</span></td><td class="c">2</td><td>pyfolio/empyrical</td></tr>
+<tr><td><strong>G4</strong></td><td>4 回测</td><td>next-bar 成交对照 + 蒙特卡洛 + 结果留档</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p1">P1</span></td><td class="c">2.5</td><td>backtrader/freqtrade lookahead 检测</td></tr>
+<tr><td><strong>G5</strong></td><td>5/6</td><td>相关性矩阵、组合 VaR、压力情景、熔断动作</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p2">P2</span></td><td class="c">2.5</td><td>vnpy risk_manager / 风险预算</td></tr>
+<tr><td><strong>G6</strong></td><td>1 数据</td><td>数据质量监控 + 健康度看板/告警 + 归档</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p1">P1</span></td><td class="c">2</td><td>数据治理/DuckDB 质量监控实践</td></tr>
+<tr><td><strong>G7</strong></td><td>2 因子</td><td>多窗口时序动量 TSMOM(63/126/252)</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p2">P2</span></td><td class="c">2</td><td>AQR TSMOM / Bayes-CID 2026</td></tr>
+<tr><td><strong>G8</strong></td><td>9 监控</td><td>标准库只读 Web/手机看板（可选）</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p2">P2</span></td><td class="c">2.5</td><td>vnpy web_trader / FreqUI</td></tr>
+<tr><td><strong>G9</strong></td><td>10 工程</td><td>git 初始化 + .gitignore + 锁版本 + CHANGELOG</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p0">P0</span></td><td class="c">1</td><td>通用工程规范</td></tr>
+<tr><td><strong>G10</strong></td><td>10 工程</td><td>配置外置 config.json/.env</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p1">P1</span></td><td class="c">1.5</td><td>freqtrade/LC9999216 config.json</td></tr>
+<tr><td><strong>G11</strong></td><td>1 数据</td><td>数据源主备自动熔断降级链</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p1">P1</span></td><td class="c">2.5</td><td>TradingAgent-Future 三源降级</td></tr>
+<tr><td><strong>G12</strong></td><td>2/5</td><td>产业链/跨期价差监控</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p2">P2</span></td><td class="c">3</td><td>vnpy spread_trading / carry-cta</td></tr>
+<tr><td><strong>G13</strong></td><td>9 AI</td><td>LLM 第二意见复核（无 key 休眠）</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p3">P3</span></td><td class="c">2</td><td>TradingAgents 结构</td></tr>
+<tr><td><strong>G14</strong></td><td>1 数据</td><td>一档盘口低频快照自采</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p2">P2</span></td><td class="c">3</td><td>微观结构/滑点校准</td></tr>
+<tr><td><strong>G15</strong></td><td>1 数据</td><td>分钟库持续自采（进行中）</td><td class="c s-mid">进行中</td><td class="c"><span class="pill p2">P2</span></td><td class="c">—</td><td>vnpy data_recorder</td></tr>
+<tr><td><strong>G16</strong></td><td>3 AI</td><td>浅 ML 多因子融合（等样本，硬门槛）</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p3">P3</span></td><td class="c">4</td><td>Qlib / AFML</td></tr>
+<tr><td><strong>G17</strong></td><td>2 期权</td><td>成交量/额 PCR 备用源、官方 IV 交叉校验</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p3">P3</span></td><td class="c">3</td><td>交易所日行情</td></tr>
+<tr><td><strong>G18</strong></td><td>1 数据</td><td>Tushare 零依赖支线（官方日历/全历史仓单）</td><td class="c s-mid">已列待做</td><td class="c"><span class="pill p3">P3</span></td><td class="c">3</td><td>tushare http api</td></tr>
+<tr><td><strong>G19</strong></td><td>10 工程</td><td>数据库备份、开机自启文档、灾备 runbook</td><td class="c s-bad">真缺失</td><td class="c"><span class="pill p2">P2</span></td><td class="c">1.5</td><td>生产运维规范</td></tr>
+<tr><td><strong>G20</strong></td><td>7 执行</td><td>（远期）实盘闭环：先纸面满 3 月，再走合规</td><td class="c s-mid">远期</td><td class="c"><span class="pill p3">P3</span></td><td class="c">5</td><td>CTP + 证监会 2025-12 号公告</td></tr>
+</table>
+</div>
+
+<h2 id="s5">五、逐项修改方案（文件级改法 + 验收，全部遵守三铁律）</h2>
+
+<div class="gap"><div class="gh"><span class="pill p0">P0</span><span>G9 ｜ git 工程化（立即，约半天）</span></div><div class="gb">
+<dl>
+<dt>现状事实</dt><dd>实测项目根无 <code>.git</code>；requirements 仅写 <code>&gt;=</code>；23 轮迭代全靠文件覆盖，没有版本历史与回滚点，与 191 个测试的严谨度不匹配。</dd>
+<dt>修改方案</dt><dd>① <code>git init</code> 后首个 tag 记录“第23轮基线”；② 写 <code>.gitignore</code>：忽略 <code>__pycache__/</code>、<code>*.pyc</code>、<code>data/*.db</code>、<code>cache/</code>、<code>logs/</code>、<code>reports/*.html</code>/<code>*.txt</code>/<code>chart_data.js</code>（产物，可再生）与 <code>reports/assets/</code>（同步副本），保留 data 下 csv 配置表与全部源码/测试/文档；③ 用 <code>D:\Python\python.exe -m pip freeze</code> 把三个直接依赖锁成 <code>==</code> 当前版本；④ 新增 <code>CHANGELOG.md</code> 按轮次倒序记录、<code>VERSION</code>（如 0.23.0）。</dd>
+<dt>验收</dt><dd><code>git status</code> 干净、被忽略产物不进库；锁定后在干净目录 <code>D:\Python\python.exe -m pytest</code> 仍为权威 191 全绿。零生产代码改动、零风险。</dd>
+</dl></div></div>
+
+<div class="gap"><div class="gh"><span class="pill p1">P1 · 最高价值</span><span>G1 ｜ 纸面交易引擎 PaperBroker（补执行层塌陷）</span></div><div class="gb">
+<dl>
+<dt>现状事实</dt><dd>信号链路止于 analyzer 综合分与“建议手数”；signal_outcomes 只判固定周期（30m/2h/次日）方向对错，<em>不含手续费、不含仓位、没有连续资金曲线</em>；portfolio 共享资金池只对“当前建议”做静态盯市，不会把历史信号串成一笔笔虚拟成交。</dd>
+<dt>对标</dt><dd>freqtrade 的 dry-run 用 sqlite 持久化虚拟订单/持仓/成交，在实时行情下不花真钱跑完整机器人；vnpy 接 SimNow 仿真。二者都是回测与实盘之间不可跳过的一环。</dd>
+<dt>修改方案（纯标准库，默认只新增不改旧输出）</dt><dd>
+<ol class="tight">
+<li>新增 <code>paper_broker.py</code>：<code>PaperBroker</code> 每轮吃 analyzer 结果 + 最新 quotes，把“跨档/反手信号”转为虚拟委托；<strong>成交模型两档</strong>：<code>close</code>（信号轮收盘价，与现回测口径一致）与 <code>next</code>（下一轮首个新价成交，保守、推荐为影子默认），锁板复用 backtest 的判定跳过/顺延；手续费直接读 <code>data/futures_fees.csv</code>、滑点复用 <code>BACKTEST_SLIP_RATE</code>。</li>
+<li>仓位/盯市/强平<strong>复用 portfolio.py 现有逻辑</strong>（三种 sizing、板块约束、强平状态机），不重写第二套。</li>
+<li>storage 新增 <code>paper_orders / paper_trades / paper_equity</code> 三表（订单、成交、每轮净值）。</li>
+<li>reports 新增 <code>paper_account.txt</code>（虚拟净值/持仓/已实现+浮动盈亏/胜率/回撤）与图表看板一张净值图；<code>config.PAPER_ENABLED</code> 开关，默认开启影子但<strong>独立成段，不动现有任何输出</strong>。</li>
+</ol></dd>
+<dt>它回答什么</dt><dd>第一次能量化回答：“如果严格按综合分+资金管理做，含真实成本后的账户净值、最大回撤、换手与信号 hit 率是否一致”——这是判断整套规则能不能走向实盘的证据链起点。</dd>
+<dt>验收</dt><dd>零网络合成断言（开仓/加仓/反手/锁板跳过/手续费双边/强平/next 成交严格晚于信号）；真实 <code>--once --no-launch</code> 冒烟；连续影子 ≥4 周后与 signal_outcomes 对照，<strong>若成本后为负必须诚实呈现并回退，不粉饰</strong>。</dd>
+</dl></div></div>
+
+<div class="gap"><div class="gh"><span class="pill p1">P1</span><span>G4 ｜ 回测严谨性：next-bar 对照 + 蒙特卡洛 + 结果留档</span></div><div class="gb">
+<dl>
+<dt>现状事实</dt><dd><code>backtest.py</code> L280-292 在第 i 根用截至 i 的数据出信号、<code>entry_price=closes[i]</code> 同根收盘成交。实盘“看到收盘价的瞬间已无法以该收盘价成交”，属温和的时点乐观；报告头已诚实声明口径，<strong>不是隐瞒的 bug</strong>，但缺少更保守的对照模型。另外单次结果覆盖写、无置信区间，容易“挑一次最好的”。</dd>
+<dt>修改方案</dt><dd>① prepare 阶段保留 open，新增 <code>--fill {close,next_open}</code>：按铁律②，<strong>先两种并列输出</strong>（现 close 为默认保持可比，next_open 为保守对照），影子对比一轮、确认 next_open 不更差后再考虑切换默认；② 标准库 <code>random</code>（固定种子可复现）对交易序列做 1000 次 bootstrap 重排，给出累计收益/最大回撤的 5%–95% 区间；③ storage 新增 <code>backtest_runs</code> 表（时间戳、全部参数、核心指标、样本量），每次跑都留档，报告里自动带上“历史第几次、是否优于多数历史参数”；④ 报告抬头自动引用 tools/backtest_validation 的 DSR/PBO 结论。</dd>
+<dt>验收</dt><dd>构造已知序列断言 next_open 成交日严格 = 信号日 +1 交易日；bootstrap 区间包含确定性净值；历史回测可在表里列出多次记录对比。</dd>
+</dl></div></div>
+
+<div class="gap"><div class="gh"><span class="pill p1">P1</span><span>G10 配置外置 ｜ G11 数据源熔断降级链 ｜ G6 数据质量监控（数据/工程底座一组做）</span></div><div class="gb">
+<h3>G10 配置外置</h3>
+<dl>
+<dt>方案</dt><dd>config.py 只保留结构与内置默认值；启动时若存在 <code>config.json</code> 则深合并覆盖（阈值、自选品种、账户资金、开关），密钥/webhook 改从 <code>.env</code> 环境变量读；提供 <code>config.template.json</code>。文件缺失时行为与现在逐字节一致。</dd>
+</dl>
+<h3>G11 主备自动熔断降级链</h3>
+<dl>
+<dt>现状</dt><dd>新浪为主、东财兜底、tdx 可选，但切换是手工/硬编码，单点异常时靠异常捕获跳过。</dd>
+<dt>方案</dt><dd>加一层 <code>DataRouter</code>：同一取数方法按“新浪→东财分域→tdx(若点亮)”顺序尝试；每源维护健康分，连续失败 N 次熔断 M 分钟、半开试探一次；沿用已有“残缺即弃”有效性校验；切换/熔断写日志并喂给 G6。新闻 6 源纳入同一套健康统计。默认取到的数据不变。</dd>
+</dl>
+<h3>G6 数据质量监控 + 归档</h3>
+<dl>
+<dt>方案</dt><dd>每轮按源记录 请求数/成功数/陈旧价数/异常跳变/延迟，写 <code>data_health</code> 表；日切算各品种 K 线缺失率（对照 trade_calendar 应有交易日）；某源连续 2 轮全失败或某品种连续缺数，复用 alerts 推送；看板加“数据源健康”小块。长期增长用<strong>零依赖</strong>方案：研究侧按年导出 SQLite 分库/CSV 年包（不引 pyarrow/DuckDB 进生产），主库只留近 18 个月。</dd>
+<dt>共同验收</dt><dd>合成“主源抛错/返回残缺”用例断言自动切备源且数据一致；健康表计数正确；无 config.json 时所有现有测试不变。</dd>
+</dl></div></div>
+
+<div class="gap"><div class="gh"><span class="pill p2">P2</span><span>G3 绩效指标包 ｜ G7 多窗口时序动量 ｜ G19 备份灾备（低成本中价值，先做）</span></div><div class="gb">
+<h3>G3 绩效分析（标准库重写 pyfolio/empyrical）</h3>
+<dl>
+<dt>方案</dt><dd>新增 <code>metrics.py</code> 纯函数：Sortino（下行波动）、Calmar（年化/最大回撤）、Omega、Ulcer 指数（回撤深度×时长）、VaR/CVaR（历史法）、最大连胜/连亏、平均盈/平均亏、profit factor、MAE/MFE（用 paper/回测持仓过程）、月度收益矩阵、滚动 20/60 日夏普；backtest 报告、paper 账户、图表看板统一调用，ECharts 补月度热力、回撤水下曲线、滚动夏普三张图。</dd>
+<dt>验收</dt><dd>对手工构造的收益序列逐指标断言（与手算一致）；指标缺失样本时返回“样本不足”而非报错。</dd>
+</dl>
+<h3>G7 多窗口时序动量 TSMOM</h3>
+<dl>
+<dt>方案</dt><dd>compute_indicators 在现有 ret5/ret20 外增 ret63/ret126/ret252（新浪日线固定 1023 根，足够 252）；<strong>先在 tools/factor_eval 评估各窗口 IC/RankIC/ICIR、互相关与衰减</strong>，再以等权或 IC 加权做“影子 TSMOM 因子”只记录不进综合分；满足铁律②（样本外、成本后不劣于现状）后才作为“日线动量”的一部分上线，默认输出届时再改并可一键回退。</dd>
+</dl>
+<h3>G19 部署/备份/灾备</h3>
+<dl>
+<dt>方案</dt><dd>① 每日收盘后用 sqlite 在线备份 API <code>VACUUM INTO</code> 备份 monitor.db 到 backup/ 保留 30 份；② 导出 Windows 任务计划开机自启 XML 与说明（现有 bat 看门狗保留为内层）；③ 写灾备 runbook：db 损坏如何用 reports 文本 + 备份恢复；④ --version 读取 VERSION。</dd>
+</dl></div></div>
+
+<div class="gap"><div class="gh"><span class="pill p2">P2</span><span>G12 产业链/跨期价差 ｜ G5 组合风控 ｜ G2 策略插件化 ｜ G14 一档快照 ｜ G8 只读Web</span></div><div class="gb">
+<h3>G12 产业链 / 跨期价差（对标 vnpy spread_trading，只监控不下单）</h3>
+<dl>
+<dt>方案</dt><dd>选熟悉的少数产业链即可：卷螺差(RB−HC)、矿螺利润、油粕比、以及近远月跨期（复用 contracts.term_structure）。每个价差＝带权腿组合，腿行情已有、<strong>零新增请求</strong>；算价差稳健 z（复用 cross_section 的 0.6745×(x−中位)/MAD 写法）、历史分位、回归信号，输出并进横截面看板，不自动交易。</dd>
+</dl>
+<h3>G5 组合层风险分析与可配置熔断</h3>
+<dl>
+<dt>方案</dt><dd>portfolio 增：① 用 quotes 表算 64 品种日收益相关矩阵（周频落库）；② 组合 VaR（历史法 + 参数法，持仓×波动×相关性）；③ 压力情景（原油 ±5% 经 oil_w 传导到全组合）；④ risk_gate 的单日浮亏熔断由“只标注”升级为“可配置动作”（纸面层停止新开/减仓，建议层文字提示，默认仍只标注）；⑤ 增加第四种 sizing：相关性/风险平价约束。</dd>
+</dl>
+<h3>G2 策略插件化（纯重构，行为不变）</h3>
+<dl>
+<dt>方案</dt><dd>定义 <code>Strategy</code> 基类（name/enabled/on_context(ctx)→Signal 列表）+ 注册器；把现有综合分原样包成 <code>CompositeScoreStrategy</code>，横截面、G12 价差、G1 paper、未来 G16 ML 各自独立成策略；main 遍历启用策略，portfolio 支持按策略分资金/分账户。<strong>第一步只做接口与搬迁，输出逐字节不变（影子比对通过才算完），不趁机改逻辑</strong>。</dd>
+</dl>
+<h3>G14 一档盘口低频快照</h3>
+<dl>
+<dt>方案</dt><dd>用新浪盘口接口对主力合约每轮（5 分钟级，<strong>不是逐笔</strong>）采一次买一/卖一价量，落 <code>tick_snap</code> 表；用途是统计真实买卖价差、校准回测滑点假设、给 G1 paper 提供保守成交价。先在 5–8 个主力品种试点，零依赖。</dd>
+</dl>
+<h3>G8 只读 Web / 手机看板（可选）</h3>
+<dl>
+<dt>方案</dt><dd>用标准库 <code>http.server.ThreadingHTTPServer</code> 起<strong>只读</strong>服务（静态托管 reports + 一个 /api/health JSON），同网段手机可看；默认关闭、<code>--web</code> 开启；只读、无写操作、不暴露任何密钥。不引入 Flask/FastAPI。若主要在本机看，file:// 已够，本项可缓做。</dd>
+</dl></div></div>
+
+<div class="gap"><div class="gh"><span class="pill p3">P3</span><span>G13 LLM 复核 ｜ G16 浅ML ｜ G17 期权遗留 ｜ G18 Tushare支线 ｜ G20 实盘远期</span></div><div class="gb">
+<dl>
+<dt><strong>G13</strong> 新增 llm_reviewer.py，无 key 即休眠；仅对紧急轮动/强信号异步出“多空逻辑·风险点·是否同意”第二意见，守护线程、失败只记日志，不改综合分。</dd>
+<dt><strong>G16</strong> 维持 WP-F4 裁决：pandas/sklearn 只在 tools 训练→导出 JSON→生产标准库推理；硬门槛（DSR 显著、PBO&lt;0.5、样本外成本后≥现状、时间跨度足够）不达标不上线。本轮建议先补一个<strong>标准库可实现的逻辑回归/评分卡</strong>作为规则与 ML 之间的可解释台阶。</dd>
+<dt><strong>G17</strong> 成交量/成交额 PCR 找交易所日行情/东财备用源；交易所官方 IV 与 T 链反推 IV 交叉校验；期权精确保证金/组合优惠待真实账户数据，全程软降级、缺数据不编造。</dd>
+<dt><strong>G18</strong> 不装 tushare SDK，只用 requests 调其 http API、失败软降级；性价比最高的两项是 T1 官方交易日历（最稳，替代动态主源）与 T2 全历史仓单（补东财仅约 3 个月窗口）；需 2000/5000 积分，由你决定是否投入。</dd>
+<dt><strong>G20</strong> 实盘是远期而非现在：路径＝G1 纸面影子满 ≥3 个月且指标过关 → 在银河期货签《程序化交易委托协议》、风险等级 C4 以上、报告策略信息、用自研程序在仿真环境完成<strong>穿透式监管测试十项</strong>（连通性/报撤单笔数监测/阈值预警/日志/接入安全等）并报备 → 才谈 CTP 自动下单。更轻的替代是用已认证终端（文华 WH8/金字塔等，免穿透测试）承载执行、本系统继续负责信号。</dd>
+</dl></div></div>
+
+<h2 id="s6">六、三类声明：真缺失 / 已列待做 / 已裁决“不做”</h2>
+<div class="card">
+<h3>6.1 本轮新识别的“真缺失”（前两轮对标没覆盖或没讲透）</h3>
+<div class="box r">G1 纸面交易引擎、G2 策略插件化、G3 完整绩效包、G4 next-bar/蒙特卡洛/留档、G5 相关性/VaR/压力测试、G6 数据质量监控、G7 多窗口 TSMOM、G8 只读 Web、G9 git、G19 备份灾备。其中 <strong>G1、G4、G9 是最优先的三件</strong>。</div>
+<h3>6.2 路线图已列、本轮重申并细化（不是新坑，按原计划推进）</h3>
+<div class="box w">G10 配置外置、G11 降级链、G12 价差、G13 LLM、G14 一档快照、G15 分钟库（进行中）、G16 浅 ML、G17 期权遗留、G18 Tushare。</div>
+<h3>6.3 已裁决“不做”，附理由——防止被开源热度带偏、重复投入</h3>
+<table>
+<tr><th>不做的方向</th><th>理由</th><th>替代/边界</th></tr>
+<tr><td>L2 逐笔 / tick 级回放</td><td>免费渠道不可得，成本与收益不匹配</td><td>G14 只做 5 分钟级一档快照，用于滑点校准</td></tr>
+<tr><td>DRL 实盘、端到端 LLM 交易决策、裸 K LSTM/Transformer 价格预测</td><td>已有反面证据（Stanford 期货 ML、XGBoost 样本外 alpha 为负）；不可解释、不可控</td><td>LLM 只做异步复核（G13）；ML 走可解释模型+硬门槛（G16）</td></tr>
+<tr><td>在线 / 热更新学习</td><td>常驻进程稳定性与可复现性风险</td><td>离线训练、JSON 下发、标准库推理</td></tr>
+<tr><td>pandas/sklearn/lightgbm/flask/akshare/tushare SDK 进生产 requirements</td><td>违反零新增依赖铁律，常驻链路越重越脆</td><td>重依赖只进 tools/；生产一律标准库重写</td></tr>
+<tr><td>Rust/纳秒事件驱动、HFT 内核重写（nautilus/WonderTrader HFT 路线）</td><td>本系统是 5/20 分钟级监控，微秒延迟毫无收益</td><td>保留轮询+紧急插队主循环；只学其“回测实盘同构”理念（由 G1 承接）</td></tr>
+<tr><td>现在就接 CTP 自动实盘</td><td>证监会 2025 年第 12 号公告法定要求：程序化报告 + 穿透式测试 + 协议 + C4；且策略尚未经纸面验证</td><td>先 G1 纸面 ≥3 个月，再按 G20 合规路径；或用认证终端执行</td></tr>
+</table>
+</div>
+
+<h2 id="s7">七、你已经比多数开源项目强、必须保持、别改丢的部分</h2>
+<div class="card">
+<table class="keep">
+<tr><td style="width:150px">调度严谨</td><td>5/20 分钟固定刻度对齐、紧急轮“插队但计划点不推移”、品种级夜盘结束时间、真实交易日历归属，远胜开源项目常见的 sleep 定间隔。</td></tr>
+<tr><td>零依赖常驻稳定性</td><td>全局连接池、日志轮转、心跳看门狗+bat 自重启、文件占用重试、单源失败不拖垮整轮。</td></tr>
+<tr><td>期权深度</td><td>Black-76 + 完整 T 链 + 多到期日 IV 曲面 + 25Δ RR/Fly + 五层脏报价清洗 + 组合 Greeks 与日历/比率价差，个人项目罕见。</td></tr>
+<tr><td>防过拟合严谨度</td><td>DSR / CSCV-PBO / PurgedKFold / Walk-forward / 参数高原，且诚实得出“样本太短暂不上 ML”，比大多数直接拟合的项目更专业。</td></tr>
+<tr><td>基本面免费源整合</td><td>东财仓单分位/周环比、龙虎榜净多、carry、基差软降级，并明确记录哪些源实测做不通、不重复踩坑。</td></tr>
+<tr><td>组合与风控雏形</td><td>共享资金池、三种 sizing、强平状态机、板块名义约束、独立 risk_gate 闸门、多空双面辩论。</td></tr>
+<tr><td>真实成本与本地化</td><td>银河期货真实保证金/手续费（含平今、JD 乘数特例）、64 商品 + 57 期权品种全覆盖、中文舆情 6 源可信度分级。</td></tr>
+<tr><td>测试与诚实</td><td>191 个 pytest 用例、负结果如实写（分钟策略成本后为负、横截面空态）、拿不到的数据留空标注而非编造。</td></tr>
+</table>
+</div>
+
+<h2 id="s8">八、建议实施排期（融入现有“轮次”节奏）</h2>
+<div class="card">
+<table>
+<tr><th class="c">阶段</th><th>内容</th><th>目标</th></tr>
+<tr><td class="c">立即（约 0.5 天）</td><td>G9 git/锁版本/CHANGELOG</td><td>先有安全网和回滚点，后续每轮可对比、可回退</td></tr>
+<tr><td class="c">第 24 轮</td><td>G10 配置外置 + G11 降级链 + G6 数据质量（数据/工程底座一组）</td><td>数据源不再单点、配置不再改代码、缺数能被发现和告警</td></tr>
+<tr><td class="c">第 25 轮</td><td>G4 回测严谨性（next-bar 对照/蒙特卡洛/留档）</td><td>回测结论更可信、可纵向比较、防自欺</td></tr>
+<tr><td class="c">第 26–27 轮</td><td>G1 纸面交易引擎（可拆“表+撮合 / 账户与看板”两轮）</td><td>补上执行层，跑出第一条含成本的实时模拟净值</td></tr>
+<tr><td class="c">第 28 轮起（P2）</td><td>G3 绩效包 + G7 TSMOM + G19 备份 → G12 价差 + G5 组合风控 + G2 插件化 → G14/G8</td><td>分析更全、因子更稳、架构可扩展</td></tr>
+<tr><td class="c">按需（P3）</td><td>G13/G16/G17/G18；G20 待纸面满 3 月且合规条件具备再议</td><td>等 key / 样本 / 积分 / 合规条件成熟，不抢跑</td></tr>
+</table>
+<div class="box g"><strong>一句话路线：</strong>先用半天补上 git，再用三轮把“数据底座 + 回测可信度 + 纸面账户”补齐——做完这四步，本项目就从“很强的监控分析器”升级为“带完整虚拟交易闭环、可严肃评估是否走向实盘的研究系统”，且全程零新增生产依赖、默认输出可回退、每步有测试与诚实结论。</div>
+</div>
+
+<h2 id="s9">九、主要参考来源（2026-09-02 检索）</h2>
+<div class="card">
+<ul class="tight small">
+<li>量化系统分层：GitHub apexphere/quant-trading（Data→Research→Signal→Portfolio→Execution→Monitoring 六层）、ziyi170/quant_system ARCHITECTURE、技术栈《从回测到实盘的4层分层方案》、极客时间《典型量化投资系统包含哪些模块》。</li>
+<li>vnpy：github.com/vnpy/vnpy（4.0）、vnpy 官方文档策略应用（CtaStrategy/SpreadTrading/RiskManager）、vnpy 社区《核心架构总结》。</li>
+<li>Qlib：github.com/microsoft/qlib README（Workflow layer）、DeepWiki Introduction to Qlib。</li>
+<li>freqtrade：docs.freqtrade.io（Backtesting/Hyperopt/Strategies 101）、GitHub README（dry-run/persistence/FreqAI）。</li>
+<li>回测引擎：GitHub awesome-backtesting-python（look-ahead/survivorship）、LedgerMind《Backtesting Framework Comparison 2026》、bullalert.ai《Nautilus vs Backtrader vs VectorBT》、ml4t/backtest（point-in-time、exit-first、next-bar）。</li>
+<li>nautilus_trader：nautilustrader.io、PyPI 项目页（star/特性）；Lean：QuantConnect 文档与第三方对比。</li>
+<li>国内框架：fasiondog/hikyuu、WonderTrader 解析、QUANTAXIS 全栈对比。</li>
+<li>商品因子：J.P.Morgan《A quant's guide to alpha in commodities》、WisdomTree《why futures curves matter》、Bayes-CID 2026《Cross-Sectional Return Predictability in Commodity Futures: GBDT》、银河期货《商品期货 CTA 截面策略初探》、AQR《Demystifying Managed Futures》。</li>
+<li>绩效指标：quantopian/pyfolio timeseries、东方财富《私募指数增强净值分析》指标体系、AKQuant 分析指标。</li>
+<li>数据工程：ifisme.cn《从 Tushare 到 DuckDB 全链路》、DuckDB 元数据质量监控、Awesome-QuantDev-Learn。</li>
+<li>实盘合规：中国政府网 证监会公告〔2025〕12 号《期货市场程序化交易管理规定(试行)》、程序化权限开通与穿透式测试实操（CSDN/什么值得买/网易，2026）。</li>
+<li>星数量级：LibHunt Python algorithmic-trading 榜单、PyPI nautilus_trader、QuantMind Landscape 2026、各项目 GitHub（不同时点有差异，仅作量级）。</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>

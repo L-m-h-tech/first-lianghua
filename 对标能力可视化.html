@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>futures_monitor 量化系统对标可视化（2026-09-02）</title>
+<style>
+  :root{ --ink:#1f2933; --sub:#647285; --line:#e3e8ef; --bg:#f5f7fa; --card:#fff;
+         --good:#2e8b7d; --warn:#d98a2b; --bad:#cf5b5b; --accent:#3a7bd5; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Microsoft YaHei","Segoe UI",sans-serif;line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px}
+  h1{font-size:21px;margin:0 0 4px}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin-bottom:18px;box-shadow:0 1px 3px rgba(31,41,51,.05)}
+  .card h2{font-size:16px;margin:0 0 2px}
+  .card p.note{color:var(--sub);font-size:12.5px;margin:0 0 8px}
+  .chart{width:100%;height:520px}
+  .chart.sm{height:560px}
+  .legend-txt{font-size:12.5px;color:var(--sub);margin-top:6px}
+  table.fallback{border-collapse:collapse;width:100%;font-size:12.5px;display:none}
+  table.fallback th,table.fallback td{border:1px solid var(--line);padding:4px 8px;text-align:center}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;color:#fff}
+  .t0{background:#b04646}.t1{background:#d98a2b}.t2{background:#3a7bd5}.t3{background:#7a8aa0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>futures_monitor 与主流量化系统对标可视化</h1>
+  <div class="meta">生成于 2026-09-02 ｜ 评分口径：基于本项目代码事实（第23轮后，39 个生产 py / 191 测试）与 GitHub 公开项目特性做的 0–5 成熟度<strong>主观评估</strong>，非官方排名；星数为 2026 年中各公开来源区间值。</div>
+
+  <div class="card">
+    <h2>图 1 ｜ 十维能力成熟度雷达</h2>
+    <p class="note">三条曲线：本项目 futures_monitor、个人开源项目典型水平、专业框架（vnpy / Lean / nautilus 类）。越靠外越强（满分 5）。</p>
+    <div id="radar" class="chart"></div>
+    <div class="legend-txt">一眼结论：本项目在<strong>因子信号、数据、组合仓位、监控</strong>四维已达到甚至超过专业框架的“开箱水平”；唯一明显塌陷在<strong>订单执行层</strong>（无纸面/实盘闭环），回测、绩效、风控、工程基建为中等可补。</div>
+    <table class="fallback" id="tb1"></table>
+  </div>
+
+  <div class="card">
+    <h2>图 2 ｜ 20 项差距的“价值 × 成本”优先级矩阵</h2>
+    <p class="note">横轴＝实施成本（越右越费工），纵轴＝对系统完整性的价值（越上越值得做），颜色＝优先级，标签＝差距编号 G#。左上区＝高性价比先做。</p>
+    <div id="matrix" class="chart sm"></div>
+    <div class="legend-txt">
+      <span class="tag t0">P0 立即</span>
+      <span class="tag t1">P1 近期</span>
+      <span class="tag t2">P2 中期</span>
+      <span class="tag t3">P3 等条件</span>
+      　优先清扫左上：G9(git)、G10(配置外置)、G6(数据质量)、G11(降级链)、G4(回测严谨性)；G1(纸面交易)价值最高但成本中等，是补“执行层塌陷”的关键一跃。
+    </div>
+    <table class="fallback" id="tb2"></table>
+  </div>
+</div>
+<script src="./assets/echarts.min.js"></script>
+<script>
+(function(){
+  function ok(){ return typeof echarts !== "undefined"; }
+  var dims = ["数据采集与存储","因子与信号","策略研究/防过拟合","回测引擎","组合与仓位",
+              "风险控制","订单执行/交易接口","绩效分析","监控告警与界面","工程基建"];
+  var selfV   = [4.0,4.5,4.0,3.5,4.0,3.0,0.5,3.0,4.0,3.0];
+  var typV    = [2.0,2.0,1.5,2.0,1.5,1.5,1.5,2.0,2.0,1.0];
+  var proV    = [4.0,3.0,3.5,4.5,4.0,4.5,5.0,4.0,3.5,4.0];
+
+  // G项: [成本x, 价值y, 优先级, 编号, 名称, 气泡]
+  var gaps = [
+    [1.0,4.0,0,"G9","git工程化",26],
+    [1.5,3.5,1,"G10","配置外置",24],
+    [2.5,4.0,1,"G11","数据源自动降级链",28],
+    [2.0,4.0,1,"G6","数据质量监控",28],
+    [2.5,4.0,1,"G4","回测严谨性补强",28],
+    [3.5,4.5,1,"G1","纸面交易引擎",34],
+    [2.0,3.5,2,"G3","绩效指标包/tear sheet",26],
+    [2.0,3.5,2,"G7","多窗口时序动量",26],
+    [3.5,3.5,2,"G2","策略插件化框架",30],
+    [3.0,3.0,2,"G12","产业链/跨期价差",26],
+    [2.5,3.0,2,"G5","组合风控/相关性/压力",26],
+    [3.0,2.5,2,"G14","一档tick快照自采",24],
+    [2.5,3.0,2,"G8","只读Web/手机看板",24],
+    [1.5,2.5,2,"G19","部署/备份规范化",22],
+    [2.0,2.0,3,"G13","LLM第二意见",22],
+    [4.0,3.0,3,"G16","浅ML多因子(等样本)",30],
+    [3.0,2.0,3,"G17","期权遗留(量PCR/官方IV)",22],
+    [3.0,2.0,3,"G18","Tushare零依赖支线",22]
+  ];
+  var colorByP = {0:"#b04646",1:"#d98a2b",2:"#3a7bd5",3:"#7a8aa0"};
+  var nameByP = {0:"P0 立即",1:"P1 近期",2:"P2 中期",3:"P3 等条件"};
+
+  if(!ok()){
+    document.getElementById("radar").style.display="none";
+    document.getElementById("matrix").style.display="none";
+    var t1=document.getElementById("tb1"),t2=document.getElementById("tb2");
+    t1.style.display="table"; t2.style.display="table";
+    var h="<tr><th>维度</th><th>本项目</th><th>个人典型</th><th>专业框架</th></tr>";
+    for(var i=0;i<dims.length;i++){h+="<tr><td>"+dims[i]+"</td><td>"+selfV[i]+"</td><td>"+typV[i]+"</td><td>"+proV[i]+"</td></tr>";}
+    t1.innerHTML=h;
+    var h2="<tr><th>编号</th><th>名称</th><th>成本</th><th>价值</th><th>优先级</th></tr>";
+    for(var j=0;j<gaps.length;j++){var g=gaps[j];h2+="<tr><td>"+g[3]+"</td><td>"+g[4]+"</td><td>"+g[0]+"</td><td>"+g[1]+"</td><td>"+nameByP[g[2]]+"</td></tr>";}
+    t2.innerHTML=h2;
+    return;
+  }
+
+  var radar = echarts.init(document.getElementById("radar"));
+  radar.setOption({
+    backgroundColor:"transparent",
+    tooltip:{trigger:"item",triggerOn:"click",renderMode:"richText",confine:true,
+             textStyle:{fontSize:11,lineHeight:15},padding:[6,8]},
+    legend:{top:6,itemWidth:14,itemHeight:9,
+            textStyle:{color:"#555",fontSize:12},
+            data:["本项目 futures_monitor","个人开源项目典型","专业框架(vnpy/Lean类)"]},
+    radar:{
+      indicator:dims.map(function(d){return {name:d,max:5};}),
+      center:["50%","56%"],radius:"66%",
+      axisName:{color:"#374151",fontSize:12},
+      splitLine:{lineStyle:{color:"#e3e8ef"}},
+      splitArea:{areaStyle:{color:["rgba(58,123,213,0.03)","rgba(58,123,213,0.06)"]}},
+      axisLine:{lineStyle:{color:"#d7dee7"}}
+    },
+    series:[{
+      type:"radar",
+      data:[
+        {value:selfV,name:"本项目 futures_monitor",
+         itemStyle:{color:"#cf5b5b"},lineStyle:{color:"#cf5b5b",width:2.4},
+         areaStyle:{color:"rgba(207,91,91,0.16)"}},
+        {value:typV,name:"个人开源项目典型",
+         itemStyle:{color:"#9aa7b8"},lineStyle:{color:"#9aa7b8",width:1.6,type:"dashed"},
+         areaStyle:{color:"rgba(154,167,184,0.10)"}},
+        {value:proV,name:"专业框架(vnpy/Lean类)",
+         itemStyle:{color:"#2e8b7d"},lineStyle:{color:"#2e8b7d",width:2},
+         areaStyle:{color:"rgba(46,139,125,0.10)"}}
+      ]
+    }]
+  });
+
+  var groups=[[],[],[],[]];
+  for(var k=0;k<gaps.length;k++){
+    var it=gaps[k];
+    groups[it[2]].push({
+      value:[it[0],it[1],it[5]],
+      name:it[3]+" "+it[4],
+      itemStyle:{color:colorByP[it[2]]},
+      label:{show:true,formatter:it[3],position:"top",fontSize:11,color:"#374151",fontWeight:600}
+    });
+  }
+  var series=[];
+  for(var p=0;p<4;p++){
+    series.push({
+      name:nameByP[p],type:"scatter",symbolSize:function(v){return v[2];},
+      data:groups[p],
+      emphasis:{focus:"series",label:{show:true,formatter:function(p){return p.name;},fontSize:11}}
+    });
+  }
+  var matrix=echarts.init(document.getElementById("matrix"));
+  matrix.setOption({
+    backgroundColor:"transparent",
+    tooltip:{trigger:"item",triggerOn:"click",renderMode:"richText",confine:true,
+             textStyle:{fontSize:11,lineHeight:15},padding:[6,8],
+             formatter:function(p){
+               return p.name+String.fromCharCode(10)+"成本:"+p.value[0]+"  价值:"+p.value[1];
+             }},
+    legend:{top:6,itemWidth:14,itemHeight:9,textStyle:{color:"#555",fontSize:12},data:[nameByP[0],nameByP[1],nameByP[2],nameByP[3]]},
+    grid:{left:60,right:40,top:60,bottom:56,containLabel:true},
+    xAxis:{type:"value",name:"实施成本 →",min:0,max:5,interval:1,
+           nameLocation:"middle",nameGap:30,nameTextStyle:{fontSize:12,color:"#374151"},
+           splitLine:{lineStyle:{color:"#eef1f5"}},axisLabel:{color:"#555",fontSize:11}},
+    yAxis:{type:"value",name:"价值 →",min:0,max:5,interval:1,
+           nameTextStyle:{fontSize:12,color:"#374151"},
+           splitLine:{lineStyle:{color:"#eef1f5"}},axisLabel:{color:"#555",fontSize:11}},
+    series:series.concat([{
+      type:"scatter",silent:true,data:[],markArea:{
+        itemStyle:{color:"rgba(46,139,125,0.06)"},
+        data:[[{xAxis:0,yAxis:5},{xAxis:2.5,yAxis:3.25}]]
+      },
+      markLine:{silent:true,symbol:"none",lineStyle:{color:"#c6cfda",type:"dashed"},
+        data:[{xAxis:2.5},{yAxis:3.25}]
+      }
+    }])
+  });
+
+  window.addEventListener("resize",function(){radar.resize();matrix.resize();});
+})();
+</script>
+</body>
+</html>

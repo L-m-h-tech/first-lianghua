@@ -1,0 +1,41 @@
+# ===== Python 运行时缓存 =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+
+# ===== 运行产物：数据库（data/ 下保留 csv/xlsx 配置表，忽略大体积运行库）=====
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/archive/
+
+# ===== 运行产物：缓存 / 日志 =====
+cache/
+logs/
+
+# ===== 运行产物：reports 看板与报告（全部由程序每轮幂等再生成）=====
+reports/*.html
+reports/*.txt
+reports/*.csv
+reports/*.js
+reports/*.json
+reports/assets/
+
+# ===== 本地私密配置（含 token/key/webhook，绝不入库）=====
+.env
+config.local.json
+
+# ===== 临时补丁/探测脚本（约定前缀，验后即删，双保险不进库）=====
+_probe*.py
+_patch*.py
+_fix*.py
+_view*.py
+_t*.py
+_dbg*.py
