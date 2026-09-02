@@ -588,6 +588,29 @@ BACKTEST_OOS_RATIO = 0.0            # 样本外占比：0=关闭(旧口径)；�
 BACKTEST_VALIDATION_JSON = os.path.join(BASE_DIR, "reports", "backtest_validation.json")  # DSR/PBO sidecar(研究工具产出)
 BACKTEST_RUNS_RETENTION_DAYS = 3650  # backtest_runs 回测留档保留天数(约10年，体积极小)
 
+# ---------------- G1 纸面交易引擎（第27轮；默认影子独立，不接入主链/不改任何现有输出；第28轮接报告/看板） ----------------
+PAPER_ENABLED = False             # 总开关：False=纸面引擎完全休眠（默认；第28轮接入 main 后再评估默认开影子）
+PAPER_FILL_MODE = "next"          # 成交时点：next=信号下一轮首个新价成交(保守,影子默认,严格晚于信号)；close=信号轮当轮最新价成交
+PAPER_EQUITY0 = 1_000_000         # 纸面账户初始资金（人民币元，与 portfolio 默认一致）
+PAPER_ENTRY_SCORE = 4.0           # |综合分|>=该值才开仓（默认=SCORE_LIGHT 轻仓线；低于此只观望不下单）
+PAPER_EXIT_SCORE = 2.0            # 持仓后 |综合分|<该值（回到中性带）则平仓离场（默认=SCORE_NEUTRAL，迟滞防抖）
+PAPER_SIZING = "equal_notional"   # 手数算法，复用 portfolio 三选一：equal_notional/equal_risk/score
+PAPER_PER_SYMBOL = 0.15           # equal_notional：单品种目标名义占权益比例
+PAPER_RISK_PER_TRADE = 0.01       # equal_risk：单手打到止损的最大亏损占权益比例
+PAPER_MAX_SYMBOL_WEIGHT = 0.30    # 单品种名义上限（占权益）
+PAPER_MAX_SECTOR_WEIGHT = 0.60    # 单板块名义上限（占权益）
+PAPER_MAX_CONCURRENT = 12         # 最多同时持仓品种数
+PAPER_RISK_LIQUIDATE = 1.00       # 风险度(占用/权益)>=该值启动强平
+PAPER_RISK_SAFE = 0.80            # 触发强平后一路砍到该安全线以下，防阈值附近反复触发
+PAPER_DEFAULT_MARGIN = 0.12       # 缺保证金率表时的兜底保证金率
+PAPER_USE_REAL_FEES = True        # 优先读 data/futures_fees.csv 真实费率（缺表回退兜底比例）
+PAPER_FEE_RATE = 0.00005          # 兜底单边手续费率（真实费率表缺失时）
+PAPER_SLIP_RATE = 0.0001          # 单边滑点率：买价=盘面价*(1+slip)、卖价=盘面价*(1-slip)，成交价内含滑点
+PAPER_LIMIT_EPS = 0.0008          # 实时锁板判定的贴板容差（与 INTRADAY_BT_LIMIT_TICK_EPS 同量级）
+PAPER_ALLOW_ADD = False           # 持仓且同向更强信号是否加仓（默认False=只持有/反手/离场，不反复加仓）
+PAPER_RETENTION_DAYS = 3650       # paper_orders/trades/equity 保留天数（纸面需长期影子对照，默认约10年）
+PAPER_ACCOUNT_TXT = os.path.join(BASE_DIR, "reports", "paper_account.txt")  # 第28轮纸面账户报告路径
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。

@@ -219,6 +219,42 @@ class MonitorDB:
                     created_real REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_btr_kind ON backtest_runs(kind, created_real);
+
+                CREATE TABLE IF NOT EXISTS paper_orders(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL, sym TEXT, name TEXT, sector TEXT,
+                    action TEXT, side TEXT, direction INTEGER,
+                    lots INTEGER DEFAULT 0, signal_price REAL,
+                    score REAL, band TEXT, fill_mode TEXT, status TEXT,
+                    fill_ts TEXT, fill_price REAL, raw_price REAL,
+                    reason TEXT, order_ref TEXT, pos_ref TEXT,
+                    raw_json TEXT, created_real REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_po_sym ON paper_orders(sym, created_real);
+                CREATE INDEX IF NOT EXISTS idx_po_status ON paper_orders(status, created_real);
+
+                CREATE TABLE IF NOT EXISTS paper_trades(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL, pos_ref TEXT, sym TEXT, name TEXT, sector TEXT,
+                    side TEXT, dir_text TEXT, direction INTEGER,
+                    lots INTEGER, price REAL, raw_price REAL, notional REAL,
+                    slip_yuan REAL DEFAULT 0, fee_yuan REAL DEFAULT 0, realized_yuan REAL DEFAULT 0,
+                    leg TEXT, reason TEXT, forced INTEGER DEFAULT 0,
+                    order_id INTEGER, entry_ts TEXT, entry_price REAL,
+                    score REAL, margin_rate REAL, created_real REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_pt_sym ON paper_trades(sym, created_real);
+                CREATE INDEX IF NOT EXISTS idx_pt_pos ON paper_trades(pos_ref);
+
+                CREATE TABLE IF NOT EXISTS paper_equity(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL UNIQUE,
+                    static_equity REAL, float_pnl REAL, equity REAL,
+                    margin_used REAL, available REAL, risk_degree REAL, drawdown REAL,
+                    n_positions INTEGER, realized REAL, fees_paid REAL, n_trades INTEGER,
+                    positions_json TEXT, created_real REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_pe_ts ON paper_equity(created_real);
                 """
             )
             self.conn.commit()
@@ -711,6 +747,136 @@ class MonitorDB:
                 (str(kind or "daily"), int(limit))).fetchall()
         return [dict(r) for r in rows]
 
+    # ---------------- G1 纸面交易（paper_orders/paper_trades/paper_equity） ----------------
+
+    def insert_paper_order(self, order):
+        """落一条纸面委托（next 档先以 status=pending 落库，成交后 update_paper_order 回填）。
+        order dict 字段缺失一律安全兜底，绝不抛错拖垮主循环；返回新行 id。"""
+        now_real = datetime.now().timestamp()
+        with self.lock:
+            cur = self.conn.execute(
+                """INSERT INTO paper_orders(ts,sym,name,sector,action,side,direction,lots,
+                   signal_price,score,band,fill_mode,status,fill_ts,fill_price,raw_price,
+                   reason,order_ref,pos_ref,raw_json,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(order.get("ts"))[:19], str(order.get("sym") or "")[:16],
+                 str(order.get("name") or "")[:24], str(order.get("sector") or "")[:16],
+                 str(order.get("action") or "")[:20], str(order.get("side") or "")[:8],
+                 order.get("direction"), int(order.get("lots") or 0),
+                 order.get("signal_price"), order.get("score"),
+                 str(order.get("band") or "")[:8], str(order.get("fill_mode") or "")[:8],
+                 str(order.get("status") or "pending")[:12],
+                 str(order.get("fill_ts") or "")[:19] if order.get("fill_ts") else None,
+                 order.get("fill_price"), order.get("raw_price"),
+                 str(order.get("reason") or "")[:80],
+                 str(order.get("order_ref") or "")[:40],
+                 str(order.get("pos_ref") or "")[:40],
+                 _json(order["raw"]) if order.get("raw") is not None else None, now_real))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def update_paper_order(self, order_id, **fields):
+        """成交/拒单/阻断时回填委托：status/fill_ts/fill_price/raw_price/lots/reason。"""
+        if not order_id or not fields:
+            return 0
+        allowed = {"status", "fill_ts", "fill_price", "raw_price", "lots", "reason"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            sets.append(f"{k}=?")
+            vals.append(str(v)[:80] if k == "reason" else v)
+        if not sets:
+            return 0
+        vals.append(order_id)
+        with self.lock:
+            cur = self.conn.execute(
+                f"UPDATE paper_orders SET {', '.join(sets)} WHERE id=?", vals)
+            self.conn.commit()
+            return cur.rowcount
+
+    def insert_paper_trade(self, t):
+        """落一条纸面成交（开/平各一条）。返回新行 id；字段缺失安全兜底。"""
+        now_real = datetime.now().timestamp()
+        with self.lock:
+            cur = self.conn.execute(
+                """INSERT INTO paper_trades(ts,pos_ref,sym,name,sector,side,dir_text,direction,
+                   lots,price,raw_price,notional,slip_yuan,fee_yuan,realized_yuan,leg,reason,
+                   forced,order_id,entry_ts,entry_price,score,margin_rate,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(t.get("ts"))[:19], str(t.get("pos_ref") or "")[:40],
+                 str(t.get("sym") or "")[:16], str(t.get("name") or "")[:24],
+                 str(t.get("sector") or "")[:16], str(t.get("side") or "")[:8],
+                 str(t.get("dir_text") or "")[:4], t.get("direction"),
+                 int(t.get("lots") or 0), t.get("price"), t.get("raw_price"),
+                 t.get("notional"), t.get("slip_yuan"), t.get("fee_yuan"), t.get("realized_yuan"),
+                 str(t.get("leg") or "")[:8], str(t.get("reason") or "")[:40],
+                 1 if t.get("forced") else 0, t.get("order_id"),
+                 str(t.get("entry_ts") or "")[:19] if t.get("entry_ts") else None,
+                 t.get("entry_price"), t.get("score"), t.get("margin_rate"), now_real))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def insert_paper_equity(self, snap):
+        """落一轮一条账户权益快照（同 ts 覆盖，保证一轮一条、重跑幂等）。"""
+        now_real = datetime.now().timestamp()
+        with self.lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO paper_equity(ts,static_equity,float_pnl,equity,
+                   margin_used,available,risk_degree,drawdown,n_positions,realized,fees_paid,
+                   n_trades,positions_json,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(snap.get("ts"))[:19], snap.get("static_equity"), snap.get("float_pnl"),
+                 snap.get("equity"), snap.get("margin_used"), snap.get("available"),
+                 snap.get("risk_degree"), snap.get("drawdown"), int(snap.get("n_positions") or 0),
+                 snap.get("realized"), snap.get("fees_paid"), int(snap.get("n_trades") or 0),
+                 _json(snap["positions"]) if snap.get("positions") is not None else None,
+                 now_real))
+            self.conn.commit()
+
+    def paper_open_position_trades(self):
+        """返回每个 pos_ref 当前仍未平仓的【开仓成交】（有 open 无对应 close），供重启恢复持仓。"""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT * FROM paper_trades t
+                   WHERE side='open' AND NOT EXISTS(
+                       SELECT 1 FROM paper_trades c WHERE c.pos_ref=t.pos_ref AND c.side='close')
+                   ORDER BY id ASC""").fetchall()
+        return [dict(r) for r in rows]
+
+    def paper_realized_fees(self):
+        """汇总历史已实现净盈亏与手续费（开仓费计入平仓 realized，这里直接累加成交金额）。"""
+        with self.lock:
+            row = self.conn.execute(
+                """SELECT COALESCE(SUM(realized_yuan),0.0) AS realized,
+                          COALESCE(SUM(fee_yuan),0.0) AS fees FROM paper_trades""").fetchone()
+        return float(row["realized"]), float(row["fees"])
+
+    def paper_last_equity(self):
+        """最近一条权益快照（无则 None）。"""
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT * FROM paper_equity ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def paper_orders_recent(self, limit=200):
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM paper_orders ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
+    def paper_trades_recent(self, limit=500):
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
+    def paper_equity_series(self, limit=2000):
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM paper_equity ORDER BY id ASC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
     # ---------------- 信号到期评估 ----------------
 
     def update_signal_outcomes(self, quotes):
@@ -800,7 +966,7 @@ class MonitorDB:
     def table_counts(self):
         out = {}
         with self.lock:
-            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health", "backtest_runs"):
+            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health", "backtest_runs", "paper_orders", "paper_trades", "paper_equity"):
                 out[table] = self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
         return out
 
@@ -825,4 +991,8 @@ class MonitorDB:
             self.conn.execute("DELETE FROM data_health WHERE ts < ?", (dh_cut,))
             btr_cut = (datetime.now() - timedelta(days=config.BACKTEST_RUNS_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
             self.conn.execute("DELETE FROM backtest_runs WHERE run_ts < ?", (btr_cut,))
+            paper_cut = (datetime.now() - timedelta(days=config.PAPER_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            self.conn.execute("DELETE FROM paper_orders WHERE ts < ?", (paper_cut,))
+            self.conn.execute("DELETE FROM paper_trades WHERE ts < ?", (paper_cut,))
+            self.conn.execute("DELETE FROM paper_equity WHERE ts < ?", (paper_cut,))
             self.conn.commit()
