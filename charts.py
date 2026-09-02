@@ -33,6 +33,7 @@ import shutil
 from datetime import datetime
 
 import config
+import metrics
 
 # ---------------- 通用小工具 ----------------
 
@@ -329,6 +330,79 @@ def factor_payload(path=None):
 
 # ---------------- 汇总与落盘 ----------------
 
+def _tear_from_series(dts, equity, source, max_points=1200):
+    """等长 dts/equity 原始权益序列 -> G3 绩效三件（水下曲线/滚动夏普/月度热力）+标量摘要。
+
+    水下按原始逐点序列计算并抽稀；滚动夏普/月度先按自然日收敛成日度收益（一天多轮取最后一点）。
+    样本不足（少于2个日度点）返回 None，由前端显空态。"""
+    if not dts or len(dts) != len(equity) or len(equity) < 2:
+        return None
+    raw_rets = metrics.returns_from_equity(equity)
+    underwater = [0.0] + metrics.drawdown_series(raw_rets)   # 与 dts 等长、首点 0
+    uw_dt, underwater = downsample(list(dts), underwater, max_points=max_points)
+    days, day_eq = metrics.daily_last_equity(dts, equity)
+    if len(days) < 2:
+        return None
+    day_rets = metrics.returns_from_equity(day_eq)
+    ret_days = days[1:1 + len(day_rets)]          # 每笔日度收益归属其结束日（等长对齐）
+    ppy = config.METRICS_BARS_PER_YEAR
+    win = config.METRICS_ROLLING_WINDOW
+    sheet = metrics.tear_sheet(day_rets, ret_days, bars_per_year=ppy,
+                               var_alpha=config.METRICS_VAR_ALPHA, rolling_window=win)
+    roll = metrics.rolling_sharpe(day_rets, win, ppy)
+    monthly = metrics.monthly_returns(day_rets, ret_days)
+    years, cells = [], []
+    if monthly:
+        years = monthly["years"]
+        yidx = {y: i for i, y in enumerate(years)}
+        for y, m, v in monthly["cells"]:
+            cells.append([m - 1, yidx[y], round(v, 6)])   # [月索引0-11, 年索引, 收益小数]
+
+    def _r(k, nd=4):
+        v = sheet.get(k)
+        return round(v, nd) if isinstance(v, float) and math.isfinite(v) else v
+
+    summary = {"n": sheet.get("n"), "annualized": _r("annualized"),
+               "sharpe": _r("sharpe"), "sortino": _r("sortino"),
+               "calmar": _r("calmar"), "omega": _r("omega"),
+               "ulcer": _r("ulcer"), "max_drawdown": _r("max_drawdown"),
+               "var": _r("var"), "cvar": _r("cvar")}
+    return {"source": source, "uw_dt": uw_dt, "underwater": underwater,
+            "rs_dt": ret_days,
+            "rolling_sharpe": [None if x is None else round(x, 3) for x in roll],
+            "rolling_window": win, "monthly_years": years, "monthly_cells": cells,
+            "summary": summary}
+
+
+def tear_payload(state=None, max_points=None):
+    """⑥ G3 绩效：优先纸面影子（storage paper_equity 全量快照），否则组合回测 CSV；都没有返回 None。"""
+    mp = max_points or config.TEAR_MAX_POINTS
+    db = getattr(state, "db", None) if state is not None else None
+    if db is not None and hasattr(db, "paper_equity_series"):
+        try:
+            rows = db.paper_equity_series(20000)
+        except Exception:
+            rows = []
+        dts, eq = [], []
+        for r in (rows or []):
+            v = _f(r.get("equity"))
+            if v is None:
+                continue
+            dts.append(str(r.get("ts") or ""))
+            eq.append(v)
+        if len(dts) >= 2:
+            t = _tear_from_series(dts, eq, "paper", mp)
+            if t is not None:
+                return t
+    try:
+        p = parse_equity_csv(config.PORTFOLIO_EQUITY_FILE, max_points=20000)
+    except Exception:
+        p = None
+    if p and len(p["dt"]) >= 2:
+        return _tear_from_series(p["dt"], p["equity"], "portfolio", mp)
+    return None
+
+
 def build_payload(state=None):
     """把四块数据汇总为 window.CHART_DATA 负载；每块独立 try，缺数据只置 None，不抛。"""
     payload = {"generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -365,6 +439,11 @@ def build_payload(state=None):
         payload["paper"] = paper_payload(state)
     except Exception:
         payload["paper"] = None
+    # ⑥ G3 绩效三件（水下/滚动夏普/月度热力；优先纸面、否则组合回测；独立 try）
+    try:
+        payload["tear"] = tear_payload(state)
+    except Exception:
+        payload["tear"] = None
     return payload
 
 
@@ -518,6 +597,19 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>纸面风险度 / 同时持仓数 <span class="sub">风险度=占用÷动态权益；100% 触强平线</span></h3>
     <div id="c-paper-risk" class="chart" style="height:240px"></div>
   </div>
+  <div class="card full">
+    <h3>⑥ G3 绩效·水下回撤曲线 <span class="sub">逐点相对历史峰值回撤（与 Ulcer 同源；优先纸面影子、否则组合回测）</span></h3>
+    <div class="chips" id="tear-chips"></div>
+    <div id="c-tear-uw" class="chart" style="height:280px"></div>
+  </div>
+  <div class="card">
+    <h3>滚动夏普 <span class="sub">近窗口个交易日的年化夏普（默认60日，暖机样本不足显空）</span></h3>
+    <div id="c-tear-rs" class="chart" style="height:280px"></div>
+  </div>
+  <div class="card full">
+    <h3>月度收益热力图 <span class="sub">自然月复利收益（%），红涨绿跌（空白=该月无交易日；悬停看精确值）</span></h3>
+    <div id="c-tear-m" class="chart" style="height:240px"></div>
+  </div>
 </div>
 """
 
@@ -527,7 +619,8 @@ var UP = "#ef6b6b", DOWN = "#43c589", NEUT = "#8a8a8a", BLUE = "#7ecbff", GOLD =
 var AXIS = "#9a9a9a", SPLIT = "#2c2c2c", BG = "#1c1c1c";
 var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-ic", "c-mono", "c-cal", "c-out",
-                 "c-paper", "c-paper-dd", "c-paper-risk"];
+                 "c-paper", "c-paper-dd", "c-paper-risk",
+                 "c-tear-uw", "c-tear-rs", "c-tear-m"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -684,6 +777,70 @@ function renderPaper(p) {
                   data: [{yAxis: 1, label: {formatter: "强平线100%", color: UP}}]}},
       {name: "持仓数", type: "bar", yAxisIndex: 1, data: p.npos, itemStyle: {color: "rgba(255,214,107,0.30)"}}
     ]
+  });
+}
+
+function renderTear(t) {
+  if (!t) {
+    empty("c-tear-uw", "暂无绩效曲线：先运行 portfolio.py（如 python portfolio.py --all），或在 config.json 置 PAPER_ENABLED=true 开启影子，下一轮监控后自动出图。");
+    empty("c-tear-rs", "暂无滚动夏普：需要不少于窗口长度的日度权益。");
+    empty("c-tear-m", "暂无月度收益：需要跨自然月的日度权益序列。");
+    var c0 = document.getElementById("tear-chips"); if (c0) c0.innerHTML = "";
+    return;
+  }
+  var s = t.summary;
+  var srcTxt = t.source === "paper" ? "纸面影子" : "组合回测";
+  function f2(v) { return (v == null || isNaN(v)) ? "-" : (+v).toFixed(2); }
+  var chips = [
+    ["数据来源", srcTxt, ""], ["年化夏普", f2(s.sharpe), ""], ["Sortino", f2(s.sortino), ""],
+    ["Calmar", f2(s.calmar), ""], ["Omega", f2(s.omega), ""], ["Ulcer", s.ulcer==null?"-":(+s.ulcer*100).toFixed(2)+"%", ""],
+    ["VaR95(日)", s.var==null?"-":(s.var*100).toFixed(2)+"%", "down"],
+    ["CVaR95(日)", s.cvar==null?"-":(s.cvar*100).toFixed(2)+"%", "down"]
+  ];
+  document.getElementById("tear-chips").innerHTML = chips.map(function (x) {
+    return '<span class="chip ' + x[2] + '">' + x[0] + ' <b>' + x[1] + '</b></span>';
+  }).join("");
+  mk("c-tear-uw").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis", valueFormatter: function (v) { return pct(v); }},
+    grid: baseGrid(),
+    xAxis: Object.assign({type: "category", data: t.uw_dt, boundaryGap: false}, axisStyle()),
+    yAxis: {type: "value", inverse: true, min: 0, splitNumber: 4,
+            max: function (v) { return Math.max(v.max * 1.15, 0.005); },
+            axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(1) + "%"; }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "水下回撤", type: "line", data: t.underwater, showSymbol: false,
+              lineStyle: {color: UP, width: 1.2}, areaStyle: {color: "rgba(239,107,107,0.25)"}}]
+  });
+  var rs = t.rolling_sharpe;
+  mk("c-tear-rs").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis"},
+    grid: baseGrid(),
+    xAxis: Object.assign({type: "category", data: t.rs_dt, boundaryGap: false}, axisStyle()),
+    yAxis: {type: "value", scale: true, axisLabel: {color: AXIS},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "滚动" + t.rolling_window + "日夏普", type: "line", data: rs,
+              showSymbol: false, connectNulls: true, lineStyle: {color: BLUE, width: 1.4},
+              markLine: {silent: true, symbol: "none", lineStyle: {color: "#888", type: "dashed"},
+                         data: [{yAxis: 0, label: {formatter: "0", color: "#aaa"}}]}}]
+  });
+  var years = t.monthly_years.map(String);
+  var cells = t.monthly_cells.map(function (c) { return [c[0], c[1], c[2]]; });
+  var maxAbs = cells.length ? Math.max.apply(null, cells.map(function (c) { return Math.abs(c[2]); })) : 0;
+  mk("c-tear-m").setOption({
+    backgroundColor: BG,
+    tooltip: {position: "top", formatter: function (p) {
+      return years[p.value[1]] + "年" + (p.value[0] + 1) + "月：" + (p.value[2] * 100).toFixed(2) + "%"; }},
+    grid: baseGrid({top: 20, bottom: 48}),
+    xAxis: {type: "category", data: ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"],
+            axisLabel: {color: AXIS}, splitArea: {show: false}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: years, axisLabel: {color: AXIS},
+            splitArea: {show: false}, axisLine: {lineStyle: {color: "#444"}}},
+    visualMap: {min: -maxAbs || -0.01, max: maxAbs || 0.01, calculable: false, show: false,
+                inRange: {color: [DOWN, "#333333", UP]}},
+    series: [{name: "月度收益", type: "heatmap", data: cells,
+              label: {show: true, color: "#fff", fontSize: 10, fontWeight: "bold",
+                      formatter: function (p) { var v = p.value[2] * 100; return (v >= 0 ? "+" : "") + v.toFixed(2); }},
+              itemStyle: {borderColor: BG, borderWidth: 3}}]
   });
 }
 
@@ -854,11 +1011,12 @@ function loadAndRender() {
     renderFactor(D.factor_ic);
     renderCalib(D.calibration, D.outcomes);
     renderPaper(D.paper);
+    renderTear(D.tear);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
-    renderPaper(null); };
+    renderPaper(null); renderTear(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }

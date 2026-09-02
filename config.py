@@ -611,6 +611,12 @@ PAPER_ALLOW_ADD = False           # 持仓且同向更强信号是否加仓（�
 PAPER_RETENTION_DAYS = 3650       # paper_orders/trades/equity 保留天数（纸面需长期影子对照，默认约10年）
 PAPER_ACCOUNT_TXT = os.path.join(BASE_DIR, "reports", "paper_account.txt")  # 第28轮纸面账户报告路径
 
+# ================= G3（第29轮）：完整绩效指标包 / tear sheet（纯展示，不改综合分与主链） =================
+METRICS_BARS_PER_YEAR = 243       # 日度口径年化周期数（国内期货约243个交易日）
+METRICS_ROLLING_WINDOW = 60       # 滚动夏普窗口（个交易日）
+METRICS_VAR_ALPHA = 0.05          # 历史法 VaR/CVaR 左尾概率（5%）
+TEAR_MAX_POINTS = 1200            # 看板水下曲线最大绘制点数（确定性等距抽稀）
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。

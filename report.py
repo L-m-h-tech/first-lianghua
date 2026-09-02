@@ -532,6 +532,45 @@ def _pct(v, d=2):
         return "-"
 
 
+def _num(v, fmt="%.2f"):
+    """G3 指标统一空值显示：None/非有限值显示 '-'。"""
+    try:
+        if v is None:
+            return "-"
+        fv = float(v)
+        if fv != fv:
+            return "-"
+        return fmt % fv
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _paper_excursion_tail(mm):
+    """G3 MAE/MFE 汇总压成行尾补充文本；无样本返回空串。"""
+    if not mm or mm.get("n", 0) <= 0:
+        return ""
+    return "   持仓过程 平均MFE %s / 平均MAE %s（%d笔）" % (
+        _pct(mm.get("avg_mfe")), _pct(mm.get("avg_mae")), mm.get("n", 0))
+
+
+def _paper_monthly_lines(perf):
+    """把 portfolio.performance()['monthly']（G3 月度矩阵）压成每年一行紧凑文本；无数据返回[]。"""
+    monthly = (perf or {}).get("monthly")
+    if not monthly or not monthly.get("matrix"):
+        return []
+    out = [" 月度收益（自然月复利，%）："]
+    for year in monthly["years"]:
+        cells = []
+        for m in range(1, 13):
+            v = monthly["matrix"][year].get(m)
+            if v is None:
+                continue
+            cells.append("%d月%+.2f" % (m, v * 100.0))
+        if cells:
+            out.append("  %d  " % year + "  ".join(cells))
+    return out
+
+
 _PAPER_ACTION_CN = {"open": "开仓", "close": "离场平仓", "reverse_close": "反手平仓",
                     "reverse_open": "反手开仓", "liquidate": "风控强平"}
 _PAPER_SIDE_CN = {"buy": "买入", "sell": "卖出"}
@@ -603,7 +642,16 @@ def paper_account_text(state):
                   _yuan(perf["avg_loss"]),
                   ("%.2f" % perf["pl_ratio"]) if perf["pl_ratio"] is not None else "-",
                   perf["days"], _pct(perf["max_risk"], 1)),
-              ""]
+              " 风险调整(G3)：Calmar %s  Omega %s  Ulcer %s  VaR95(日) %s  CVaR95(日) %s  盈亏因子PF %s" % (
+                  _num(perf.get("calmar")), _num(perf.get("omega")), _num(perf.get("ulcer")),
+                  _pct(perf.get("var95")) if perf.get("var95") is not None else "-",
+                  _pct(perf.get("cvar95")) if perf.get("cvar95") is not None else "-",
+                  _num(perf.get("profit_factor"))),
+              " 交易连续性：最大连胜 %d 笔 / 最大连亏 %d 笔%s" % (
+                  perf.get("max_win_streak", 0) or 0, perf.get("max_loss_streak", 0) or 0,
+                  _paper_excursion_tail(perf.get("mae_mfe")))]
+        L += _paper_monthly_lines(perf)
+        L.append("")
     st = a["status"]
     L += ["【委托状态统计】（在途排队≠确定拒单：临时资金/持仓上限/锁板缓解后，排队单仍可成交）",
           " 已成交 %d   在途排队 %d   锁板/无价阻塞(blocked) %d   确定拒单(rejected) %d   已撤销 %d" % (

@@ -31,6 +31,7 @@ from datetime import datetime
 
 import config
 import futures_data
+import metrics
 
 
 def _pct(x):
@@ -576,6 +577,25 @@ def _fmt_metrics(m):
             f"最大回撤{m['max_dd']*100:.1f}% 夏普{m['sharpe']:.2f}")
 
 
+def _fmt_g3_extended(returns, hold_days):
+    """G3：在旧指标之外补一行交易级扩展绩效（profit factor/连胜连亏/Omega/Ulcer/Calmar）。
+    逐笔非重叠交易收益视为离散观测；年化按 252/hold 与既有夏普同口径，样本不足给'-'。"""
+    ts = metrics.trade_stats(returns)
+    if not ts:
+        return "  G3扩展绩效: 样本不足"
+    ppy = 252.0 / hold_days if hold_days else 252.0
+    omega = metrics.omega_ratio(returns)
+    ulcer = metrics.ulcer_index(returns)
+    calmar = metrics.calmar_ratio(returns, ppy)
+    def _s(v, fmt="{:.2f}"):
+        return "-" if v is None else fmt.format(v)
+    return ("  G3扩展绩效: 盈亏因子PF {pf}  盈亏比 {pr}  最大连胜 {ws}笔/连亏 {ls}笔  "
+            "Omega {om}  Ulcer {ul}  Calmar {cal}").format(
+        pf=_s(ts["profit_factor"]), pr=_s(ts["payoff_ratio"]),
+        ws=ts["max_win_streak"], ls=ts["max_loss_streak"],
+        om=_s(omega), ul=_s(ulcer, "{:.3f}"), cal=_s(calmar))
+
+
 def _fmt_overlap_metrics(m):
     """重叠信号只做横截面统计，不做复利净值曲线。"""
     if not m:
@@ -670,6 +690,7 @@ def build_report(results, errors, args):
     for band in ("轻仓", "分批", "强信号"):
         vals = [t["ret"] for t in all_trades if score_band(t["entry_score"]) == band]
         L.append(f"  {band}：" + _fmt_metrics(metrics_from_returns(vals, args.hold)))
+    L.append(_fmt_g3_extended([t["ret"] for t in all_trades], args.hold))
     if not getattr(args, "no_bootstrap", False) and args.bootstrap > 0 and net_metrics:
         ci = tuple(config.BACKTEST_BOOTSTRAP_CI)
         boot_all = bootstrap_trade_stats([t["ret"] for t in all_trades], args.bootstrap,

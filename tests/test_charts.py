@@ -329,11 +329,12 @@ def test_write_chart_data_and_page(tmp_path, monkeypatch):
     assert charts.ensure_charts_page() is True
     assert page_path.exists() and dst_asset.exists()
     html = page_path.read_text(encoding="utf-8")
-    # 静态页关键结构：本地 echarts、12 个图容器、动态注入 chart_data.js
+    # 静态页关键结构：本地 echarts、15 个图容器、动态注入 chart_data.js
     assert 'src="assets/echarts.min.js"' in html
     for cid in ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                 "c-ic", "c-mono", "c-cal", "c-out",
-                "c-paper", "c-paper-dd", "c-paper-risk"):
+                "c-paper", "c-paper-dd", "c-paper-risk",
+                "c-tear-uw", "c-tear-rs", "c-tear-m"):
         assert 'id="%s"' % cid in html
     assert "chart_data.js" in html
     # 幂等：重复调用不报错、资源不重复复制也不缺
@@ -350,7 +351,8 @@ def test_sync_asset_missing_source_safe(tmp_path, monkeypatch):
 
 CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
              "c-ic", "c-mono", "c-cal", "c-out",
-             "c-paper", "c-paper-dd", "c-paper-risk")
+             "c-paper", "c-paper-dd", "c-paper-risk",
+             "c-tear-uw", "c-tear-rs", "c-tear-m")
 
 
 def test_dashboard_embed_parts_are_fragments():
@@ -396,3 +398,95 @@ def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
     # 初始仍停在第一个文本页签，面板默认隐藏、懒加载
     assert '<iframe id="view" src="latest_report.txt"></iframe>' in h
     assert "#charts-panel { display: none;" in h
+
+# ---------------- 第29轮 G3：完整绩效 tear（水下/滚动夏普/月度热力） ----------------
+
+def _multiday_equity(days, base=1_000_000.0, step=1000.0):
+    """构造跨自然日的等长 dts/equity（每天2个快照，15:00 为当日收盘=日度取值）。
+
+    日增幅按 0.6/1.0/1.4 倍 step 交替，保证恒为正且不相等（stdev>0，滚动夏普为正）。"""
+    from datetime import datetime, timedelta
+    d0 = datetime(2026, 4, 1)
+    dts, eq, cum = [], [], 0.0
+    for i in range(days):
+        ds = (d0 + timedelta(days=i)).strftime("%Y-%m-%d")
+        inc = step * (1.0 + 0.4 * ((i % 3) - 1))
+        dts.append(ds + " 09:00:00")
+        eq.append(base + cum)
+        cum += inc
+        dts.append(ds + " 15:00:00")
+        eq.append(base + cum)
+    return dts, eq
+
+
+def test_tear_from_series_alignment_and_monthly():
+    dts, eq = _multiday_equity(70)            # 跨 2 个自然月
+    t = charts._tear_from_series(dts, eq, "portfolio")
+    assert t is not None and t["source"] == "portfolio"
+    # 水下曲线与原始时间轴等长、首点 0、全部非负
+    assert len(t["uw_dt"]) == len(t["underwater"])
+    assert t["underwater"][0] == 0.0 and all(x >= 0 for x in t["underwater"])
+    # 日度收益与其标签、滚动夏普三者等长（修复过的 off-by-one）
+    n_day_ret = len(t["rs_dt"])
+    assert n_day_ret == 69 and len(t["rolling_sharpe"]) == n_day_ret
+    # 单调上行权益：水下恒 0、滚动夏普为正（暖机期 None）
+    assert max(t["underwater"]) == 0.0
+    assert t["rolling_sharpe"][0] is None
+    assert all(x is None or x > 0 for x in t["rolling_sharpe"])
+    # 月度热力：月索引 0-11、年索引连续、收益小数
+    assert t["monthly_years"] == [2026]
+    for mi, yi, v in t["monthly_cells"]:
+        assert 0 <= mi <= 11 and yi == 0 and isinstance(v, float)
+    assert len(t["monthly_cells"]) >= 2
+    # 标量摘要键齐全且可 JSON 化
+    for k in ("sharpe", "sortino", "calmar", "omega", "ulcer", "var", "cvar"):
+        assert k in t["summary"]
+    json.dumps(t, ensure_ascii=False)
+
+
+def test_tear_from_series_insufficient_samples():
+    # 只有一个自然日（同日多快照）-> 日度收益不足 -> None
+    dts = ["2026-04-01 09:00", "2026-04-01 15:00"]
+    assert charts._tear_from_series(dts, [1e6, 1.001e6], "x") is None
+    assert charts._tear_from_series([], [], "x") is None
+
+
+def test_tear_payload_prefers_paper_then_csv(tmp_path, monkeypatch):
+    # 1) 有纸面快照优先 paper
+    rows = [{"ts": "2026-04-%02d 15:00:00" % (1 + i), "equity": 1e6 - i * 500.0}
+            for i in range(70)]
+
+    class _DB:
+        def paper_equity_series(self, limit=20000):
+            return rows
+
+    class _St:
+        db = _DB()
+    t = charts.tear_payload(_St())
+    assert t is not None and t["source"] == "paper"
+
+    # 2) 无纸面（state=None）时回退组合回测 CSV
+    p = tmp_path / "eq.csv"
+    dts, eq = _multiday_equity(70)
+    with open(p, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["dt", "static", "float", "equity", "margin",
+                    "available", "risk", "drawdown", "npos"])
+        for d, e in zip(dts, eq):
+            w.writerow([d, 1e6, 0.0, e, e * 0.02, e * 0.98, 0.02, 0.0, 1])
+    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(p))
+    t2 = charts.tear_payload(None)
+    assert t2 is not None and t2["source"] == "portfolio"
+
+    # 3) 都没有 -> None（空态安全，不抛）
+    miss = tmp_path / "miss.csv"
+    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(miss))
+    assert charts.tear_payload(None) is None
+
+
+def test_build_payload_contains_tear_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(tmp_path / "n.csv"))
+    p = charts.build_payload(None)
+    assert "tear" in p and p["tear"] is None       # 无数据安全降级为 None
+    decoded = json.loads(charts.payload_to_js(p)[len("window.CHART_DATA = "):-2])
+    assert decoded["tear"] is None

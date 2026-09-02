@@ -43,6 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import config
+import metrics
 from backtest import load_fee_schedule, side_fee, ratio_adjusted_bars, technical_score, score_band
 
 _MARGIN_CACHE = {}
@@ -77,7 +78,7 @@ def load_margin_schedule(path=None, force=False):
 class Position:
     __slots__ = ("sym", "name", "sector", "direction", "lots", "entry_price", "entry_dt",
                  "stop", "target", "atr", "score", "margin_rate", "mult", "open_fee_yuan",
-                 "entry_owner", "entry_i", "block", "calib_mult")
+                 "entry_owner", "entry_i", "block", "calib_mult", "mfe", "mae")
 
     def __init__(self, **kw):
         for s in self.__slots__:
@@ -298,6 +299,8 @@ class Portfolio:
                "open_fee_yuan": pos.open_fee_yuan, "close_fee_yuan": close_fee,
                "net_yuan": net_yuan, "reason": reason, "forced": forced,
                "entry_score": pos.score, "margin_rate": pos.margin_rate,
+               "mfe": getattr(pos, "mfe", None) or 0.0,
+               "mae": getattr(pos, "mae", None) or 0.0,
                "calib_mult": getattr(pos, "calib_mult", 1.0)}
         self.closed.append(rec)
         if forced:
@@ -347,6 +350,13 @@ class Portfolio:
         for s, p in prices.items():
             if p and p > 0:
                 self._last_prices[s] = p
+        # G3：逐仓累计 MFE/MAE（相对开仓价的最大有利/不利偏移，正小数；纯增量、不改任何金额）
+        for pos in self.positions.values():
+            px = self._price_of(pos, prices)
+            if pos.entry_price and pos.entry_price > 0 and px and px > 0:
+                fav = pos.direction * (px - pos.entry_price) / pos.entry_price
+                pos.mfe = max(getattr(pos, "mfe", None) or 0.0, max(fav, 0.0))
+                pos.mae = max(getattr(pos, "mae", None) or 0.0, max(-fav, 0.0))
         eq = self.equity()
         used = self.margin_used()
         self.peak_equity = max(self.peak_equity, eq)
@@ -377,8 +387,12 @@ class Portfolio:
             daily[d] = pt["equity"]
         dates = sorted(daily)
         eq_series = [self.equity0] + [daily[d] for d in dates]
-        rets = [eq_series[k] / eq_series[k - 1] - 1.0 for k in range(1, len(eq_series))
-                if eq_series[k - 1] > 0]
+        # 日度收益与其归属日（对齐，供月度矩阵）；保留旧 rets 口径不变
+        rets, ret_dates = [], []
+        for k in range(1, len(eq_series)):
+            if eq_series[k - 1] > 0:
+                rets.append(eq_series[k] / eq_series[k - 1] - 1.0)
+                ret_dates.append(dates[k - 1])
         end_eq = self.curve[-1]["equity"]
         total_ret = end_eq / self.equity0 - 1.0
         max_dd = max(pt["drawdown"] for pt in self.curve)
@@ -397,12 +411,25 @@ class Portfolio:
             sortino = mu / dsd * math.sqrt(bars_per_year) if dsd > 1e-12 else 0.0
         else:
             ann_ret = sharpe = sortino = 0.0
+        # G3：在旧键之外增补完整绩效指标（子项样本不足为 None，绝不影响旧口径）
+        g3 = metrics.tear_sheet(rets, ret_dates, bars_per_year=bars_per_year) if rets else {}
+        tstats = metrics.trade_stats([t["net_yuan"] for t in self.closed])
+        excursion = metrics.mae_mfe_summary(
+            [{"mfe": t.get("mfe") or 0.0, "mae": t.get("mae") or 0.0,
+              "win": t["net_yuan"] > 0} for t in self.closed])
         wins = [t for t in self.closed if t["net_yuan"] > 0]
         losses = [t for t in self.closed if t["net_yuan"] < 0]
         avg_win = statistics.mean([t["net_yuan"] for t in wins]) if wins else 0.0
         avg_loss = statistics.mean([t["net_yuan"] for t in losses]) if losses else 0.0
         return {"total_ret": total_ret, "end_equity": end_eq, "ann_ret": ann_ret,
                 "max_dd": max_dd, "sharpe": sharpe, "sortino": sortino,
+                "calmar": g3.get("calmar"), "omega": g3.get("omega"),
+                "ulcer": g3.get("ulcer"), "var95": g3.get("var"),
+                "cvar95": g3.get("cvar"), "monthly": g3.get("monthly"),
+                "profit_factor": (tstats or {}).get("profit_factor"),
+                "max_win_streak": (tstats or {}).get("max_win_streak", 0),
+                "max_loss_streak": (tstats or {}).get("max_loss_streak", 0),
+                "mae_mfe": excursion,
                 "dd_bottom_dt": dd_bottom["dt"], "dd_bottom_eq": dd_bottom["equity"],
                 "peak_dt": peak_pt["dt"], "peak_eq": peak_pt["equity"],
                 "avg_risk": avg_risk, "max_risk": max_risk, "max_npos": max_npos,
