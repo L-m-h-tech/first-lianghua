@@ -129,12 +129,15 @@ def _weighted_fwd(members, fkey, weight_kind):
 
 
 def cross_section_periods(dates, by_date, factor_key, horizon, lookback, n_q,
-                          min_names, weight_kind="equal", step=None):
+                          min_names, weight_kind="equal", step=None, sector_scope=None):
     """非重叠截面多空：在全局交易日上每隔 H 日调一次仓，每期多最强一档/空最弱一档，持有 H 日。
 
-    返回逐期 dict：date/n/bands_mean(各档平均fwd)/long/short/ls(多空价差)/mkt(全市场等权基准)/
+    sector_scope：None=全市场；否则只保留 sector 在该集合内的品种（板块池条件化，第32轮）。
+    返回逐期 dict：date/n/bands_mean(各档平均fwd)/long/short/ls(多空价差)/mkt(池内等权基准)/
+                  long_excess(多头档相对池内基准的超额=只做多不做空的选股alpha)/
                   long_syms/short_syms/long_sec/short_sec（成员板块计数）。
     """
+    scope = set(sector_scope) if sector_scope else None
     fkey = "fwd%d" % horizon
     vkey = "vol%d" % lookback
     step = step or horizon
@@ -144,6 +147,8 @@ def cross_section_periods(dates, by_date, factor_key, horizon, lookback, n_q,
         row = by_date.get(d, {})
         members = []
         for _sym, p in row.items():
+            if scope is not None and p.get("sector") not in scope:
+                continue
             fv, yv = p.get(factor_key), p.get(fkey)
             if fv is None or yv is None:
                 continue
@@ -171,7 +176,7 @@ def cross_section_periods(dates, by_date, factor_key, horizon, lookback, n_q,
         periods.append({
             "date": d, "n": len(members), "bands_mean": bands_mean,
             "long": long_ret, "short_abs": short_side, "short_pnl": -short_side,
-            "ls": ls, "mkt": mkt,
+            "ls": ls, "mkt": mkt, "long_excess": long_ret - mkt,
             "long_syms": [m["sym"] for m in top], "short_syms": [m["sym"] for m in bot],
             "sec_long": dict(sec_long), "sec_short": dict(sec_short)})
     return periods
@@ -323,6 +328,73 @@ def sector_internal(dates, by_date, factor_key, horizon, lookback, n_q, min_sect
                 "win": sum(1 for x in v if x > 0) / len(v)} for s, v in out.items()}
 
 
+# =========================== 第32轮：条件化 + 双样本稳健（纯函数，可手算断言） ===========================
+# 候选腿模式 -> 逐期收益键：ls=多空价差(两腿成本) / lex=多头档相对池内基准超额(单腿) / long=纯多头(单腿,含beta)
+LEG_KEY = {"ls": "ls", "lex": "long_excess", "long": "long"}
+LEG_LABEL = {"ls": "多空", "lex": "多头超额", "long": "纯多头"}
+
+
+def truncate_dates(dates, recent_n):
+    """取全局交易日历最近 recent_n 个（by_date 共享、无需重建）；recent_n<=0 或更长时原样返回。"""
+    if not recent_n or recent_n <= 0 or recent_n >= len(dates):
+        return list(dates)
+    return list(dates[-recent_n:])
+
+
+def _candidate_perf(panel, factor_key, L, H, n_q, cond_min, cost_round, scope, leg):
+    """单个条件化候选在单个窗口上的组合+净绩效（leg 决定收益键与成本腿数）。"""
+    dates, by_date = panel
+    key = LEG_KEY.get(leg, "ls")
+    pers = cross_section_periods(dates, by_date, factor_key, H, L, n_q,
+                                 cond_min, "equal", H, sector_scope=scope)
+    return pers, perf_stats(pers, H, cost_round, key)
+
+
+def conditional_scan(windows, factor_key, L, H, n_q, cond_min, cost_round, candidates):
+    """对一组候选(名称,板块池,腿模式) × 两个样本窗口批量评估。
+
+    windows: 有序 [(窗口名, (dates,by_date)), ...]（如 [("近4.1年",短面板),("9.9年",长面板)]）。
+    返回 {名称: {"scope","leg","windows":{窗口名: perf或None}, "periods_n":{...}}}，保持候选顺序。
+    """
+    out = {}
+    for name, scope, leg in candidates:
+        row = {"scope": scope, "leg": leg, "windows": {}, "n_periods": {}}
+        for wname, panel in windows:
+            pers, pf = _candidate_perf(panel, factor_key, L, H, n_q, cond_min,
+                                       cost_round, scope, leg)
+            row["windows"][wname] = pf
+            row["n_periods"][wname] = len(pers)
+        out[name] = row
+    return out
+
+
+def robust_verdict(row, tmin, decay_tol, long_n_ratio=1.5):
+    """双样本稳健判定：两窗净均收>0、两窗净 t≥tmin、长窗 t 不比短窗低过 decay_tol（显著性要随样本量稳定），
+    且长窗非重叠期数须≥短窗×long_n_ratio（板块品种上市晚、长窗拿不到更长历史时，两窗实为同源小样本，不算双样本）。
+
+    取 windows 顺序的第一个为"短窗"、最后一个为"长窗"；返回 (bool, [说明])。样本不足直接不稳健。
+    """
+    wins = list(row["windows"].items())
+    perf = [(n, p) for n, p in wins if p is not None]
+    if len(perf) < 2:
+        return False, ["可用样本窗口不足2个（%s），无法做双样本稳健检验" % len(perf)]
+    (sn, sp), (ln, lp) = perf[0], perf[-1]
+    why = []
+    for n, p in perf:
+        if not (p["net_mean"] > 0):
+            why.append("%s净均收%+.2f%%为负" % (n, p["net_mean"] * 100))
+        if not (p["net_t"] >= tmin):
+            why.append("%s净t=%+.2f未达%.1f" % (n, p["net_t"], tmin))
+    if lp["net_t"] < sp["net_t"] - decay_tol:
+        why.append("长窗(%s)t=%+.2f比短窗(%s)t=%+.2f衰减超过%.1f（regime偶然嫌疑）"
+                   % (ln, lp["net_t"], sn, sp["net_t"], decay_tol))
+    n_s, n_l = sp.get("n", 0), lp.get("n", 0)
+    if n_l < n_s * long_n_ratio:
+        why.append("长窗n=%d未比短窗n=%d多%.0f%%（池内品种凑齐分档门槛的历史不足，两窗实为同源小样本，非独立长样本）"
+                   % (n_l, n_s, (long_n_ratio - 1) * 100))
+    return (len(why) == 0), why
+
+
 # =========================== 裁决 ===========================
 def gate_verdict(main_perf, oos_perf, bands, leg_long, leg_short_pnl, exposure,
                  tmin, mono_gate, max_sector_drive):
@@ -379,8 +451,11 @@ def evaluate_grid(dates, by_date, lookbacks, horizons, n_q, min_names, cost_roun
 
 def build_report(points, errors, dates, by_date, lookbacks, horizons, main_l, main_h,
                  n_q, min_names, min_sector, oos_ratio, tmin, mono_gate, max_drive,
-                 cost_round, days, weight_kind="equal"):
+                 cost_round, days, weight_kind="equal", robust_panel=None,
+                 candidates=None, cond_min=None, decay_tol=None, main_days=None,
+                 main_scope=None, main_leg="ls", long_n_ratio=1.5):
     n_sym = len({p["sym"] for p in points})
+    leg_key = LEG_KEY.get(main_leg, "ls")
     Lout = []
     Lout.append("=" * 108)
     Lout.append(" G7 截面动量多空 XSMOM 离线评估（时序动量的截面替代）  生成于 %s" % _now())
@@ -420,13 +495,14 @@ def build_report(points, errors, dates, by_date, lookbacks, horizons, main_l, ma
 
     # 主组合明细
     fk_main = _fk(main_l, "z")
+    scope_txt = "全市场" if not main_scope else "+".join(main_scope)
     pers = cross_section_periods(dates, by_date, fk_main, main_h, main_l, n_q,
-                                 min_names, weight_kind, main_h)
-    perf_g = perf_stats(pers, main_h, 0.0, "ls")
-    perf_n = perf_stats(pers, main_h, cost_round, "ls")
+                                 min_names, weight_kind, main_h, sector_scope=main_scope)
+    perf_g = perf_stats(pers, main_h, 0.0, leg_key)
+    perf_n = perf_stats(pers, main_h, cost_round, leg_key)
     bp = bands_profile(pers, n_q)
     is_p, oos_p = split_is_oos(pers, oos_ratio)
-    perf_is, perf_oos = perf_stats(is_p, main_h, cost_round, "ls"), perf_stats(oos_p, main_h, cost_round, "ls")
+    perf_is, perf_oos = perf_stats(is_p, main_h, cost_round, leg_key), perf_stats(oos_p, main_h, cost_round, leg_key)
     if pers:
         leg_long = sum(p["long"] for p in pers) / len(pers)
         leg_bot = sum(p["short_abs"] for p in pers) / len(pers)
@@ -439,15 +515,16 @@ def build_report(points, errors, dates, by_date, lookbacks, horizons, main_l, ma
     ov_t = _tstat(overlap)
     # 反波动率加权稳健性
     pers_iv = cross_section_periods(dates, by_date, fk_main, main_h, main_l, n_q,
-                                    min_names, "ivol", main_h)
-    perf_iv = perf_stats(pers_iv, main_h, cost_round, "ls")
+                                    min_names, "ivol", main_h, sector_scope=main_scope)
+    perf_iv = perf_stats(pers_iv, main_h, cost_round, leg_key)
     # 原始 ret 因子对照（不做波动调整）
     pers_ret = cross_section_periods(dates, by_date, "ret%d" % main_l, main_h, main_l,
-                                     n_q, min_names, "equal", main_h)
-    perf_ret = perf_stats(pers_ret, main_h, cost_round, "ls")
+                                     n_q, min_names, "equal", main_h, sector_scope=main_scope)
+    perf_ret = perf_stats(pers_ret, main_h, cost_round, leg_key)
 
-    Lout.append("二、主组合（L=%d 日动量排序、持有 %d 日、%s、%d 档）逐档与两腿拆解"
-                % (main_l, main_h, "反波动率加权" if weight_kind == "ivol" else "等权", n_q))
+    Lout.append("二、主组合（L=%d 日动量排序、持有 %d 日、%s、%d 档、池=%s、腿=%s）逐档与两腿拆解"
+                % (main_l, main_h, "反波动率加权" if weight_kind == "ivol" else "等权", n_q,
+                   scope_txt, LEG_LABEL.get(main_leg, main_leg)))
     if not pers:
         Lout.append(" ⚠ 主组合无可用调仓期（当日可得品种数不足 --min-names=%d 或暖机不足），以下主组合明细为空。"
                     % min_names)
@@ -521,6 +598,53 @@ def build_report(points, errors, dates, by_date, lookbacks, horizons, main_l, ma
         for r in reasons:
             Lout.append("   - " + r)
     Lout.append("")
+
+    # 表5：条件化（板块池/多头腿）× 双样本稳健对照（第32轮；robust_panel 缺省则整章不输出=旧行为）
+    cond_sidecar = None
+    if robust_panel is not None and candidates:
+        short_name = "近%.1f年" % ((main_days or days) / 252.0)
+        long_name = "长%.1f年" % (days / 252.0)
+        windows = [(short_name, (dates, by_date)), (long_name, robust_panel)]
+        scan = conditional_scan(windows, fk_main, main_l, main_h, n_q,
+                                cond_min or min_names, cost_round, candidates)
+        Lout.append("五、条件化增强 × 双样本稳健对照（L=%d/H=%d；回答'板块池或只做多能否救回动量、且长样本不衰减'）"
+                    % (main_l, main_h))
+        Lout.append(" 候选（板块池/腿）            | %s 净均/t/夏普/n        | %s 净均/t/夏普/n       | 双样本稳健"
+                    % (short_name, long_name))
+        Lout.append(" " + "-" * 100)
+        robust_names, cond_sidecar = [], {}
+        for cname, row in scan.items():
+            cells = []
+            for wn in (short_name, long_name):
+                p = row["windows"][wn]
+                if p is None:
+                    cells.append("%-24s" % "样本不足")
+                else:
+                    cells.append("%+5.2f%% t=%+5.2f 夏%5.2f n=%-3d"
+                                 % (p["net_mean"] * 100, p["net_t"], p["sharpe"], p["n"]))
+            ok_r, why_r = robust_verdict(row, tmin, decay_tol or 0.5, long_n_ratio or 1.5)
+            tag = "✅稳健" if ok_r else ("✗ " + (why_r[0][:30] if why_r else ""))
+            scope_txt = "全市场" if row["scope"] is None else "+".join(row["scope"])
+            Lout.append(" %-12s(%s/%s) | %s | %s | %s"
+                        % (cname, scope_txt[:8], LEG_LABEL.get(row["leg"], row["leg"]),
+                           cells[0], cells[1], tag))
+            cond_sidecar[cname] = {"leg": row["leg"], "scope": row["scope"],
+                                   "robust": ok_r, "robust_reasons": why_r,
+                                   "windows": {wn: (None if p is None else
+                                                   {k: p[k] for k in ("n", "net_mean", "net_t", "win", "sharpe", "max_dd")})
+                                               for wn, p in row["windows"].items()}}
+            if ok_r:
+                robust_names.append(cname)
+        Lout.append(" 双样本稳健判据：两窗净均>0 且净t≥%.1f、长窗t不短窗衰减超%.1f、且长窗非重叠期数≥短窗×%.1f"
+                    "（显著性须随样本量稳定、长样本须真有增量历史，防板块品种上市晚致两窗同源，第31轮教训）。"
+                    % (tmin, decay_tol or 0.5, long_n_ratio or 1.5))
+        if robust_names:
+            Lout.append(" ✅ 通过双样本稳健的条件化候选：%s——可作为下一轮挂影子的优先对象（仍默认不改综合分）。"
+                        % "、".join(robust_names))
+        else:
+            Lout.append(" ❌ 没有任何条件化候选（板块池/多头腿）通过双样本稳健检验：截面动量经条件化仍不达标，继续维持纯研究。")
+        Lout.append("")
+
     Lout.append("诚实边界：①主连为比例后复权近似、样本为近约 %d 根日K（约%.1f年）单一行情 regime，品种上市早晚不一；"
                 % (days, days / 252.0))
     Lout.append("②非重叠期数有限（持有%d日约%d期），t 统计对正态/独立假设敏感；③历史规律不代表未来，本报告只给研究证据，"
@@ -528,6 +652,8 @@ def build_report(points, errors, dates, by_date, lookbacks, horizons, main_l, ma
     Lout.append("  绝不自动修改 analyzer/cross_section 任何权重；④即便通过，并入仍须『默认影子、缺省等价旧版、可一键回退』。")
     sidecar = _sidecar(points, grid, verdict, exposure, internal, lookbacks, horizons,
                        main_l, main_h, days, perf_n, perf_oos, bp)
+    if cond_sidecar is not None:
+        sidecar["conditional"] = cond_sidecar
     return "\n".join(Lout) + "\n", sidecar, verdict
 
 
@@ -592,14 +718,24 @@ def run(argv=None):
     ap = argparse.ArgumentParser(description="G7 截面动量多空 XSMOM 离线评估（研究侧）")
     ap.add_argument("--codes", default="", help="逗号分隔品种/主连，缺省=全品种")
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--days", type=int, default=config.XSMOM_EVAL_DAYS)
+    ap.add_argument("--days", type=int, default=config.XSMOM_ROBUST_DAYS,
+                    help="拉取/长样本日K根数（默认2500≈9.9年，供双样本稳健对照）")
+    ap.add_argument("--main-days", type=int, default=config.XSMOM_EVAL_DAYS,
+                    help="主样本窗口=全局日历最近N个交易日（默认1023≈4.1年，对齐第30/31轮口径）")
     ap.add_argument("--lookbacks", default=",".join(map(str, config.XSMOM_LOOKBACKS)))
     ap.add_argument("--horizons", default=",".join(map(str, config.XSMOM_HORIZONS)))
     ap.add_argument("--main-l", type=int, default=config.XSMOM_MAIN_L)
     ap.add_argument("--main-h", type=int, default=config.XSMOM_MAIN_H)
     ap.add_argument("--quantiles", type=int, default=config.XSMOM_N_Q)
     ap.add_argument("--min-names", type=int, default=config.XSMOM_MIN_NAMES)
+    ap.add_argument("--cond-min-names", type=int, default=config.XSMOM_COND_MIN_NAMES)
     ap.add_argument("--min-sector", type=int, default=config.XSMOM_MIN_SECTOR_NAMES)
+    ap.add_argument("--decay-tol", type=float, default=config.XSMOM_DECAY_TOL)
+    ap.add_argument("--long-n-ratio", type=float, default=config.XSMOM_LONG_N_RATIO)
+    ap.add_argument("--scope", default="", help="主组合板块池，逗号分隔（如 有色,农产品），缺省=全市场")
+    ap.add_argument("--leg", choices=("ls", "lex", "long"), default="ls",
+                    help="主组合腿：ls多空(默认)/lex多头超额(long-池内基准)/long纯多头")
+    ap.add_argument("--no-conditional", action="store_true", help="关闭第五章条件化双样本对照")
     ap.add_argument("--oos-ratio", type=float, default=config.XSMOM_OOS_RATIO)
     ap.add_argument("--tmin", type=float, default=config.XSMOM_TMIN)
     ap.add_argument("--mono-gate", type=float, default=config.XSMOM_MONO_GATE)
@@ -619,16 +755,25 @@ def run(argv=None):
     main_l = args.main_l if args.main_l in lookbacks else lookbacks[-1]
     main_h = args.main_h if args.main_h in horizons else horizons[len(horizons) // 2]
     cost_round = 2.0 * (args.fee_rate + args.slip_rate)   # 单方向一次往返成本（开+平）
+    main_scope = tuple(s.strip() for s in args.scope.split(",") if s.strip()) or None
     items = backtest.resolve_codes(args.codes, args.limit if args.limit > 0 else None)
+    # 一次拉满长样本（--days），主样本=全局日历最近 main_days 个交易日，两窗口同源可比
     points, errors = collect_points(items, lookbacks, horizons, args.days, args.workers)
     if not points:
         print("无可用样本（全部品种取数失败或暖机不足），错误示例：%s" % errors[:3])
         return 2
-    dates, by_date = build_panel(points)
+    long_dates, long_by = build_panel(points)
+    main_dates = truncate_dates(long_dates, args.main_days)
+    main_set = set(main_dates)
+    main_points = [p for p in points if p["date"] in main_set]
+    candidates = None if args.no_conditional else tuple(config.XSMOM_COND_CANDIDATES)
     text, sidecar, verdict = build_report(
-        points, errors, dates, by_date, lookbacks, horizons, main_l, main_h,
+        main_points, errors, main_dates, long_by, lookbacks, horizons, main_l, main_h,
         args.quantiles, args.min_names, args.min_sector, args.oos_ratio,
-        args.tmin, args.mono_gate, args.max_sector_drive, cost_round, args.days, args.weight)
+        args.tmin, args.mono_gate, args.max_sector_drive, cost_round, args.days, args.weight,
+        robust_panel=(long_dates, long_by), candidates=candidates,
+        cond_min=args.cond_min_names, decay_tol=args.decay_tol, main_days=len(main_dates),
+        main_scope=main_scope, main_leg=args.leg, long_n_ratio=args.long_n_ratio)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8-sig") as f:
         f.write(text)
@@ -636,8 +781,10 @@ def run(argv=None):
     with open(config.XSMOM_EVAL_JSON, "w", encoding="utf-8") as f:
         f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
     print(text)
-    print("品种时点 %d、覆盖品种 %d；裁决 ok=%s；报告 -> %s；JSON -> %s"
-          % (len(points), sidecar["n_symbols"], verdict["ok"], args.out, config.XSMOM_EVAL_JSON))
+    n_robust = sum(1 for c in (sidecar.get("conditional") or {}).values() if c.get("robust"))
+    print("品种时点 %d、覆盖品种 %d；主组合裁决 ok=%s；双样本稳健候选 %d 个；报告 -> %s；JSON -> %s"
+          % (len(main_points), sidecar["n_symbols"], verdict["ok"], n_robust,
+             args.out, config.XSMOM_EVAL_JSON))
     return 0
 
 
@@ -758,7 +905,71 @@ def selftest():
         0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal")
     assert "XSMOM" in text and set(verdict) >= {"ok", "reasons", "main"}
     assert sidecar["n_symbols"] == 20 and "20_20" in sidecar["grid"]
-    print("xsmom_eval selftest ALL PASS（远期收益无泄漏/分档/加权/趋势多空为正/成本/IS-OOS/裁决门/报告 共10组）")
+    assert "五、条件化" not in text and "conditional" not in sidecar  # 缺省不传 robust=旧行为、无第五章
+
+    # 11) sector_scope 板块池过滤 + long_excess=long-池内mkt 手算 + lex 单腿成本
+    d11 = ["g1"]
+    by11 = {"g1": {}}
+    for k in range(12):
+        sec = "有色" if k < 6 else "能化"
+        by11["g1"]["V%02d" % k] = {"sym": "V%02d" % k, "sector": sec, "z60": float(k),
+                                   "ret60": float(k), "vol60": 0.01, "fwd20": 0.01 * k}
+    p_you = cross_section_periods(d11, by11, "z60", 20, 60, 3, 6, "equal", 20,
+                                  sector_scope=("有色",))
+    assert len(p_you) == 1 and p_you[0]["n"] == 6
+    assert all(s.startswith("V0") for s in p_you[0]["long_syms"] + p_you[0]["short_syms"])
+    # 有色6个 fwd=0..0.05，3档每档2：top=.045、bot=.005、池内mkt=.025 -> long_excess=.02
+    assert abs(p_you[0]["long"] - 0.045) < 1e-12
+    assert abs(p_you[0]["mkt"] - 0.025) < 1e-12
+    assert abs(p_you[0]["long_excess"] - 0.02) < 1e-12
+    # lex 单腿成本（只做多最强档，扣 1 次往返；ls 才扣两次）
+    pf_lex = perf_stats(p_you, 20, 0.0003, "long_excess")
+    assert abs(pf_lex["net_mean"] - (0.02 - 0.0003)) < 1e-12
+    pf_ls = perf_stats(p_you, 20, 0.0003, "ls")
+    assert abs(pf_ls["net_mean"] - (0.04 - 0.0006)) < 1e-12
+
+    # 12) truncate_dates：取尾部、0/超长安全
+    seq = list(range(10))
+    assert truncate_dates(seq, 3) == [7, 8, 9]
+    assert truncate_dates(seq, 0) == seq and truncate_dates(seq, 99) == seq
+
+    # 13) conditional_scan 结构齐全 + robust_verdict 双样本判据
+    cands = [("全市场·多空(基线)", None, "ls"), ("有色池·多空", ("有色",), "ls"),
+             ("全市场·多头超额", None, "lex")]
+    short_d = truncate_dates(dates, 160)
+    scan = conditional_scan([("短", (short_d, by_date)), ("长", (dates, by_date))],
+                            "z60", 60, 20, 5, 16, 0.0003, cands)
+    assert list(scan) == [c[0] for c in cands]
+    for row in scan.values():
+        assert set(row["windows"]) == {"短", "长"}
+    def _perf(t, m, n=40):
+        return {"n": n, "gross_mean": m, "net_mean": m, "net_t": t, "win": 0.6,
+                "net_cum": 0.2, "annual": 0.1, "sharpe": 1.0, "max_dd": 0.05,
+                "gross": [], "net": []}
+    ok_r, _ = robust_verdict({"windows": {"短": _perf(2.0, 0.01, 40), "长": _perf(1.8, 0.01, 100)}}, 1.5, 0.5)
+    assert ok_r
+    ok_d, why_d = robust_verdict({"windows": {"短": _perf(2.2, 0.01, 40), "长": _perf(1.0, 0.01, 100)}}, 1.5, 0.5)
+    assert not ok_d and any("衰减" in w for w in why_d)
+    # 长窗期数没比短窗多（板块品种上市晚、两窗同源）-> 即便 t 都高也不算双样本稳健
+    ok_s, why_s = robust_verdict({"windows": {"短": _perf(2.01, 0.027, 25), "长": _perf(2.01, 0.027, 25)}}, 1.5, 0.5)
+    assert not ok_s and any("同源" in w for w in why_s)
+    ok_n, why_n = robust_verdict({"windows": {"短": _perf(2.0, 0.01), "长": None}}, 1.5, 0.5)
+    assert not ok_n and any("窗口不足" in w for w in why_n)
+
+    # 14) build_report 带 robust_panel 出第五章、sidecar.conditional 齐全且能容纳样本不足候选
+    text2, sc2, _ = build_report(
+        pts, [], dates, by_date, (20, 60), (5, 20), 60, 20, 5, 16, 6,
+        0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal",
+        robust_panel=(dates, by_date), candidates=cands, cond_min=16,
+        decay_tol=0.5, main_days=160)
+    assert "五、条件化" in text2 and "conditional" in sc2
+    assert set(sc2["conditional"]) == {c[0] for c in cands}
+    for c in sc2["conditional"].values():
+        wkeys = list(c["windows"])
+        assert len(wkeys) == 2 and wkeys[0].startswith("近") and wkeys[1].startswith("长")
+        assert "robust" in c
+    print("xsmom_eval selftest ALL PASS（远期无泄漏/分档/加权/趋势多空/成本/IS-OOS/裁决门/报告/"
+          "板块池·多头超额/窗口截断/双样本稳健/条件化第五章 共14组）")
     return 0
 
 

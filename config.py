@@ -656,6 +656,22 @@ XSMOM_EVAL_DAYS = 1023                 # 拉取日K根数（与 TSMOM_EVAL_DAYS 
 XSMOM_EVAL_WORKERS = 6                 # 并发拉取品种数
 XSMOM_EVAL_FILE = os.path.join(BASE_DIR, "reports", "xsmom_eval.txt")
 XSMOM_EVAL_JSON = os.path.join(BASE_DIR, "reports", "xsmom_eval.json")
+# ---- 第32轮：截面动量条件化（板块池/多头腿）+ 双样本稳健硬检验（仍纯离线、不进综合分） ----
+XSMOM_ROBUST_DAYS = 2500               # 第二样本（长）日K根数：一次拉满，内存截最近 EVAL_DAYS 得短样本，同源可比
+XSMOM_COND_MIN_NAMES = 8               # 板块池条件化时调仓日最少品种数（板块品种少，需≥2×分档且留余量）
+XSMOM_DECAY_TOL = 0.5                  # 双样本稳健容差：长样本净 t 不得比短样本低过该值（防近4年regime偶然）
+XSMOM_LONG_N_RATIO = 1.5              # 长窗非重叠期数须≥短窗×该倍数：板块品种上市晚、长窗无增量时不算双样本（防同源小样本冒充稳健）
+# 条件化候选：(名称, 板块池None=全市场 或 板块元组, 腿模式 ls=多空/lex=多头超额(long-全市场等权)/long=纯多头)
+XSMOM_COND_CANDIDATES = (
+    ("全市场·多空(基线)", None, "ls"),
+    ("有色内·多空", ("有色",), "ls"),
+    ("农产品内·多空", ("农产品",), "ls"),
+    ("有色+农产品池·多空", ("有色", "农产品"), "ls"),
+    ("剔除能化·多空", ("黑色", "有色", "贵金属", "农产品"), "ls"),
+    ("全市场·多头超额", None, "lex"),
+    ("有色+农产品·多头超额", ("有色", "农产品"), "lex"),
+    ("全市场·纯多头(含beta)", None, "long"),
+)
 
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；

@@ -253,3 +253,116 @@ def test_build_report_empty_safe():
         pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 999, 6,
         0.3, 1.5, 0.75, 0.6, 0.0003, 120, "equal")
     assert "无可用调仓期" in text and verdict["ok"] is False
+
+
+# ================= 第32轮：板块池条件化 / 多头腿 / 双样本稳健 =================
+def _scope_panel():
+    """12 品种：有色6(V00..V05,fwd=0..0.05)、能化6(V06..V11,fwd=0.06..0.11)，单调仓日。"""
+    dates = ["g1"]
+    by = {"g1": {}}
+    for k in range(12):
+        sec = "有色" if k < 6 else "能化"
+        by["g1"]["V%02d" % k] = {"sym": "V%02d" % k, "sector": sec, "z60": float(k),
+                                 "ret60": float(k), "vol60": 0.01, "fwd20": 0.01 * k}
+    return dates, by
+
+
+def test_sector_scope_and_long_excess_handcalc():
+    dates, by = _scope_panel()
+    # 板块池：只在有色6个内分3档（每档2），成员全部为有色
+    p = xe.cross_section_periods(dates, by, "z60", 20, 60, 3, 6, "equal", 20,
+                                 sector_scope=("有色",))
+    assert len(p) == 1 and p[0]["n"] == 6
+    assert all(s in ("V00", "V01", "V02", "V03", "V04", "V05")
+               for s in p[0]["long_syms"] + p[0]["short_syms"])
+    # top=V04,V05(.04,.05)均.045；bot=V00,V01(.00,.01)均.005；池内mkt=有色6均=.025
+    assert abs(p[0]["long"] - 0.045) < 1e-12
+    assert abs(p[0]["short_abs"] - 0.005) < 1e-12
+    assert abs(p[0]["mkt"] - 0.025) < 1e-12
+    assert abs(p[0]["long_excess"] - 0.02) < 1e-12
+    assert abs(p[0]["ls"] - 0.04) < 1e-12
+    # 全市场口径 mkt=12 均=0.055（验证池内外基准不同）
+    pall = xe.cross_section_periods(dates, by, "z60", 20, 60, 3, 12, "equal", 20)
+    assert abs(pall[0]["mkt"] - 0.055) < 1e-12
+
+
+def test_leg_cost_one_vs_two():
+    dates, by = _scope_panel()
+    p = xe.cross_section_periods(dates, by, "z60", 20, 60, 3, 6, "equal", 20,
+                                 sector_scope=("有色",))
+    # lex=多头超额单腿扣1次往返；ls=多空两腿扣2次
+    pf_lex = xe.perf_stats(p, 20, 0.0003, "long_excess")
+    assert abs(pf_lex["net_mean"] - (0.02 - 0.0003)) < 1e-12
+    pf_long = xe.perf_stats(p, 20, 0.0003, "long")
+    assert abs(pf_long["net_mean"] - (0.045 - 0.0003)) < 1e-12
+    pf_ls = xe.perf_stats(p, 20, 0.0003, "ls")
+    assert abs(pf_ls["net_mean"] - (0.04 - 0.0006)) < 1e-12
+
+
+def test_truncate_dates():
+    seq = list(range(10))
+    assert xe.truncate_dates(seq, 3) == [7, 8, 9]
+    assert xe.truncate_dates(seq, 0) == seq          # 0=不截断
+    assert xe.truncate_dates(seq, 99) == seq         # 超长=原样
+    assert seq == list(range(10))                   # 不改原序列
+
+
+def _toy_perf(t, m=0.01, n=40):
+    return {"n": n, "gross_mean": m, "net_mean": m, "net_t": t, "win": 0.6,
+            "net_cum": 0.2, "annual": 0.1, "sharpe": 1.0, "max_dd": 0.05,
+            "gross": [], "net": []}
+
+
+def test_robust_verdict_branches():
+    # 两窗都 t 达标、无衰减、长窗样本量足够多 -> 稳健
+    ok, why = xe.robust_verdict({"windows": {"近": _toy_perf(2.0, n=40), "长": _toy_perf(1.8, n=100)}},
+                                1.5, 0.5)
+    assert ok and not why
+    # 长窗 t 比短窗衰减超容差 -> 不稳健
+    ok1, why1 = xe.robust_verdict({"windows": {"近": _toy_perf(2.2, n=40), "长": _toy_perf(1.0, n=100)}},
+                                  1.5, 0.5)
+    assert not ok1 and any("衰减" in w for w in why1)
+    # 一窗为负 -> 不稳健
+    ok2, why2 = xe.robust_verdict({"windows": {"近": _toy_perf(2.0, n=40), "长": _toy_perf(2.0, -0.01, 100)}},
+                                  1.5, 0.5)
+    assert not ok2 and any("为负" in w for w in why2)
+    # 长窗期数没比短窗多（板块上市晚、两窗同源小样本）-> 即便两窗 t 都高也不稳健
+    oks, whys = xe.robust_verdict({"windows": {"近": _toy_perf(2.01, 0.027, 25), "长": _toy_perf(2.01, 0.027, 25)}},
+                                  1.5, 0.5)
+    assert not oks and any("同源" in w for w in whys)
+    # 窗口不足2个 -> 不稳健
+    ok3, why3 = xe.robust_verdict({"windows": {"近": _toy_perf(2.0), "长": None}}, 1.5, 0.5)
+    assert not ok3 and any("窗口不足" in w for w in why3)
+
+
+def test_conditional_scan_structure():
+    pts = xe._synthetic_panel("trend")
+    dates, by = xe.build_panel(pts)
+    short = xe.truncate_dates(dates, 160)
+    cands = [("基线", None, "ls"), ("板块0", ("板块0",), "ls"), ("多头超额", None, "lex")]
+    scan = xe.conditional_scan([("近", (short, by)), ("长", (dates, by))],
+                               "z60", 60, 20, 5, 16, 0.0003, cands)
+    assert list(scan) == ["基线", "板块0", "多头超额"]
+    # 板块0只有5个品种、分5档需≥10 -> 样本不足 None；其余两窗都有 perf
+    assert scan["板块0"]["windows"]["近"] is None and scan["板块0"]["windows"]["长"] is None
+    assert scan["基线"]["windows"]["近"] is not None and scan["基线"]["windows"]["长"] is not None
+    assert scan["多头超额"]["leg"] == "lex"
+
+
+def test_build_report_conditional_chapter():
+    pts = xe._synthetic_panel("trend")
+    dates, by = xe.build_panel(pts)
+    cands = [("全市场·多空", None, "ls"), ("全市场·多头超额", None, "lex")]
+    # 带 robust_panel -> 出第五章、sidecar.conditional 齐全
+    text, sc, _ = xe.build_report(
+        pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 16, 6,
+        0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal",
+        robust_panel=(dates, by), candidates=cands, cond_min=16,
+        decay_tol=0.5, main_days=160, main_scope=None, main_leg="ls")
+    assert "五、条件化" in text and "双样本稳健" in text
+    assert set(sc["conditional"]) == {"全市场·多空", "全市场·多头超额"}
+    # 主组合 --leg lex：二章标题标注腿模式，且净口径走多头超额（单腿）
+    text_lex, _, _ = xe.build_report(
+        pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 16, 6,
+        0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal", main_leg="lex")
+    assert "腿=多头超额" in text_lex
