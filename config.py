@@ -635,6 +635,28 @@ TSMOM_EVAL_RIC_GATE = 0.02        # "可考虑并入"判据门槛：主地平线
 TSMOM_EVAL_FILE = os.path.join(BASE_DIR, "reports", "tsmom_eval.txt")
 TSMOM_EVAL_JSON = os.path.join(BASE_DIR, "reports", "tsmom_eval.json")
 
+# ========= G7（第31轮）：截面动量多空 XSMOM——时序动量的"截面替代"，本轮=离线评估，绝不进综合分 =========
+# 与第30轮"品种内时序动量 TSMOM（自己过去预测自己未来，已被证伪）"不同：XSMOM 在每个调仓日跨全部
+# 品种按长窗波动调整动量 z 排序，做多最强一档、做空最弱一档，构建市场中性多空组合，赚相对强弱的钱、
+# 对冲全市场同涨同跌（第30轮 pooled 弱正主要来自这一截面成分，本轮把它纯净提取出来单独检验）。
+# 铁律同第30轮：本轮只做离线 tools/xsmom_eval.py 证据评估，不碰 analyzer/cross_section 主链与综合分，
+# 证明"确定不更差"后，后续轮次才允许在 cross_section 挂长窗动量排序影子，且保留一键回退。
+XSMOM_LOOKBACKS = (20, 63, 126, 252)   # 截面排序回看窗（20=短窗对照，63/126/252=1/3/6月长窗）
+XSMOM_HORIZONS = (5, 20, 60)           # 调仓持有交易日 H（约1周/1月/1季）
+XSMOM_MAIN_L = 252                     # 主组合回看窗（对齐第30轮 z252，便于直接对照）
+XSMOM_MAIN_H = 20                      # 主组合持有期
+XSMOM_N_Q = 5                          # 截面分档数（Q1最弱…Q5最强，多 Q5 空 Q1）
+XSMOM_MIN_NAMES = 16                   # 调仓日最少可得品种数（不足则跳过、不硬凑组合）
+XSMOM_MIN_SECTOR_NAMES = 6             # 板块内单独做截面多空所需的最少品种数（不足不列）
+XSMOM_OOS_RATIO = 0.30                 # 样本外占比（按调仓日排序，后 30% 为 OOS，防自欺）
+XSMOM_TMIN = 1.5                       # 净多空 t 统计门槛（非重叠调仓期，宁严勿滥）
+XSMOM_MONO_GATE = 0.75                 # 分档单调性门槛（5 档至少 3/4 个相邻档递增）
+XSMOM_MAX_SECTOR_DRIVE = 0.60          # 单一板块对多空腿的最大贡献占比（超过即判板块偏置）
+XSMOM_EVAL_DAYS = 1023                 # 拉取日K根数（与 TSMOM_EVAL_DAYS 同口径，结果可直接对照）
+XSMOM_EVAL_WORKERS = 6                 # 并发拉取品种数
+XSMOM_EVAL_FILE = os.path.join(BASE_DIR, "reports", "xsmom_eval.txt")
+XSMOM_EVAL_JSON = os.path.join(BASE_DIR, "reports", "xsmom_eval.json")
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。
