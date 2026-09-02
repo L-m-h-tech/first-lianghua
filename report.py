@@ -194,6 +194,7 @@ _DASHBOARD_TABS = [
     ("intraday_backtest_trades.csv", "日内回测交易CSV"),
     ("portfolio_report.txt", "组合账户回测"),
     ("portfolio_trades.csv", "组合交易CSV"),
+    ("paper_account.txt", "纸面账户(影子)"),  # 第28轮 G1（二）：PaperBroker 影子账户快照
     ("history_report.txt", "交易时段·当日归档"),
     ("offhours_report.txt", "非交易时段·最近5轮"),
     ("offhours_history.txt", "非交易时段·当日归档"),
@@ -209,6 +210,8 @@ def _dashboard_html():
     页头展示最新报告时间/轮次与计划下一轮倒计时。时段参数由 config 注入。"""
     tabs = []
     for i, (fname, label) in enumerate(_DASHBOARD_TABS):
+        if fname == "paper_account.txt" and not getattr(config, "PAPER_ENABLED", False):
+            continue  # 第28轮：休眠态不生成 paper_account.txt，页签一并隐藏，避免点开是缺失页
         active = " active" if i == 0 else ""
         tabs.append(f'<button class="tab{active}" data-src="{fname}">{label}</button>')
     first = _DASHBOARD_TABS[0][0]
@@ -506,6 +509,170 @@ def write_signal_tracking(state):
         LOG.debug("信号胜率追踪报告写入失败: %s", e)
 
 
+# ---------------- G1（二）纸面账户：paper_account.txt + 正文紧凑块（独立成段，不改主链口径） ----------------
+
+def _wan(v, d=2):
+    try:
+        return "%.*f万" % (d, float(v) / 10000.0)
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _yuan(v, d=0):
+    try:
+        return format(float(v), ",.%df" % d)   # 千分位金额
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _pct(v, d=2):
+    try:
+        return "%.*f%%" % (d, float(v) * 100.0)
+    except (TypeError, ValueError):
+        return "-"
+
+
+_PAPER_ACTION_CN = {"open": "开仓", "close": "离场平仓", "reverse_close": "反手平仓",
+                    "reverse_open": "反手开仓", "liquidate": "风控强平"}
+_PAPER_SIDE_CN = {"buy": "买入", "sell": "卖出"}
+
+
+def paper_block(state):
+    """实时报告正文中的紧凑纸面账户块（3~4 行；PAPER_ENABLED 休眠/异常时返回空列表=不输出）。"""
+    pb = getattr(state, "paper", None)
+    if pb is None:
+        return []
+    try:
+        a = pb.account_summary()
+    except Exception:
+        return []
+    s = getattr(state, "last_paper", None) or {}
+    snap = s.get("snapshot") or {}
+    ret = (a["equity"] / a["equity0"] - 1.0) if a["equity0"] else 0.0
+    st = a["status"]
+    return [
+        "【纸面账户·影子模拟】(虚拟资金不花真钱；成交档=%s；严格按综合分信号自动虚拟撮合，含真实手续费+滑点，不构成投资建议)"
+        % a["fill_mode"],
+        " 动态权益%s(%+.2f%%) 静态%s 浮动%s元 已实现%s元 累计手续费%s元" % (
+            _wan(a["equity"]), ret * 100.0, _wan(a["static"]),
+            _yuan(snap.get("float_pnl", 0.0)), _yuan(a["realized"]), _yuan(a["fees_paid"])),
+        " 保证金占用%s 可用%s 风险度%s｜持仓%d 在途挂单%d 累计平仓%d(强平%d)｜本轮委托%d/成交%d" % (
+            _wan(a["margin_used"]), _wan(a["available"]), _pct(a["risk_degree"], 1),
+            a["n_positions"], a["n_pending"], a["n_closed"], a["n_liquidations"],
+            s.get("n_orders", 0), s.get("n_trades", 0)),
+        " 委托状态：已成交%d 在途排队%d 锁板/无价阻塞%d 确定拒单%d 已撤%d｜约束排队尝试(内部日志)%d（完整账户见 paper_account.txt）"
+        % (st["filled"], st["pending"], st["blocked"], st["rejected"], st["cancelled"], a["n_skipped"]),
+        "",
+    ]
+
+
+def paper_account_text(state):
+    """完整纸面账户快照（reports/paper_account.txt，看板页签直接加载；休眠返回空串）。"""
+    pb = getattr(state, "paper", None)
+    if pb is None:
+        return ""
+    a = pb.account_summary()
+    s = getattr(state, "last_paper", None) or {}
+    snap = s.get("snapshot") or {}
+    perf = a.get("performance")
+    sep = "=" * 100
+    thin = "-" * 100
+    ts = s.get("ts") or now_str()
+    ret = (a["equity"] / a["equity0"] - 1.0) if a["equity0"] else 0.0
+    L = [sep,
+         " 纸面交易账户（影子模拟 · 非实盘 · 不花真钱 · 不构成投资建议）   更新: %s" % ts,
+         " 成交档: %s（next=信号下一轮首个新价成交、严格晚于信号）；初始资金 %s 元" % (
+             a["fill_mode"], _yuan(a["equity0"])),
+         sep, "",
+         "【账户概览】",
+         " 动态权益: %s 元（%+.2f%%）   静态权益: %s 元   浮动盈亏: %s 元" % (
+             _yuan(a["equity"]), ret * 100.0, _yuan(a["static"]), _yuan(snap.get("float_pnl", 0.0))),
+         " 已实现净盈亏: %s 元   累计手续费: %s 元" % (_yuan(a["realized"]), _yuan(a["fees_paid"])),
+         " 保证金占用: %s 元   可用资金: %s 元   风险度(占用/动态权益): %s" % (
+             _yuan(a["margin_used"]), _yuan(a["available"]), _pct(a["risk_degree"], 2)),
+         " 当前持仓 %d 个   在途挂单 %d 个   累计平仓 %d 笔（其中风控强平 %d）   约束排队尝试 %d 次" % (
+             a["n_positions"], a["n_pending"], a["n_closed"], a["n_liquidations"], a["n_skipped"]),
+         ""]
+    if perf:
+        L += ["【组合绩效】（按自然日聚合、日度口径年化，样本随影子运行持续积累）",
+              " 累计收益率 %s   年化(简式) %s   夏普 %.2f   索提诺 %.2f   最大回撤 %s" % (
+                  _pct(perf["total_ret"]), _pct(perf["ann_ret"]), perf["sharpe"],
+                  perf["sortino"], _pct(perf["max_dd"])),
+              " 胜率 %s（%d笔）   平均盈 %s元 / 平均亏 %s元   盈亏比 %s   覆盖自然日 %d 天   峰值风险度 %s" % (
+                  _pct(perf["win_rate"], 1), perf["n_trades"], _yuan(perf["avg_win"]),
+                  _yuan(perf["avg_loss"]),
+                  ("%.2f" % perf["pl_ratio"]) if perf["pl_ratio"] is not None else "-",
+                  perf["days"], _pct(perf["max_risk"], 1)),
+              ""]
+    st = a["status"]
+    L += ["【委托状态统计】（在途排队≠确定拒单：临时资金/持仓上限/锁板缓解后，排队单仍可成交）",
+          " 已成交 %d   在途排队 %d   锁板/无价阻塞(blocked) %d   确定拒单(rejected) %d   已撤销 %d" % (
+              st["filled"], st["pending"], st["blocked"], st["rejected"], st["cancelled"]),
+          ""]
+    pos_rows = pb.positions_view()
+    L.append("【当前持仓】%s" % ("（空仓）" if not pos_rows else ""))
+    if pos_rows:
+        L.append(" " + pad("品种", 9) + pad("名称", 10) + pad("方向", 4) + pad("手数", 5)
+                 + pad("开仓时间", 20) + pad("开仓价", 11) + pad("最新价", 11) + pad("浮动盈亏", 12)
+                 + pad("占用保证金", 13) + "开仓结算交易日")
+        for p in pos_rows:
+            L.append(" " + pad(p["sym"], 9) + pad(p["name"], 10) + pad(p["dir"], 4)
+                     + pad(str(p["lots"]), 5) + pad(p["entry_dt"], 20)
+                     + pad("%.2f" % p["entry_price"], 11) + pad("%.2f" % p["last"], 11)
+                     + pad(format(p["float_yuan"], "+,.0f"), 12) + pad(_yuan(p["margin"]), 13)
+                     + p["entry_owner"])
+    L.append("")
+    pend = pb.pending_view()
+    L.append("【在途挂单】%s" % ("（无）" if not pend else ""))
+    if pend:
+        L.append(" " + pad("品种", 9) + pad("动作", 10) + pad("买卖", 5) + pad("挂单时间", 20)
+                 + pad("信号价", 11) + pad("综合分", 7) + "排队原因")
+        for o in pend:
+            sig_price = "%.2f" % o["signal_price"] if o["signal_price"] else "-"
+            score_txt = "%+.1f" % o["score"] if o["score"] is not None else "-"
+            L.append(" " + pad(o["sym"], 9)
+                     + pad(_PAPER_ACTION_CN.get(o["action"], o["action"]), 10)
+                     + pad(_PAPER_SIDE_CN.get(o["side"], o["side"]), 5) + pad(o["ts"], 20)
+                     + pad(sig_price, 11) + pad(score_txt, 7)
+                     + (o["reason"] or "等待下一轮首个新价成交"))
+    L.append("")
+    recent = []
+    if pb.db is not None:
+        try:
+            recent = pb.db.paper_trades_recent(20)
+        except Exception:
+            recent = []
+    L.append("【最近成交（最多20笔；全量见 SQLite paper_trades 表）】%s"
+             % ("（暂无成交）" if not recent else ""))
+    if recent:
+        L.append(" " + pad("时间", 20) + pad("品种", 9) + pad("方向", 4) + pad("手数", 5)
+                 + pad("开平", 5) + pad("成交价", 11) + pad("手续费", 9) + pad("净盈亏", 11)
+                 + pad("强平", 4) + "原因")
+        for t in recent:
+            L.append(" " + pad(str(t["ts"])[:19], 20) + pad(t["sym"], 9)
+                     + pad(t.get("dir_text", ""), 4) + pad(str(t["lots"]), 5)
+                     + pad(t.get("leg", ""), 5) + pad("%.2f" % (t["price"] or 0), 11)
+                     + pad("%.1f" % (t.get("fee_yuan") or 0), 9)
+                     + pad(format(t.get("realized_yuan") or 0, "+,.0f"), 11)
+                     + pad("是" if t.get("forced") else "", 4) + (t.get("reason") or ""))
+    L += ["", thin,
+          " 说明：影子账户严格按 analyzer 综合分三阈值迟滞自动虚拟撮合；成交价内含滑点，手续费取 data/futures_fees.csv"
+          "（平今/平昨按交易所结算交易日实时判定，判不了保守按平昨），保证金取 data/futures_margins.csv。"
+          "连续影子≥4周后与 signal_outcomes 对照，成本后为负必须诚实呈现并回退；先 paper，永远不自动接实盘（门槛见融合总纲 G20）。",
+          sep]
+    return "\n".join(L)
+
+
+def write_paper_account(state):
+    """每轮刷新 reports/paper_account.txt（文件被占用只跳过，绝不影响主报告链路）。"""
+    try:
+        text = paper_account_text(state)
+        if text:
+            _safe_write(config.PAPER_ACCOUNT_TXT, text, encoding="utf-8-sig", update_cache=False)
+    except Exception as e:
+        LOG.debug("纸面账户报告写入失败: %s", e)
+
+
 class ReportStore:
     """运行期滚动缓存：报告与信号流水各保留最近 KEEP_ROUNDS 轮；
     非交易时段(9:00-11:30/13:30-15:00/21:00-23:00之外)的轮次单独滚动保留5轮"""
@@ -600,6 +767,9 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
     _cs = getattr(state, "last_cross_section", None)
     if _cs:
         L.extend(cross_section.format_block(_cs))
+
+    # ---------- G1（二）纸面账户影子块（PAPER_ENABLED 开启才有；休眠时零输出、等价旧版） ----------
+    L.extend(paper_block(state))
 
     # ---------- 重点品种明细 ----------
     focus = [r for r in fut_rows if abs(r["score"]) >= config.SCORE_NEUTRAL]

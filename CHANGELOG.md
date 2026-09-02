@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.28.0] — 2026-09-02 · 第28轮 G1 纸面交易引擎（二）：接主循环 + paper_account.txt + 看板净值图（影子账户闭环）
+- **主循环接入（main.py，独立 5.5 段、默认完全休眠）**：`State.__init__` 末尾仅当 PAPER_ENABLED=true 才实例化 PaperBroker（try 包裹，失败即 None+告警，零影响主链）；run_cycle 在存储之后、报告渲染之前把本轮 analyzer 行+实时 quotes 喂给 `on_cycle`，落 paper_account.txt 并 LOG 一行委托/成交/持仓/权益/风险度；**绝不回改综合分、信号、建议与任何既有输出**，PAPER_ENABLED=false 时 state.paper=None、零实例化零开销。
+- **平今/平昨按交易所结算交易日实时判定（paper_broker.py）**：开仓记录 entry_owner（夜盘21点后归下一交易日，与 intraday_backtest.owner_of_dt 同口径；注意与 utils.trade_owner_date 日切口径区分），平仓时同 owner=平今（享平今免费/优惠）、跨 owner=平昨；owner_fn 可注入（测试零网络零日历），任何异常/判不了**保守按平昨**（不虚增免费）；强平与三表重启恢复均带 owner。委托状态明确区分"在途排队 pending（约束缓解后仍可成交，≠拒单）/确定拒单 rejected/锁板阻塞 blocked/已撤"，新增 order_status_counts/positions_view/pending_view 三视图，账户摘要增补 float_pnl/n_pending/status/fill_mode；selftest 25→29 项断言。
+- **reports/paper_account.txt（report.py，utf-8-sig）**：账户概览/组合绩效（日度聚合，样本不足诚实标注）/委托状态统计/当前持仓表（含开仓结算交易日）/在途挂单表（带排队原因）/最近20笔成交/诚实说明（影子≥4周对照、成本后为负必须回退、永不自动接实盘）；实时报告新增 4 行紧凑【纸面账户·影子模拟】块（休眠零输出）；实时看板页签注册 paper_account.txt，且**休眠态自动隐藏该页签**（文件不生成、不点开缺失页）。
+- **看板新增 3 张图（charts.py，9→12 图、14→15 页签）**：纸面净值（动态/静态权益双线+期初线，权益轴两位小数避免小波动被抹平）、纸面回撤（反转轴）、纸面风险度+同时持仓数双轴（100%强平线）；paper_payload 读 paper_equity 最近2000条升序（修正原快照查询误取最旧N条）、抽稀1200、空/脏/缺方法全显空态；成功与 onerror 两条加载路径都渲染。
+- **storage.py**：paper_equity_series 改为"最近 N 条升序"子查询（原 ORDER BY id ASC LIMIT 取的是最旧 N 条）；新增 paper_order_status_counts（GROUP BY status）。
+- 验证：新增 tests/test_paper_report.py 7 个零网络用例（休眠零输出不落盘/紧凑块/平仓后空仓/next挂单/txt落盘/页签登记/页签随开关显隐），test_paper_broker +6（平今免费/跨日平昨/owner失效保守平昨/强平leg/恢复重建owner/视图计数）、test_storage +3、test_charts 同步；全量 **pytest 274→295 全绿（约3s，23 个测试文件）**，paper_broker --selftest **29 项断言全过**；前端 `node --check` 通过 + **真实浏览器双态目视**（启用态三图+9 chips 正常、全 null 空态提示不报错不错位、控制台零错误）；**真实 64 品种两轮集成冒烟**（next 档：首轮挂单19，次轮成交11/持仓11/在途8，真实手续费91元、风险度19.59%、权益快照2点、paper_account.txt 4151字符、实时报告纸面块正确渲染）；休眠路径 `main.py --once --no-launch` exit0：无纸面块、不生成 paper_account.txt、chart_data.js paper:null、看板无纸面页签、主链零异常。生产仍 44 个 py（本轮无新增根 py），纯标准库零新依赖。
+
 ## [0.27.0] — 2026-09-02 · 第27轮 G1 纸面交易引擎（一）：表 + 撮合状态机（补订单执行层塌陷）
 - **新增 `paper_broker.py`（PaperBroker，纯标准库、零网络、零新增依赖）**：把每轮综合分信号串成虚拟委托/成交，对标 freqtrade dry-run / vnpy SimNow。账户内核**直接复用 portfolio.Portfolio**（三种 sizing、单品种/板块/可用资金/持仓数约束链、逐轮盯市、触发线-安全线两段式强平、真实费率），不写第二套资金逻辑；本模块只做"实时轮询信号→委托→成交"状态机与持久化。
 - **成交两档（与 G4 回测对齐）**：`close`=信号轮当轮最新价成交；`next`（影子默认、保守）=信号轮只挂单、下一轮首个新价成交、**成交严格晚于信号**，下一轮锁板/无价/临时资金约束则挂单顺延、绝不虚构成交。

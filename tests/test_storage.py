@@ -83,3 +83,47 @@ def test_score_band_name():
     assert storage.score_band_name(3.0) == "轻仓"
     assert storage.score_band_name(5.0) == "分批"
     assert storage.score_band_name(-7.0) == "强信号"
+
+
+# ---------------- 第28轮 G1（二）：纸面三表查询 ----------------
+
+def _snap(i, equity=None):
+    if equity is None:
+        equity = 1_000_000.0 - i * 100
+    return {"ts": "2026-09-02 %02d:00:00" % (9 + i), "static_equity": equity + 50,
+            "float_pnl": -50.0, "equity": equity, "margin_used": equity * 0.05,
+            "available": equity * 0.95, "risk_degree": 0.05, "drawdown": i * 0.0001,
+            "n_positions": i % 3, "realized": -i * 50.0, "fees_paid": i * 7.0,
+            "n_trades": i, "band": "观望"}
+
+
+def test_paper_equity_series_last_n_ascending(tmp_db):
+    for i in range(10):
+        tmp_db.insert_paper_equity(_snap(i))
+    all_rows = tmp_db.paper_equity_series(2000)
+    assert len(all_rows) == 10
+    assert [r["equity"] for r in all_rows] == [1_000_000.0 - i * 100 for i in range(10)]  # 升序
+    # limit 取【最近 N 条】且仍按时间升序（长期影子后图表只看最近窗口）
+    last4 = tmp_db.paper_equity_series(4)
+    assert len(last4) == 4
+    assert [r["equity"] for r in last4] == [1_000_000.0 - i * 100 for i in range(6, 10)]
+
+
+def test_paper_equity_series_empty(tmp_db):
+    assert tmp_db.paper_equity_series() == []
+
+
+def test_paper_order_status_counts(tmp_db):
+    assert tmp_db.paper_order_status_counts() == {"pending": 0, "filled": 0, "blocked": 0,
+                                                  "rejected": 0, "cancelled": 0}
+    order = {"sym": "RB", "action": "open", "side": "buy", "direction": 1, "ts": "t",
+             "signal_price": 3000.0, "fill_price": 3000.0, "lots": 1, "score": 5.0,
+             "band": "分批", "status": "filled", "reason": "ok", "slip": 0.0}
+    tmp_db.insert_paper_order(dict(order))
+    order.update({"sym": "CU", "status": "rejected", "reason": "资金不足1手"})
+    tmp_db.insert_paper_order(dict(order))
+    order.update({"sym": "AU", "status": "pending"})
+    tmp_db.insert_paper_order(dict(order))
+    counts = tmp_db.paper_order_status_counts()
+    assert counts["filled"] == 1 and counts["rejected"] == 1 and counts["pending"] == 1
+    assert counts["blocked"] == 0 and counts["cancelled"] == 0

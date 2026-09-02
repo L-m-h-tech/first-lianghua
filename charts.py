@@ -19,13 +19,15 @@
   calibration_payload(band_rows)    纯函数：signal_calibrator.band_table -> 图表结构
   outcomes_payload(db)              纯函数：signal_outcomes 分周期/多空胜率
   factor_payload(path)              纯函数：factor_eval.json -> 图表结构（坏文件返回 None）
-  build_payload(state)              汇总四块（每块独立 try，缺一块不影响其他块）
+  paper_payload(state)              纯函数：storage.paper_equity 纸面影子净值 -> 图表结构（空表 None）
+  build_payload(state)              汇总五块（每块独立 try，缺一块不影响其他块）
   write_chart_data(state)           落 reports/chart_data.js（每轮 save 调用）
   charts_page_html()                静态图表看板 HTML（无 Python 变量注入）
   ensure_charts_page()              写静态页 + 同步本地 ECharts 资源（幂等）
 """
 import csv
 import json
+import math
 import os
 import shutil
 from datetime import datetime
@@ -248,6 +250,68 @@ def outcomes_payload(db, days=None):
 
 # ---------------- ④ 因子 IC（tools/factor_eval.py 写的 JSON sidecar） ----------------
 
+def paper_payload(state=None, max_points=1200):
+    """⑤ 纸面账户影子净值：从 storage.paper_equity 每轮快照取最近窗口（升序），结构对齐
+    parse_equity_csv 以便前端复用同一套权益/回撤/风险度渲染。无 state/无表/空表返回 None（显空态）。"""
+    db = getattr(state, "db", None) if state is not None else None
+    if db is None or not hasattr(db, "paper_equity_series"):
+        return None
+    try:
+        rows = db.paper_equity_series(2000)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    dts, eq, static, flt, margin, avail, risk, dd, npos = ([] for _ in range(9))
+    fees_last, trades_last, realized_last = 0.0, 0, 0.0
+    for r in rows:
+        v = _f(r.get("equity"))
+        if v is None:
+            continue
+        dts.append(str(r.get("ts") or "")[5:16])          # MM-DD HH:MM，轴标签更短
+        eq.append(v)
+        static.append(_f(r.get("static_equity"), 0.0))
+        flt.append(_f(r.get("float_pnl"), 0.0))
+        margin.append(_f(r.get("margin_used"), 0.0))
+        avail.append(_f(r.get("available"), 0.0))
+        risk.append(_f(r.get("risk_degree"), 0.0))
+        dd.append(max(0.0, _f(r.get("drawdown"), 0.0)))
+        try:
+            npos.append(int(r.get("n_positions") or 0))
+        except (TypeError, ValueError):
+            npos.append(0)
+        fees_last = _f(r.get("fees_paid"), fees_last)
+        realized_last = _f(r.get("realized"), realized_last)
+        try:
+            trades_last = int(r.get("n_trades") or trades_last)
+        except (TypeError, ValueError):
+            pass
+    if not dts:
+        return None
+    dts, eq, static, flt, margin, avail, risk, dd, npos = downsample(
+        dts, eq, static, flt, margin, avail, risk, dd, npos, max_points=max_points)
+    risks = [r for r in risk if r is not None and math.isfinite(r)]
+    init_eq = eq[0]
+    fill_mode = getattr(getattr(state, "paper", None), "fill_mode", "next")
+    return {
+        "dt": dts, "equity": eq, "static": static, "float": flt,
+        "margin": margin, "available": avail, "risk": risk, "drawdown": dd,
+        "npos": npos, "points": len(dts), "fill_mode": fill_mode,
+        "summary": {
+            "init_equity": round(init_eq, 2),
+            "final_equity": round(eq[-1], 2),
+            "total_return": (eq[-1] / init_eq - 1.0) if init_eq else 0.0,
+            "max_drawdown": max(dd) if dd else 0.0,
+            "avg_risk": sum(risks) / len(risks) if risks else 0.0,
+            "max_risk": max(risks) if risks else 0.0,
+            "max_npos": max(npos) if npos else 0,
+            "fees_paid": round(fees_last, 2),
+            "realized": round(realized_last, 2),
+            "n_trades": trades_last,
+        },
+    }
+
+
 def factor_payload(path=None):
     """读取 factor_eval.json（研究工具离线产出）。文件缺失/损坏返回 None（图表显空态）。"""
     path = path or config.FACTOR_EVAL_JSON
@@ -296,6 +360,11 @@ def build_payload(state=None):
         payload["factor_ic"] = factor_payload()
     except Exception:
         payload["factor_ic"] = None
+    # ⑤ 纸面账户影子净值（storage paper_equity 每轮快照；休眠/空表自动 None 显空态）
+    try:
+        payload["paper"] = paper_payload(state)
+    except Exception:
+        payload["paper"] = None
     return payload
 
 
@@ -436,6 +505,19 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>分周期实际胜率 <span class="sub">signal_outcomes 已到期样本（总/做多/做空）</span></h3>
     <div id="c-out" class="chart" style="height:300px"></div>
   </div>
+  <div class="card full">
+    <h3>⑤ 纸面账户·影子净值 <span class="sub">paper_equity 每轮快照（PAPER_ENABLED 开启后积累；含真实手续费+滑点，虚拟资金非实盘）</span></h3>
+    <div class="chips" id="peq-chips"></div>
+    <div id="c-paper" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card">
+    <h3>纸面账户回撤 <span class="sub">相对历史峰值，越深越红</span></h3>
+    <div id="c-paper-dd" class="chart" style="height:240px"></div>
+  </div>
+  <div class="card">
+    <h3>纸面风险度 / 同时持仓数 <span class="sub">风险度=占用÷动态权益；100% 触强平线</span></h3>
+    <div id="c-paper-risk" class="chart" style="height:240px"></div>
+  </div>
 </div>
 """
 
@@ -444,7 +526,8 @@ _PANEL_JS = r"""(function () {
 var UP = "#ef6b6b", DOWN = "#43c589", NEUT = "#8a8a8a", BLUE = "#7ecbff", GOLD = "#ffd66b";
 var AXIS = "#9a9a9a", SPLIT = "#2c2c2c", BG = "#1c1c1c";
 var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
-                 "c-ic", "c-mono", "c-cal", "c-out"];
+                 "c-ic", "c-mono", "c-cal", "c-out",
+                 "c-paper", "c-paper-dd", "c-paper-risk"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -534,6 +617,72 @@ function renderEquity(p) {
        markLine: {silent: true, symbol: "none", lineStyle: {color: UP, type: "dashed"},
                   data: [{yAxis: 1, label: {formatter: "强平线100%", color: UP}}]}},
       {name: "持仓数", type: "bar", yAxisIndex: 1, data: p.npos, itemStyle: {color: "rgba(126,203,255,0.35)"}}
+    ]
+  });
+}
+
+function renderPaper(p) {
+  if (!p || !p.dt.length) {
+    empty("c-paper", "暂无纸面账户净值：在 config.json 置 PAPER_ENABLED=true 开启影子模拟，监控逐轮积累后自动出图（虚拟资金、非实盘）。");
+    empty("c-paper-dd", "暂无纸面回撤数据。"); empty("c-paper-risk", "暂无纸面风险度数据。");
+    return;
+  }
+  var s = p.summary;
+  function eq(v) { return (v / 10000).toFixed(2) + "万"; }   // 权益轴两位小数，避免小波动被一位小数抹平
+  var chips = [
+    ["期初权益", eq(s.init_equity), ""], ["最新权益", eq(s.final_equity), ""],
+    ["累计收益", pct(s.total_return), s.total_return >= 0 ? "up" : "down"],
+    ["最大回撤", pct(s.max_drawdown), "down"], ["平均风险度", pct(s.avg_risk, 1), ""],
+    ["峰值持仓", s.max_npos + " 个", ""], ["累计平仓", s.n_trades + " 笔", ""],
+    ["累计手续费", wan(s.fees_paid), ""], ["已实现盈亏", wan(s.realized), s.realized >= 0 ? "up" : "down"]
+  ];
+  document.getElementById("peq-chips").innerHTML = chips.map(function (t) {
+    return '<span class="chip ' + t[2] + '">' + t[0] + ' <b>' + t[1] + '</b></span>';
+  }).join("");
+  mk("c-paper").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis", valueFormatter: function (v) { return eq(v); }},
+    legend: {data: ["动态权益", "静态权益"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({right: 56}),
+    xAxis: Object.assign({type: "category", data: p.dt, boundaryGap: false}, axisStyle()),
+    yAxis: Object.assign({type: "value", scale: true, axisLabel: {color: AXIS, formatter: function (v) { return eq(v); }}},
+                         {splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}}),
+    series: [
+      {name: "动态权益", type: "line", data: p.equity, showSymbol: false, lineStyle: {width: 1.6, color: GOLD},
+       areaStyle: {color: "rgba(255,214,107,0.08)"},
+       markLine: {silent: true, symbol: "none", lineStyle: {color: "#888", type: "dashed"},
+                  data: [{yAxis: s.init_equity, label: {position: "insideEndTop",
+                          formatter: "期初 " + eq(s.init_equity), color: "#aaa"}}]}},
+      {name: "静态权益", type: "line", data: p.static, showSymbol: false,
+       lineStyle: {width: 1, color: "#b58cf0", opacity: 0.7}}
+    ]
+  });
+  mk("c-paper-dd").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis", valueFormatter: function (v) { return pct(v); }},
+    grid: baseGrid(),
+    xAxis: Object.assign({type: "category", data: p.dt, boundaryGap: false}, axisStyle()),
+    yAxis: {type: "value", inverse: true, min: 0, splitNumber: 4,
+            max: function (v) { return Math.max(v.max * 1.15, 0.005); },
+            axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(1) + "%"; }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "纸面回撤", type: "line", data: p.drawdown, showSymbol: false,
+              lineStyle: {color: UP, width: 1.2}, areaStyle: {color: "rgba(239,107,107,0.25)"}}]
+  });
+  mk("c-paper-risk").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis"},
+    legend: {data: ["风险度", "持仓数"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid(),
+    xAxis: Object.assign({type: "category", data: p.dt, boundaryGap: false}, axisStyle()),
+    yAxis: [
+      {type: "value", min: 0, max: function (v) { return Math.max(0.10, v.max * 1.3); },
+       axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(0) + "%"; }},
+       splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+      {type: "value", minInterval: 1, axisLabel: {color: AXIS}, splitLine: {show: false}}
+    ],
+    series: [
+      {name: "风险度", type: "line", data: p.risk, showSymbol: false, lineStyle: {color: GOLD, width: 1.3},
+       markLine: {silent: true, symbol: "none", lineStyle: {color: UP, type: "dashed"},
+                  data: [{yAxis: 1, label: {formatter: "强平线100%", color: UP}}]}},
+      {name: "持仓数", type: "bar", yAxisIndex: 1, data: p.npos, itemStyle: {color: "rgba(255,214,107,0.30)"}}
     ]
   });
 }
@@ -704,10 +853,12 @@ function loadAndRender() {
     renderCross(D.cross_section);
     renderFactor(D.factor_ic);
     renderCalib(D.calibration, D.outcomes);
+    renderPaper(D.paper);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
-    renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null); };
+    renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
+    renderPaper(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }

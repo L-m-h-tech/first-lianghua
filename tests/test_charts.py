@@ -181,6 +181,79 @@ def test_factor_payload(tmp_path):
     assert charts.factor_payload(str(wrong)) is None
 
 
+# ---------------- ⑤ 纸面账户影子净值（第28轮 G1 二） ----------------
+
+class _PaperDB:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def paper_equity_series(self, limit=2000):
+        return self._rows[-limit:]
+
+
+def _paper_rows(n, base=1_000_000.0):
+    rows = []
+    for i in range(n):
+        eq = base - i * 500.0
+        rows.append({"ts": "2026-09-02 %02d:%02d:00" % (9 + i // 20, (i % 20) * 3),
+                     "static_equity": base - i * 200.0, "float_pnl": -i * 300.0,
+                     "equity": eq, "margin_used": eq * 0.05, "available": eq * 0.95,
+                     "risk_degree": 0.05 + (i % 4) * 0.01, "drawdown": (i % 6) * 0.001,
+                     "n_positions": i % 5, "realized": -i * 200.0, "fees_paid": i * 7.5,
+                     "n_trades": i // 2})
+    return rows
+
+
+class _PaperState:
+    def __init__(self, rows):
+        self.db = _PaperDB(rows)
+
+    class paper:
+        fill_mode = "next"
+
+
+def test_paper_payload_empty_safe():
+    assert charts.paper_payload(None) is None
+    assert charts.paper_payload(_PaperState([])) is None
+
+    class _Boom:
+        def paper_equity_series(self, limit=2000):
+            raise RuntimeError("locked")
+    st = _PaperState([])
+    st.db = _Boom()
+    assert charts.paper_payload(st) is None
+    # 缺方法的 db 也安全
+    st2 = _PaperState([])
+    st2.db = object()
+    assert charts.paper_payload(st2) is None
+
+
+def test_paper_payload_mapping_and_summary():
+    st = _PaperState(_paper_rows(6))
+    p = charts.paper_payload(st)
+    assert p["points"] == 6 and len(p["dt"]) == 6
+    assert p["fill_mode"] == "next"
+    # 数组等长、数值对齐
+    for k in ("equity", "static", "float", "margin", "available", "risk", "drawdown", "npos"):
+        assert len(p[k]) == 6
+    assert p["equity"][0] == 1_000_000.0 and p["equity"][-1] == 1_000_000.0 - 5 * 500
+    s = p["summary"]
+    assert abs(s["total_return"] - (p["equity"][-1] / 1e6 - 1)) < 1e-12
+    assert s["max_npos"] == 4 and s["n_trades"] == 2
+    assert abs(s["fees_paid"] - 5 * 7.5) < 1e-9
+    # 脏行（equity 非法）被跳过
+    rows = _paper_rows(3)
+    rows.insert(1, {"ts": "x", "equity": None})
+    p2 = charts.paper_payload(_PaperState(rows))
+    assert p2["points"] == 3
+
+
+def test_paper_payload_respects_cap():
+    p = charts.paper_payload(_PaperState(_paper_rows(2000)), max_points=1200)
+    assert p["points"] == 1200
+    assert p["dt"][0] and p["dt"][-1]               # 首尾保留
+
+
 # ---------------- 汇总 / JS / 落盘 ----------------
 
 class _FakeCal:
@@ -216,10 +289,20 @@ def test_build_payload_full_and_empty(tmp_path, monkeypatch):
     assert len(decoded["calibration"]) == 1
     assert decoded["outcomes"][0]["n"] == 4
     assert decoded["factor_ic"]["main_h"] == 120
+    # _FakeDB 无 paper_equity_series -> 纸面块安全 None（休眠等价）
+    assert decoded["paper"] is None
+
+    # 带纸面快照时第五块正常产出
+    st2 = _State()
+    st2.db = _PaperDB(_paper_rows(4))
+    st2.paper = _PaperState(_paper_rows(1)).paper
+    p2 = charts.build_payload(st2)
+    assert p2["paper"] is not None and p2["paper"]["points"] == 4
 
     # 全空 state：每块独立降级为 None，不抛异常，JS 仍合法
     empty = charts.build_payload(None)
     assert empty["cross_section"] is None and empty["calibration"] is None
+    assert empty["paper"] is None
     json.loads(charts.payload_to_js(empty)[len("window.CHART_DATA = "):-2])
 
 
@@ -246,10 +329,11 @@ def test_write_chart_data_and_page(tmp_path, monkeypatch):
     assert charts.ensure_charts_page() is True
     assert page_path.exists() and dst_asset.exists()
     html = page_path.read_text(encoding="utf-8")
-    # 静态页关键结构：本地 echarts、八个图容器、动态注入 chart_data.js
+    # 静态页关键结构：本地 echarts、12 个图容器、动态注入 chart_data.js
     assert 'src="assets/echarts.min.js"' in html
     for cid in ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
-                "c-ic", "c-mono", "c-cal", "c-out"):
+                "c-ic", "c-mono", "c-cal", "c-out",
+                "c-paper", "c-paper-dd", "c-paper-risk"):
         assert 'id="%s"' % cid in html
     assert "chart_data.js" in html
     # 幂等：重复调用不报错、资源不重复复制也不缺
@@ -265,12 +349,13 @@ def test_sync_asset_missing_source_safe(tmp_path, monkeypatch):
 # ---------------- 第23轮：片段拆分 + 实时看板内嵌（两页合并） ----------------
 
 CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
-             "c-ic", "c-mono", "c-cal", "c-out")
+             "c-ic", "c-mono", "c-cal", "c-out",
+             "c-paper", "c-paper-dd", "c-paper-risk")
 
 
 def test_dashboard_embed_parts_are_fragments():
     style, dom, js = charts.dashboard_embed_parts()
-    # 九个图容器全在 DOM 片段里
+    # 12 个图容器全在 DOM 片段里
     for cid in CHART_IDS:
         assert 'id="%s"' % cid in dom
     # 片段是纯片段，不带独立页外壳
@@ -289,10 +374,11 @@ def test_dashboard_embed_parts_are_fragments():
     assert "__CHARTS_STANDALONE__" not in dom          # 片段本身不绑定启动方式
 
 
-def test_realtime_dashboard_embeds_charts_panel():
+def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
     import report
+    monkeypatch.setattr(report.config, "PAPER_ENABLED", True)  # 启用态下纸面页签才渲染
     h = report._dashboard_html()
-    # 外层看板只引一次本地 echarts、只含一个面板容器，九个图直接内嵌
+    # 外层看板只引一次本地 echarts、只含一个面板容器，12 个图直接内嵌
     assert h.count('src="assets/echarts.min.js"') == 1
     assert 'id="charts-panel"' in h
     assert "window.ChartPanel" in h and "(function () {" in h
@@ -301,9 +387,9 @@ def test_realtime_dashboard_embeds_charts_panel():
     # 图表页签为内嵌标记，不再 iframe 套独立页
     assert 'data-src="__charts__"' in h
     assert 'data-src="图表看板.html"' not in h
-    # 其余 13 个 txt/csv 页签全部保留走 iframe
+    # 其余 txt/csv 页签全部保留走 iframe（paper_account 仅启用态渲染）
     for fname in ("latest_report.txt", "signals.csv", "signal_tracking.txt",
-                  "daily_review.txt", "offhours_report.txt"):
+                  "daily_review.txt", "offhours_report.txt", "paper_account.txt"):
         assert 'data-src="%s"' % fname in h
     # 占位符必须全部被真实片段替换
     assert "/*__CP_" not in h

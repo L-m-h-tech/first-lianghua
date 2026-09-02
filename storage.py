@@ -872,10 +872,26 @@ class MonitorDB:
         return [dict(r) for r in rows]
 
     def paper_equity_series(self, limit=2000):
+        """最近 limit 条权益快照、按时间升序返回（长期影子后表会很大，图表/看板只取最近窗口；
+        子查询先 DESC 截断再外层 ASC 复原曲线顺序）。"""
         with self.lock:
             rows = self.conn.execute(
-                "SELECT * FROM paper_equity ORDER BY id ASC LIMIT ?", (int(limit),)).fetchall()
+                """SELECT * FROM (
+                       SELECT * FROM paper_equity ORDER BY id DESC LIMIT ?
+                   ) ORDER BY id ASC""", (int(limit),)).fetchall()
         return [dict(r) for r in rows]
+
+    def paper_order_status_counts(self):
+        """委托按状态聚合计数（pending/filled/blocked/rejected/cancelled），供账户报告区分
+        "在途排队"与"确定拒单"。"""
+        out = {"pending": 0, "filled": 0, "blocked": 0, "rejected": 0, "cancelled": 0}
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT status, COUNT(*) AS n FROM paper_orders GROUP BY status").fetchall()
+        for r in rows:
+            if r["status"] in out:
+                out[r["status"]] = int(r["n"])
+        return out
 
     # ---------------- 信号到期评估 ----------------
 

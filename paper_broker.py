@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""G1 纸面交易引擎 PaperBroker（第27轮：表 + 撮合状态机；第28轮再接 main/报告/看板）。
+"""G1 纸面交易引擎 PaperBroker（第27轮：表 + 撮合状态机；第28轮：平今/平昨 owner + 账户视图，
+main/报告/看板同期接入）。
 
 它补的是本系统唯一塌陷的"订单执行层"：信号原本止于 analyzer 综合分与一句"建议手数"，
 signal_outcomes 只判固定周期方向对错（不含手续费、不连续持仓、没有资金曲线）。PaperBroker
@@ -27,7 +28,8 @@ signal_outcomes 只判固定周期方向对错（不含手续费、不连续持�
   7. 纯标准库、零网络、db 可空（纯内存便于合成断言）；PAPER_ENABLED=False 时 main 根本不实例化。
 
 诚实边界：免费数据是 5 分钟级轮询快照、非逐笔/L2，"下一轮首个新价"是下一次轮询价而非真实
-开盘竞价；平今/平昨本轮统一按平昨口径（实时 owner 判定留待后续）；保证金为公司常态档估算。
+开盘竞价；平今/平昨按交易所结算交易日 owner 实时判定（与 intraday_backtest.owner_of_dt 同口径，
+判不了保守按平昨）；保证金为公司常态档估算。
 以上都不改变"严格按信号做、含成本后到底赚不赚钱"这个核心问题的可证伪性。不构成投资建议。
 
 自检：D:\\Python\\python.exe paper_broker.py --selftest
@@ -42,6 +44,17 @@ from storage import score_band_name
 
 
 # =========================== 纯函数（无状态、零网络，可直接合成断言） ===========================
+
+def _default_owner_of_ts(ts):
+    """把时间戳映射到【交易所结算交易日】（平今/平昨判定用），与 intraday_backtest.owner_of_dt
+    同口径（夜盘21点后归下一交易日、凌晨归当日），两者必须一致、不可混用 utils 的日切口径。
+    解析/日历失败一律返回 None——调用方据此保守按"平昨"计费（等价第27轮行为，绝不虚增平今免费）。"""
+    try:
+        from intraday_backtest import owner_of_dt
+        d = datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
+        return owner_of_dt(d)
+    except Exception:
+        return None
 
 def want_position(score, held_dir, entry_score, exit_score):
     """三阈值迟滞状态机。返回 (want_dir, action)。
@@ -132,7 +145,7 @@ class PaperBroker:
 
     def __init__(self, *, db=None, equity0=None, fill_mode=None, entry_score=None,
                  exit_score=None, sizing=None, margin_table=None, fee_table=None,
-                 sector_of=None, slip_rate=None, restore=True, clock=None):
+                 sector_of=None, slip_rate=None, restore=True, clock=None, owner_fn=None):
         self.db = db
         self.fill_mode = fill_mode or getattr(config, "PAPER_FILL_MODE", "next")
         if self.fill_mode not in ("close", "next"):
@@ -141,6 +154,8 @@ class PaperBroker:
         self.exit_score = exit_score if exit_score is not None else config.PAPER_EXIT_SCORE
         self.slip_rate = slip_rate if slip_rate is not None else config.PAPER_SLIP_RATE
         self._clock = clock or (lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # 实时平今/平昨判定：时间戳->交易所结算交易日（可注入，测试零网络零日历依赖）
+        self._owner_fn = owner_fn or _default_owner_of_ts
         self._sector_of = sector_of if sector_of is not None else sector_map()
         # 账户内核：费率/保证金表复用既有加载器（文件缺失返回空表，Portfolio 内部兜底）
         self.fee_table = fee_table if fee_table is not None else load_fee_schedule()
@@ -215,6 +230,22 @@ class PaperBroker:
 
     # ---------------- 单腿成交（真正调用 Portfolio） ----------------
 
+    def _owner_of(self, ts):
+        """时间戳->交易所结算交易日，owner_fn 自身异常/判不了一律 None（调用方保守按平昨）。"""
+        try:
+            return self._owner_fn(ts)
+        except Exception:
+            return None
+
+    def _close_leg(self, pos, ts):
+        """实时平今/平昨判定：开仓与平仓同属一个交易所结算交易日=平今(today)，否则平昨(close)。
+        判不了（开仓 owner 缺失/时间戳或日历不可用）一律保守按平昨，与第27轮口径逐值一致。"""
+        cur_owner = self._owner_of(ts)
+        entry_owner = getattr(pos, "entry_owner", None)
+        if cur_owner is not None and entry_owner is not None and entry_owner == cur_owner:
+            return "today"
+        return "close"
+
     def _fill_leg(self, ts, order, raw_price):
         """把一条委托腿按盘面价 raw_price（内含滑点后）成交，返回 trade dict；失败返回 None。"""
         sym = order["sym"]
@@ -231,7 +262,7 @@ class PaperBroker:
 
         if is_open:
             pos = pf.open(sym, order["name"], order["sector"], direction, fill_price, ts,
-                          atr=atr, score=order.get("score"))
+                          atr=atr, score=order.get("score"), owner=self._owner_of(ts))
             if pos is None:
                 why = pf.skipped[-1]["reason"] if pf.skipped else "未成交"
                 # next 档临时约束（持仓上限/资金/板块）：保持挂单顺延，等约束缓解再成交
@@ -268,8 +299,9 @@ class PaperBroker:
             self._upd_order(order, status="cancelled", raw_price=raw_price,
                             reason="已无持仓，撤单")
             return None
+        close_leg = self._close_leg(held, ts)
         rec = pf.close(sym, fill_price, ts,
-                       "信号离场" if action == "close" else "反手平仓", leg="close")
+                       "信号离场" if action == "close" else "反手平仓", leg=close_leg)
         if rec is None:
             self._upd_order(order, status="blocked", raw_price=raw_price, reason="平仓失败，顺延")
             return None
@@ -371,7 +403,12 @@ class PaperBroker:
             side = "sell" if held and held.direction > 0 else "buy"
             return apply_slip(raw, side, self.slip_rate)
 
-        liq = pf.liquidate(ts, price_getter)   # 触发线/安全线两段式状态机在 Portfolio 内
+        def leg_getter(sym):
+            held_now = pf.positions.get(sym)
+            return self._close_leg(held_now, ts) if held_now is not None else "close"
+
+        # 触发线/安全线两段式状态机在 Portfolio 内；强平同样按实时 owner 判平今/平昨
+        liq = pf.liquidate(ts, price_getter, leg_getter=leg_getter)
         for rec in liq:
             sym = rec["sym"]
             self.pos_ref.pop(sym, None)
@@ -527,7 +564,7 @@ class PaperBroker:
                 stop=None, target=None, atr=None, score=t.get("score"),
                 margin_rate=t.get("margin_rate") or pf.margin_rate_of(sym),
                 mult=mult, open_fee_yuan=t.get("fee_yuan") or 0.0,
-                entry_owner=None, entry_i=0, block=0, calib_mult=1.0)
+                entry_owner=self._owner_of(t["ts"]), entry_i=0, block=0, calib_mult=1.0)
             pf.positions[sym] = pos
             pf._last_prices[sym] = t["price"]
             self.pos_ref[sym] = t["pos_ref"]
@@ -555,7 +592,51 @@ class PaperBroker:
         self.restored = True
         return True
 
-    # ---------------- 账户摘要（第28轮报告用） ----------------
+    # ---------------- 账户摘要/视图（第28轮报告+看板用） ----------------
+
+    def order_status_counts(self):
+        """委托全生命周期计数（以三表为准；纯内存/查询失败返回全 0 dict）。
+        注意区分：pending=在途排队（临时约束/锁板等缓解后仍会成交，不是拒单）；
+        rejected=确定性拒单（资金不足1手/无乘数等）；blocked=曾锁板/无价阻塞（close档）。"""
+        out = {"pending": 0, "filled": 0, "blocked": 0, "rejected": 0, "cancelled": 0}
+        if self.db is not None and hasattr(self.db, "paper_order_status_counts"):
+            try:
+                out.update({k: int(v) for k, v in self.db.paper_order_status_counts().items()})
+            except Exception:
+                pass
+        else:
+            # 纯内存模式：只剩在途 pending 可统计（终态委托不留内存）
+            out["pending"] = sum(len(q) for q in self.pending.values())
+        return out
+
+    def positions_view(self):
+        """当前持仓明细行（含最新价/浮动盈亏/占用保证金/开仓结算交易日），供 paper_account.txt。"""
+        pf = self.pf
+        rows = []
+        for sym in sorted(pf.positions):
+            p = pf.positions[sym]
+            last = float(pf._last_prices.get(sym, p.entry_price) or 0.0)
+            mult = p.mult or pf.mult_of(sym)
+            float_yuan = p.direction * (last - p.entry_price) * mult * p.lots
+            margin = last * mult * p.lots * p.margin_rate
+            rows.append({"sym": sym, "name": p.name or "", "sector": p.sector or "",
+                         "dir": "多" if p.direction > 0 else "空", "direction": p.direction,
+                         "lots": p.lots, "entry_dt": str(p.entry_dt), "entry_price": p.entry_price,
+                         "last": last, "float_yuan": float_yuan, "margin": margin,
+                         "entry_owner": str(getattr(p, "entry_owner", "") or ""),
+                         "score": p.score})
+        return rows
+
+    def pending_view(self):
+        """当前在途挂单明细（拍平成行列表），供 paper_account.txt。"""
+        rows = []
+        for sym in sorted(self.pending):
+            for o in self.pending[sym]:
+                rows.append({"sym": sym, "name": o.get("name", ""), "action": o.get("action", ""),
+                             "side": o.get("side", ""), "direction": o.get("direction", 0),
+                             "ts": o.get("ts", ""), "signal_price": o.get("signal_price"),
+                             "score": o.get("score"), "reason": o.get("reason", "")})
+        return rows
 
     def account_summary(self):
         pf = self.pf
@@ -563,12 +644,16 @@ class PaperBroker:
         if pf.curve:
             perf = pf.performance()
         return {"equity0": pf.equity0, "static": pf.static_equity(),
-                "equity": pf.equity(), "realized": pf.realized, "fees_paid": pf.fees_paid,
+                "equity": pf.equity(), "float_pnl": pf.float_pnl(),
+                "realized": pf.realized, "fees_paid": pf.fees_paid,
                 "margin_used": pf.margin_used(), "available": pf.available(),
                 "risk_degree": pf.risk_degree(), "n_positions": len(pf.positions),
+                "n_pending": sum(len(q) for q in self.pending.values()),
                 "n_closed": len(pf.closed), "n_liquidations": len(pf.liquidations),
-                "n_skipped": len(pf.skipped), "pending": {s: [dict(o) for o in q]
-                                                          for s, q in self.pending.items()},
+                "n_skipped": len(pf.skipped), "status": self.order_status_counts(),
+                "fill_mode": self.fill_mode,
+                "pending": {s: [dict(o) for o in q]
+                            for s, q in self.pending.items()},
                 "performance": perf}
 
 
@@ -680,6 +765,49 @@ def selftest():
                       slip_rate=0.0, restore=False)
     sp = pbp.on_cycle("2026-09-02 13:30:00", [_row("CU", "铜", "有色", 6.0, 70000.0)])
     ck("资金不足拒单", len(pbp.pf.positions) == 0 and sp["orders"][0]["status"] == "rejected")
+
+    # 11) 实时平今/平昨 owner 判定（注入确定性 owner_fn 与显式费率表，零日历/网络依赖）
+    from datetime import date as _date
+    def _fee_row(mult, today_free):
+        return {"multiplier": mult, "open_amt_rate": 1e-4, "open_per_lot": 3.0,
+                "close_amt_rate": 1e-4, "close_per_lot": 3.0,
+                "today_amt_rate": 0.0 if today_free else 1e-4,
+                "today_per_lot": 0.0 if today_free else 3.0}
+    own_map = {"2026-09-02 10:00:00": _date(2026, 9, 2),
+               "2026-09-02 14:00:00": _date(2026, 9, 2),
+               "2026-09-03 10:00:00": _date(2026, 9, 3)}
+    pbo = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0,
+                      restore=False, margin_table={"RB": {"broker_margin": 0.1,
+                      "limit_basic": 0.05, "multiplier": 10}},
+                      fee_table={"RB": _fee_row(10, True)}, sector_of={"RB": "黑色"},
+                      owner_fn=lambda ts: own_map.get(str(ts)[:19]))
+    pbo.on_cycle("2026-09-02 10:00:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    s_today = pbo.on_cycle("2026-09-02 14:00:00", [_row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    rec_today = pbo.pf.closed[-1]
+    ck("同一结算交易日=平今", rec_today["leg"] == "平今" and rec_today["close_fee_yuan"] == 0.0)
+    own_map["2026-09-02 14:00:00"] = _date(2026, 9, 2)
+    pbo2 = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0,
+                       restore=False, margin_table={"RB": {"broker_margin": 0.1,
+                       "limit_basic": 0.05, "multiplier": 10}},
+                       fee_table={"RB": _fee_row(10, True)}, sector_of={"RB": "黑色"},
+                       owner_fn=lambda ts: own_map.get(str(ts)[:19]))
+    pbo2.on_cycle("2026-09-02 10:00:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pbo2.on_cycle("2026-09-03 10:00:00", [_row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    rec_yest = pbo2.pf.closed[-1]
+    ck("跨结算交易日=平昨(收费)", rec_yest["leg"] == "平昨" and rec_yest["close_fee_yuan"] > 0.0)
+    # owner_fn 失效时保守按平昨（不虚构平今免费）
+    pbo3 = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0,
+                       restore=False, margin_table={"RB": {"broker_margin": 0.1,
+                       "limit_basic": 0.05, "multiplier": 10}},
+                       fee_table={"RB": _fee_row(10, True)}, sector_of={"RB": "黑色"},
+                       owner_fn=lambda ts: None)
+    pbo3.on_cycle("2026-09-02 10:00:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pbo3.on_cycle("2026-09-02 14:00:00", [_row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    ck("owner判不了保守平昨", pbo3.pf.closed[-1]["leg"] == "平昨")
+    # 账户视图字段齐全
+    view = pbo.account_summary()
+    ck("账户摘要含状态计数/视图", set(["pending", "filled", "blocked", "rejected",
+       "cancelled"]).issubset(view["status"]) and "float_pnl" in view and "n_pending" in view)
 
     print("paper_broker --selftest：%d 项断言全部通过" % len(checks))
     for n, _ in checks:

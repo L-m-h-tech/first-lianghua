@@ -278,3 +278,96 @@ def test_restore_pending_then_fill(loose, tmp_db):
 def test_default_switch_off():
     # 默认总开关关闭：main 侧据此决定是否实例化，引擎休眠是回退承诺
     assert config.PAPER_ENABLED is False
+
+
+# ---------------- 第28轮：实时平今/平昨 owner 判定 + 账户视图 ----------------
+
+from datetime import date as _date
+
+
+def _today_free_fee(mult=10):
+    """SHFE 风格：平今免费、平昨收费（金额费率1e-4 + 每手3元）。"""
+    return {"multiplier": mult, "open_amt_rate": 1e-4, "open_per_lot": 3.0,
+            "close_amt_rate": 1e-4, "close_per_lot": 3.0,
+            "today_amt_rate": 0.0, "today_per_lot": 0.0}
+
+
+def _owner_broker(owner_fn, db=None, equity0=10_000_000, restore=False):
+    return PaperBroker(
+        db=db, fill_mode="close", equity0=equity0, slip_rate=0.0, restore=restore,
+        margin_table={"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}},
+        fee_table={"RB": _today_free_fee()}, sector_of={"RB": "黑色"}, owner_fn=owner_fn)
+
+
+def test_close_leg_today_same_owner_free():
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2),
+           "2026-09-02 14:00:00": _date(2026, 9, 2)}
+    pb = _owner_broker(lambda ts: own.get(str(ts)[:19]))
+    pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert pb.pf.positions["RB"].entry_owner == _date(2026, 9, 2)  # 开仓 owner 落仓
+    pb.on_cycle("2026-09-02 14:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    rec = pb.pf.closed[-1]
+    assert rec["leg"] == "平今" and rec["close_fee_yuan"] == 0.0   # 平今免费生效
+
+
+def test_close_leg_yesterday_cross_owner_charged():
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2),
+           "2026-09-03 10:00:00": _date(2026, 9, 3)}
+    pb = _owner_broker(lambda ts: own.get(str(ts)[:19]))
+    pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pb.on_cycle("2026-09-03 10:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    rec = pb.pf.closed[-1]
+    assert rec["leg"] == "平昨" and rec["close_fee_yuan"] > 0.0    # 跨结算交易日按平昨收费
+
+
+def test_close_leg_fallback_when_owner_unknown():
+    # owner_fn 全判不了 -> 保守平昨（绝不虚构平今免费）
+    pb = _owner_broker(lambda ts: None)
+    pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pb.on_cycle("2026-09-02 14:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    assert pb.pf.closed[-1]["leg"] == "平昨"
+    # owner_fn 自身抛异常也不炸，同样保守平昨
+    def boom(ts):
+        raise RuntimeError("calendar down")
+    pb2 = _owner_broker(boom)
+    pb2.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pb2.on_cycle("2026-09-02 14:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
+    assert pb2.pf.closed[-1]["leg"] == "平昨"
+
+
+def test_liquidate_uses_realtime_leg():
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2),
+           "2026-09-02 10:05:00": _date(2026, 9, 2)}
+    pb = _owner_broker(lambda ts: own.get(str(ts)[:19]))
+    pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert pb.pf.positions.get("RB")
+    pb.pf.risk_liquidate = 0.0          # 与 selftest 同法：压平强平阈值，下一轮必触发
+    pb.pf.risk_safe = 0.0
+    pb.on_cycle("2026-09-02 10:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert pb.pf.liquidations and pb.pf.liquidations[-1]["leg"] == "平今"
+
+
+def test_restore_rebuilds_entry_owner(tmp_db):
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2)}
+    pb1 = _owner_broker(lambda ts: own.get(str(ts)[:19]), db=tmp_db)
+    pb1.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pb2 = _owner_broker(lambda ts: own.get(str(ts)[:19]), db=tmp_db, restore=True)
+    assert pb2.pf.positions["RB"].entry_owner == _date(2026, 9, 2)
+
+
+def test_account_views_and_status_counts(tmp_db):
+    pb = make_broker("close", db=tmp_db, restore=False, slip=0.0)
+    pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    pv = pb.positions_view()
+    assert len(pv) == 1 and pv[0]["sym"] == "RB" and pv[0]["dir"] == "多"
+    assert pv[0]["last"] == 3000.0 and pv[0]["margin"] > 0
+    a = pb.account_summary()
+    assert a["n_positions"] == 1 and a["n_pending"] == 0 and a["float_pnl"] == 0.0
+    assert set(a["status"]) == {"pending", "filled", "blocked", "rejected", "cancelled"}
+    assert a["status"]["filled"] >= 1
+    # 纯内存（db=None）状态计数只统计在途 pending，不抛异常
+    pb_mem = make_broker("next", db=None, restore=False, slip=0.0)
+    pb_mem.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    am = pb_mem.account_summary()
+    assert am["status"]["pending"] == am["n_pending"] == 1
+    assert len(pb_mem.pending_view()) == 1

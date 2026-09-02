@@ -80,6 +80,7 @@ import oil_data
 import option_analyzer
 import option_chain
 import option_strategies
+import paper_broker
 import report
 import risk_gate
 import signal_calibrator
@@ -126,6 +127,19 @@ class State:
         self.calibrator = signal_calibrator.SignalCalibrator(enabled=False)  # WP-F2 A3 历史胜率校准器（每轮4.7刷新，默认影子）
         self.health_monitor = data_health.HealthMonitor()  # G6 数据质量跨轮监控
         self.last_health = None                           # G6 末轮数据健康结果（供报告渲染）
+        # G1（二）纸面交易影子账户：PAPER_ENABLED=False 时为 None 完全休眠（不实例化、零开销、
+        # 不动实时主链与综合分口径）；开启后由 run_cycle 第5.5步喂 fut_rows/quotes 持续虚拟撮合。
+        self.paper = None
+        self.last_paper = None                            # 末轮纸面 on_cycle 结果（供报告渲染）
+        if getattr(config, "PAPER_ENABLED", False):
+            try:
+                self.paper = paper_broker.PaperBroker(db=self.db)
+                LOG.info("G1 纸面交易影子账户已启用（fill=%s，初始资金%.0f，平今/平昨按结算交易日判定）",
+                         self.paper.fill_mode, config.PAPER_EQUITY0)
+            except Exception:
+                LOG.warning("纸面账户初始化失败，本轮完全休眠（不影响监控主链）:\n%s",
+                            traceback.format_exc())
+                self.paper = None
         self.heartbeat_ts = time.time()           # 主循环最近一次心跳（看门狗监控卡死）
         self.auto_open_report = False             # 首轮真实报告生成后是否自动用浏览器打开（由 --no-launch 关闭）
         self.report_opened = False                # 实时报告 HTML 是否已自动打开过（全程只开一次）
@@ -702,6 +716,21 @@ def run_cycle(state):
         report.write_signal_tracking(state)
     except Exception:
         LOG.warning("信号追踪/结构化入库失败（不影响本轮监控）:\n%s", traceback.format_exc())
+
+    # 5.5 G1（二）纸面交易：把本轮综合分喂给影子经纪做虚拟委托/成交/盯市，并刷新 paper_account.txt。
+    #     受 PAPER_ENABLED 开关控制（默认休眠）；独立成段、绝不回改 score/信号/建议与任何现有输出。
+    if getattr(state, "paper", None) is not None:
+        try:
+            state.last_paper = state.paper.on_cycle(cycle_time, fut_rows, quotes)
+            report.write_paper_account(state)
+            _ls = state.last_paper.get("snapshot", {})
+            LOG.info("纸面账户本轮: 委托%d/成交%d/在途%d/持仓%d，权益%.2f 风险度%.1f%%",
+                     state.last_paper.get("n_orders", 0), state.last_paper.get("n_trades", 0),
+                     state.last_paper.get("n_pending", 0), state.last_paper.get("n_positions", 0),
+                     float(_ls.get("equity", 0.0)),
+                     float(_ls.get("risk_degree", 0.0)) * 100.0)
+        except Exception:
+            LOG.warning("纸面账户本轮处理失败（不影响监控主链）:\n%s", traceback.format_exc())
 
     news_top = state.news.top_items(k=8)
     text = report.render(state, fut_rows, opt_rows, strat_rows, news_top)
