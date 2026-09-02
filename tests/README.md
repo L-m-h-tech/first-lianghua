@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：20 个 `test_*.py` + `conftest.py`，共 **238** 个用例，全绿约 3 秒。
+当前规模：21 个 `test_*.py` + `conftest.py`，共 **255** 个用例，全绿约 3 秒。
 
 ## 设计纪律（必须保持）
 
@@ -37,6 +37,7 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_intraday_bars.py | 分钟K周期聚合、跨时段不硬拼、合约代码构造（第14轮 WP-D0） |
 | test_flow_tracker.py | 增/减仓×涨/跌、跨日重建、量能重置（第7轮） |
 | test_backtest_fees.py | 金额费+固定费叠加、固定费折算、绩效统计、分档（第9、10轮） |
+| test_backtest_rigor.py | next_open次根成交/末根信号不虚构/锁板顺延/反手、冲击成本、bootstrap可复现与退化、分位、IS/OOS切分、sidecar读取、backtest_runs留档与历史百分位、故障软降级（第26轮 G4） |
 | test_portfolio.py | 盯市、三种手数、约束链、强平状态机、费用对账、无bar时刻、校准乘子（第16轮 WP-E） |
 | test_storage.py | 分钟bar去重、ML样本覆盖写、跨合约衔接、完整性（storage） |
 | test_config_loader.py | .env解析/真实环境优先、深合并、类型矫正、受保护名、端到端子进程加载（第25轮 G10） |

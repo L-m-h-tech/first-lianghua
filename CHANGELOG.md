@@ -3,6 +3,15 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.26.0] — 2026-09-02 · 第26轮 G4 回测严谨性（next-bar 对照 + bootstrap 置信区间 + 留档 + 防过拟合引用）
+- **成交时点双档对照（`--fill {close,next_open}`，默认 close 旧口径逐值不变）**：close=信号根收盘成交（便于纵向比较）；next_open=信号根收盘决策、次根开盘成交（看到收盘已无法以该价成交，更贴近实盘的保守对照），次根跳空锁板顺延、末根才出的入场信号无次根可成交则如实丢弃计数、反手单次根先平后开；信号层 1/5/20 日衰减与成交时点严格解耦（全量两档样本数逐值一致）。
+- **交易级 bootstrap 置信区间（纯标准库、固定种子可复现）**：对逐笔净收益有放回重采样 1000 次，给累计收益/最大回撤 P5–中位–P95，总体+多头+空头分别给区间；样本 <20 笔或 `--no-bootstrap` 不给区间（不做小样本假精确），报告注明 iid 假设在强自相关下偏乐观。
+- **样本内外对照（`--oos-ratio`，默认 0 关闭）**：按平仓时间排序切前 (1-r) IS / 后 r OOS，总体与多/空分别并列 IS/OOS 指标，样本外衰减一目了然。
+- **冲击成本单列（`--impact-rate`，默认 0 等价旧版）**：单边比例、往返两次，与手续费/滑点分开列示，trades CSV 增 `impact_cost` 列（向后兼容）。
+- **回测留档（storage 第 11 张业务表 `backtest_runs`）**：每次日线回测落一行（时间/成交档/成本模式/参数 JSON/指标 JSON/样本量），报告抬头标注"历史第几次、累计收益好于百分之多少的历史运行"，纵向对比防"挑一次最好的"；含保留期清理与 table_counts 接入；留档失败软降级绝不拖垮回测。
+- **防过拟合交叉引用**：tools/backtest_validation.py 写 txt 同时产出结构化 sidecar `reports/backtest_validation.json`（DSR/CSCV-PBO/WF 摘要），日线回测抬头自动引用最近结论（缺文件软降级）。
+- 验证：新增 tests/test_backtest_rigor.py 17 个零网络用例（两档成交时点/末根不虚构/锁板顺延/反手/冲击成本/bootstrap 可复现与退化/分位/IS-OOS/sidecar/留档与百分位/故障软降级），全量 **pytest 238→255 全绿**；真实数据——全 64 品种 close（1713 笔真实费率全命中）与 next_open（1571 笔、末根丢弃10）两档对照、IS/OOS、bootstrap、留档2条与百分位均正常；backtest_validation RB/HC 出 sidecar；`main --once --no-launch` exit0 零 Traceback/ERROR；monitor.db integrity/quick_check=ok、外键0违规（11 张业务表）；compileall 全过。生产仍 43 个 py、15560→15938 行，零新增运行依赖。
+
 ## [0.25.0] — 2026-09-02 · 第25轮 G9 工程化 + G10 配置外置 + G11 数据源熔断降级链 + G6 数据质量（数据底座一组）
 - **G9 git 工程化（零改运行代码）**：`git init` 并打基线 tag v0.24.0；新增 `.gitignore`（忽略 data/*.db、cache、logs、reports 运行产物、__pycache__、.env 等，保留源码/测试/文档与 data 下 csv/xlsx 配置表）、`.gitattributes`（统一 LF）；requirements 三个直接依赖锁 `==`（requests 2.34.2 / uiautomation 2.0.29 / websocket-client 1.9.1），requirements-freeze.txt 全量留档；新增 CHANGELOG.md / VERSION。
 - **G10 配置外置（零新增依赖，缺配置与历史逐字节一致）**：新增 `config_loader.py`（.env 解析注入且真实环境优先、dict 深合并、按默认类型矫正、只覆盖已存在的全大写可调常量、路径/内部名受保护、非法/未知项跳过不崩）；config.py 启动先载 .env（早于 environ.get）、末尾深合并 config.json；提供 `config.template.json` 与 `.env.example`；可用 FUTURES_MONITOR_CONFIG/FUTURES_MONITOR_ENV 指定外置文件。

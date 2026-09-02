@@ -207,6 +207,18 @@ class MonitorDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_dh_ts ON data_health(ts);
                 CREATE INDEX IF NOT EXISTS idx_dh_source ON data_health(source, created_real);
+
+                CREATE TABLE IF NOT EXISTS backtest_runs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_ts TEXT NOT NULL, kind TEXT NOT NULL,
+                    fill_mode TEXT, cost_mode TEXT,
+                    n_symbols INTEGER DEFAULT 0, n_trades INTEGER DEFAULT 0,
+                    sample_days INTEGER DEFAULT 0,
+                    params_json TEXT, metrics_json TEXT,
+                    cumulative REAL, max_dd REAL, sharpe REAL, win_rate REAL,
+                    created_real REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_btr_kind ON backtest_runs(kind, created_real);
                 """
             )
             self.conn.commit()
@@ -665,6 +677,40 @@ class MonitorDB:
                 (int(limit),)).fetchall()
         return [dict(r) for r in rows]
 
+    # ---------------- 写入：回测留档（G4） ----------------
+
+    def insert_backtest_run(self, run):
+        """落一行回测运行留档。run 为 dict：run_ts/kind/fill_mode/cost_mode/
+        n_symbols/n_trades/sample_days/params(dict)/metrics(dict)/cumulative/max_dd/sharpe/win_rate。
+        返回新行 id；字段缺失以 None/0 兜底，绝不抛错拖垮离线回测。"""
+        now_real = datetime.now().timestamp()
+        params = run.get("params")
+        metrics = run.get("metrics")
+        with self.lock:
+            cur = self.conn.execute(
+                """INSERT INTO backtest_runs(run_ts,kind,fill_mode,cost_mode,n_symbols,n_trades,
+                   sample_days,params_json,metrics_json,cumulative,max_dd,sharpe,win_rate,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(run.get("run_ts"))[:19], str(run.get("kind") or "daily")[:20],
+                 str(run.get("fill_mode") or "")[:20], str(run.get("cost_mode") or "")[:60],
+                 int(run.get("n_symbols") or 0), int(run.get("n_trades") or 0),
+                 int(run.get("sample_days") or 0),
+                 _json(params) if params is not None else None,
+                 _json(metrics) if metrics is not None else None,
+                 run.get("cumulative"), run.get("max_dd"),
+                 run.get("sharpe"), run.get("win_rate"), now_real))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def backtest_run_history(self, kind="daily", limit=500):
+        """按时间正序返回某类回测的历史留档（含本次），供纵向对比/百分位排名。"""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT * FROM backtest_runs WHERE kind=?
+                   ORDER BY created_real ASC, id ASC LIMIT ?""",
+                (str(kind or "daily"), int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
     # ---------------- 信号到期评估 ----------------
 
     def update_signal_outcomes(self, quotes):
@@ -754,7 +800,7 @@ class MonitorDB:
     def table_counts(self):
         out = {}
         with self.lock:
-            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health"):
+            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health", "backtest_runs"):
                 out[table] = self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
         return out
 
@@ -777,4 +823,6 @@ class MonitorDB:
             self.conn.execute("DELETE FROM ml_samples WHERE bar_dt < ?", (ml_cut,))
             dh_cut = (datetime.now() - timedelta(days=config.DATA_HEALTH_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
             self.conn.execute("DELETE FROM data_health WHERE ts < ?", (dh_cut,))
+            btr_cut = (datetime.now() - timedelta(days=config.BACKTEST_RUNS_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            self.conn.execute("DELETE FROM backtest_runs WHERE run_ts < ?", (btr_cut,))
             self.conn.commit()

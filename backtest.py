@@ -21,8 +21,10 @@
 """
 import argparse
 import csv
+import json
 import math
 import os
+import random
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -164,12 +166,94 @@ def metrics_from_returns(returns, hold_days):
             "max_dd": max_dd, "annualized": annualized, "sharpe": sharpe}
 
 
+def quantile_inplace(sorted_vals, q):
+    """线性插值分位数（同 numpy linear / R type7 口径），输入须已升序。"""
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    q = min(1.0, max(0.0, q))
+    pos = q * (len(sorted_vals) - 1)
+    lo, hi = math.floor(pos), math.ceil(pos)
+    if lo == hi:
+        return sorted_vals[lo]
+    return sorted_vals[lo] * (hi - pos) + sorted_vals[hi] * (pos - lo)
+
+
+def _equity_cum_dd(seq):
+    """逐期复利累计收益与路径最大回撤。"""
+    equity, peak, max_dd = 1.0, 1.0, 0.0
+    for r in seq:
+        equity *= 1.0 + r
+        peak = max(peak, equity)
+        max_dd = max(max_dd, 1.0 - equity / peak)
+    return equity - 1.0, max_dd
+
+
+def bootstrap_trade_stats(returns, n_boot=1000, seed=20260902, ci=(0.05, 0.95),
+                          min_trades=20):
+    """交易级 iid bootstrap：对逐笔净收益有放回重采样 n_boot 次，给累计收益/
+    最大回撤的分位区间（固定种子、逐值可复现）。样本不足或关闭(n_boot=0)返回 None。
+    注意 iid 假设交易近似独立，收益序列自相关强时区间偏乐观，报告中已声明。"""
+    rets = [r for r in returns if math.isfinite(r)]
+    n = len(rets)
+    if not n_boot or n < min_trades:
+        return None
+    rng = random.Random(seed)
+    cums, dds = [], []
+    for _ in range(int(n_boot)):
+        sample = (rets[rng.randrange(n)] for _ in range(n))
+        cum, mdd = _equity_cum_dd(sample)
+        cums.append(cum)
+        dds.append(mdd)
+    cums.sort()
+    dds.sort()
+    lo, hi = ci
+    return {"n": n, "n_boot": int(n_boot),
+            "cum_p5": quantile_inplace(cums, lo), "cum_median": quantile_inplace(cums, 0.5),
+            "cum_p95": quantile_inplace(cums, hi),
+            "dd_p5": quantile_inplace(dds, lo), "dd_median": quantile_inplace(dds, 0.5),
+            "dd_p95": quantile_inplace(dds, hi)}
+
+
+def split_is_oos(trades, oos_ratio):
+    """按平仓日期(缺失回退入场日)升序，切前 (1-r) 为样本内IS、后 r 为样本外OOS。
+    r<=0 或 >=1 时不切分（IS=全部、OOS空）。"""
+    if not oos_ratio or oos_ratio <= 0.0 or oos_ratio >= 1.0:
+        return list(trades), []
+    ordered = sorted(trades,
+                     key=lambda t: (t.get("exit_date") or t.get("entry_date") or ""))
+    cut = int(len(ordered) * (1.0 - float(oos_ratio)))
+    return ordered[:cut], ordered[cut:]
+
+
+def percentile_at_or_below(values, x):
+    """历史 values 中 <= x 的占比（0~1，含本次）；无有效样本返回 None。"""
+    vals = [v for v in values if v is not None and math.isfinite(v)]
+    if not vals:
+        return None
+    return sum(1 for v in vals if v <= x + 1e-15) / len(vals)
+
+
+def load_validation_sidecar(path=None):
+    """读取 tools/backtest_validation.py 产出的 DSR/PBO sidecar(JSON)；
+    文件缺失/损坏/非对象一律返回 None（软降级，绝不拖垮回测）。"""
+    path = path or config.BACKTEST_VALIDATION_JSON
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def prepare_symbol(raw_bars):
     """只计算一次指标序列，参数稳定性扫描复用，避免重复计算。"""
     bars, roll_count = ratio_adjusted_bars(raw_bars)
     if len(bars) < 65:
         return None
     closes = [futures_data._f(b["c"]) for b in bars]
+    opens = [futures_data._f(b.get("o")) for b in bars]
     highs = [futures_data._f(b["h"]) for b in bars]
     lows = [futures_data._f(b["l"]) for b in bars]
     series = []
@@ -177,7 +261,8 @@ def prepare_symbol(raw_bars):
         ind = futures_data.compute_indicators(bars[:i + 1])
         series.append({"i": i, "ind": ind, "score": technical_score(ind)})
     return {"name": "", "code": "", "bars": bars, "closes": closes,
-            "highs": highs, "lows": lows, "series": series, "roll_count": roll_count}
+            "opens": opens, "highs": highs, "lows": lows, "series": series,
+            "roll_count": roll_count}
 
 
 def _direction_from_score(score, entry_score):
@@ -202,26 +287,33 @@ def _locked_limit(prepared, i, trade_direction, limit_move):
 
 
 def _build_trade(name, code, prepared, position, i, exit_reason, fee_rate, slip_rate,
-                 fee_table, use_real_fees):
+                 fee_table, use_real_fees, impact_rate=0.0, exit_price=None,
+                 entry_i=None, exit_date=None):
     closes = prepared["closes"]
-    gross = position["direction"] * (closes[i] / position["entry_price"] - 1.0)
+    if exit_price is None or exit_price <= 0:
+        exit_price = closes[i]
+    if entry_i is None:
+        entry_i = position["entry_i"]
+    gross = position["direction"] * (exit_price / position["entry_price"] - 1.0)
     sym = str(prepared.get("sym") or "").strip().upper()
     if use_real_fees and sym in fee_table:
-        exit_fee_rate, exit_fee_yuan = side_fee(fee_table[sym], closes[i], "close")
+        exit_fee_rate, exit_fee_yuan = side_fee(fee_table[sym], exit_price, "close")
         fee_mode = "真实费率表"
     else:
         exit_fee_rate, exit_fee_yuan = fee_rate, 0.0
         fee_mode = "兜底比例费率"
     fee_cost = position.get("entry_fee_rate", fee_rate) + exit_fee_rate
     slip_cost = 2.0 * slip_rate
-    cost = fee_cost + slip_cost
+    impact_cost = 2.0 * impact_rate
+    cost = fee_cost + slip_cost + impact_cost
     return {
         "symbol": name, "code": code,
-        "entry_date": position["entry_date"], "exit_date": prepared["bars"][i].get("d", ""),
+        "entry_date": position["entry_date"],
+        "exit_date": exit_date or prepared["bars"][i].get("d", ""),
         "direction": "多" if position["direction"] > 0 else "空",
-        "entry_score": position["score"], "hold": i - position["entry_i"],
+        "entry_score": position["score"], "hold": i - entry_i,
         "gross_ret": gross, "fee_cost": fee_cost, "slip_cost": slip_cost,
-        "cost": cost, "ret": gross - cost,
+        "impact_cost": impact_cost, "cost": cost, "ret": gross - cost,
         "fee_open_yuan": position.get("entry_fee_yuan", 0.0),
         "fee_close_yuan": exit_fee_yuan,
         "fee_round_yuan": position.get("entry_fee_yuan", 0.0) + exit_fee_yuan,
@@ -232,13 +324,35 @@ def _build_trade(name, code, prepared, position, i, exit_reason, fee_rate, slip_
 
 def simulate_prepared(name, code, prepared, hold_days, entry_score,
                       fee_rate=0.0, slip_rate=0.0, limit_move=None,
-                      collect_signals=False, fee_table=None, use_real_fees=True):
+                      collect_signals=False, fee_table=None, use_real_fees=True,
+                      fill_mode="close", impact_rate=0.0):
+    """成交时点 fill_mode：
+    - close（默认，旧口径）：信号根 i 收盘确认并以 closes[i] 成交；
+    - next_open（G4 保守对照）：信号根 i 收盘决策、次根 i+1 以 opens[i+1] 成交，
+      次根跳空锁板则顺延，末根仍持仓按末根收盘平、末根才出的入场信号无次根可成交则丢弃。
+    冲击成本 impact_rate 为单边比例，与手续费/滑点分开列示、往返计两次。
+    """
     closes = prepared["closes"]
+    opens = prepared.get("opens") or [0.0] * len(closes)
+    bars = prepared["bars"]
     signal_rows, trades = [], []
     position = None
+    pending_entry = None   # (direction, score)：上一根挂出、本根开盘待成交的开仓单
+    pending_exit = None    # exit_reason：上一根挂出、本根开盘待成交的离场单
     blocked_entry = blocked_exit = 0
+    unfilled_entry = 0     # next_open：样本末尾挂单无次根可成交的信号数（不虚构）
     fee_table = fee_table or {}
-    fallback_cost_round = 2.0 * (fee_rate + slip_rate)
+    fallback_cost_round = 2.0 * (fee_rate + slip_rate + impact_rate)
+
+    def _open_position(direction, score, fill_i, fill_price):
+        entry_sym = str(prepared.get("sym") or "").strip().upper()
+        if use_real_fees and entry_sym in fee_table:
+            efr, efy = side_fee(fee_table[entry_sym], fill_price, "open")
+        else:
+            efr, efy = fee_rate, 0.0
+        return {"entry_i": fill_i, "direction": direction, "score": score,
+                "entry_price": fill_price, "entry_date": bars[fill_i].get("d", ""),
+                "entry_fee_rate": efr, "entry_fee_yuan": efy, "blocked_exits": 0}
 
     for item in prepared["series"]:
         i = item["i"]
@@ -246,7 +360,7 @@ def simulate_prepared(name, code, prepared, hold_days, entry_score,
         direction = _direction_from_score(score, entry_score)
 
         if direction and collect_signals:
-            row = {"symbol": name, "code": code, "date": prepared["bars"][i].get("d", ""),
+            row = {"symbol": name, "code": code, "date": bars[i].get("d", ""),
                    "score": score, "band": score_band(score),
                    "direction": "多" if direction > 0 else "空"}
             for horizon in (1, 5, 20):
@@ -256,45 +370,79 @@ def simulate_prepared(name, code, prepared, hold_days, entry_score,
                     row[f"h{horizon}"] = None
             signal_rows.append(row)
 
+        # ---- next_open 阶段A：本根开盘成交上一根挂单（先平后开，支持反手）----
+        if fill_mode == "next_open":
+            if position is not None and pending_exit is not None:
+                exit_dir = -position["direction"]
+                px = opens[i]
+                if px <= 0 or _locked_limit(prepared, i, exit_dir, limit_move):
+                    blocked_exit += 1
+                    position["blocked_exits"] = position.get("blocked_exits", 0) + 1
+                else:
+                    trades.append(_build_trade(name, code, prepared, position, i, pending_exit,
+                                              fee_rate, slip_rate, fee_table, use_real_fees,
+                                              impact_rate, exit_price=px,
+                                              entry_i=position["entry_i"],
+                                              exit_date=bars[i].get("d", "")))
+                    position = None
+                pending_exit = None
+            if position is None and pending_entry is not None:
+                d_new, s_new = pending_entry
+                px = opens[i]
+                if px <= 0 or _locked_limit(prepared, i, d_new, limit_move):
+                    blocked_entry += 1
+                else:
+                    position = _open_position(d_new, s_new, i, px)
+                pending_entry = None
+
+        # ---- 阶段C：本根收盘决策 ----
         if position is not None:
             opposite = direction == -position["direction"] and direction != 0
             held = i - position["entry_i"]
-            if position.get("exit_requested_i") is not None:
-                should_exit = True
-            elif held >= hold_days or opposite:
-                position["exit_requested_i"] = i
-                should_exit = True
-            else:
-                should_exit = False
-            if should_exit:
-                # 平多要卖出(-1)，平空要买回(+1)；锁板时顺延到下一交易日。
-                exit_dir = -position["direction"]
-                if _locked_limit(prepared, i, exit_dir, limit_move):
-                    blocked_exit += 1
+            if fill_mode == "close":
+                if position.get("exit_requested_i") is not None:
+                    should_exit = True
+                elif held >= hold_days or opposite:
+                    position["exit_requested_i"] = i
+                    should_exit = True
                 else:
-                    exit_reason = "反向" if opposite else ("到期" if held >= hold_days else "解锁离场")
-                    trades.append(_build_trade(name, code, prepared, position, i, exit_reason,
-                                              fee_rate, slip_rate, fee_table, use_real_fees))
-                    position = None
+                    should_exit = False
+                if should_exit:
+                    # 平多要卖出(-1)，平空要买回(+1)；锁板时顺延到下一交易日。
+                    exit_dir = -position["direction"]
+                    if _locked_limit(prepared, i, exit_dir, limit_move):
+                        blocked_exit += 1
+                    else:
+                        exit_reason = "反向" if opposite else ("到期" if held >= hold_days else "解锁离场")
+                        trades.append(_build_trade(name, code, prepared, position, i, exit_reason,
+                                                  fee_rate, slip_rate, fee_table, use_real_fees,
+                                                  impact_rate))
+                        position = None
+            else:  # next_open：只挂离场单，次根开盘成交；锁板则次根决策时重新挂=顺延
+                if held >= hold_days or opposite:
+                    pending_exit = "反向" if opposite else "到期"
 
-        if position is None and direction:
-            if _locked_limit(prepared, i, direction, limit_move):
-                blocked_entry += 1
-                continue
-            entry_sym = str(prepared.get("sym") or "").strip().upper()
-            if use_real_fees and entry_sym in fee_table:
-                entry_fee_rate, entry_fee_yuan = side_fee(fee_table[entry_sym], closes[i], "open")
-            else:
-                entry_fee_rate, entry_fee_yuan = fee_rate, 0.0
-            position = {"entry_i": i, "direction": direction, "score": score,
-                        "entry_price": closes[i], "entry_date": prepared["bars"][i].get("d", ""),
-                        "entry_fee_rate": entry_fee_rate, "entry_fee_yuan": entry_fee_yuan,
-                        "blocked_exits": 0}
+        if fill_mode == "close":
+            if position is None and direction:
+                if _locked_limit(prepared, i, direction, limit_move):
+                    blocked_entry += 1
+                else:
+                    position = _open_position(direction, score, i, closes[i])
+        else:
+            # next_open：无仓直接挂开仓单；持仓但本根已挂离场(反手)时，挂反向开仓单次根先平后开
+            will_reverse = (position is not None and pending_exit is not None
+                            and direction == -position["direction"])
+            if pending_entry is None and direction and (position is None or will_reverse):
+                pending_entry = (direction, score)
 
     if position is not None:
+        # 末根仍持仓：按末根收盘价平（next_open 下末根才挂的离场单无次根，同样回落末根收盘）
         i = len(closes) - 1
-        trades.append(_build_trade(name, code, prepared, position, i, "样本末",
-                                  fee_rate, slip_rate, fee_table, use_real_fees))
+        reason = pending_exit or "样本末"
+        trades.append(_build_trade(name, code, prepared, position, i, reason,
+                                  fee_rate, slip_rate, fee_table, use_real_fees, impact_rate))
+    if fill_mode == "next_open" and pending_entry is not None:
+        unfilled_entry += 1   # 诚实记录：最后一根的入场信号没有次根可成交
 
     horizon_rows = []
     if collect_signals:
@@ -308,14 +456,16 @@ def simulate_prepared(name, code, prepared, hold_days, entry_score,
             "roll_count": prepared["roll_count"], "signals": signal_rows,
             "horizons": horizon_rows, "trades": trades, "trade_metrics": trade_metrics,
             "gross_metrics": gross_metrics, "blocked_entry": blocked_entry,
-            "blocked_exit": blocked_exit, "cost_round": sample_cost,
+            "blocked_exit": blocked_exit, "unfilled_entry": unfilled_entry,
+            "fill_mode": fill_mode, "cost_round": sample_cost,
             "real_fee_trades": sum(1 for t in trades if t["fee_mode"] == "真实费率表"),
             "last_signal": (signal_rows[-1] if signal_rows else None)}
 
 
 def simulate_symbol(name, code, raw_bars, hold_days, entry_score,
                     fee_rate=0.0, slip_rate=0.0, limit_move=None,
-                    fee_table=None, use_real_fees=True):
+                    fee_table=None, use_real_fees=True, fill_mode="close",
+                    impact_rate=0.0):
     prepared = prepare_symbol(raw_bars)
     if prepared is None:
         return None
@@ -323,7 +473,8 @@ def simulate_symbol(name, code, raw_bars, hold_days, entry_score,
     prepared["sym"] = code.rstrip("0").upper()
     return simulate_prepared(name, code, prepared, hold_days, entry_score,
                              fee_rate, slip_rate, limit_move, collect_signals=True,
-                             fee_table=fee_table, use_real_fees=use_real_fees)
+                             fee_table=fee_table, use_real_fees=use_real_fees,
+                             fill_mode=fill_mode, impact_rate=impact_rate)
 
 
 def resolve_codes(codes_arg, limit=None):
@@ -358,7 +509,8 @@ def fetch_and_run(item, args):
                                    args.fee_rate, args.slip_rate,
                                    None if args.no_limit_filter else args.limit_move,
                                    collect_signals=True, fee_table=fee_table,
-                                   use_real_fees=not args.no_real_fees)
+                                   use_real_fees=not args.no_real_fees,
+                                   fill_mode=args.fill, impact_rate=args.impact_rate)
         if not args.no_stable:
             stability = []
             for hold in config.BACKTEST_STABLE_HOLDS:
@@ -367,7 +519,9 @@ def fetch_and_run(item, args):
                                            args.fee_rate, args.slip_rate,
                                            None if args.no_limit_filter else args.limit_move,
                                            collect_signals=False, fee_table=fee_table,
-                                           use_real_fees=not args.no_real_fees)
+                                           use_real_fees=not args.no_real_fees,
+                                           fill_mode=args.fill,
+                                           impact_rate=args.impact_rate)
                     stability.append({"hold": hold, "entry": entry,
                                       "metrics": rr["trade_metrics"],
                                       "blocked_entry": rr["blocked_entry"],
@@ -378,6 +532,39 @@ def fetch_and_run(item, args):
         return name, result, ""
     except Exception as e:
         return name, None, f"{type(e).__name__}: {e}"
+
+
+def _fmt_boot_ci(b):
+    if not b:
+        return "样本不足（净交易<%d笔或已关闭），不做区间估计" % config.BACKTEST_BOOTSTRAP_MIN_TRADES
+    return (f"累计收益 {b['cum_p5']*100:+.1f}%~{b['cum_p95']*100:+.1f}%"
+            f"（中位 {b['cum_median']*100:+.1f}%）；最大回撤 {b['dd_p5']*100:.1f}%~"
+            f"{b['dd_p95']*100:.1f}%（中位 {b['dd_median']*100:.1f}%）；{b['n_boot']}次固定种子重采样")
+
+
+def _fmt_validation_ref(data):
+    """把 backtest_validation 的 DSR/PBO sidecar 压成一两句交叉引用；无内容返回空串。"""
+    if not isinstance(data, dict):
+        return ""
+    parts = []
+    d = data.get("dsr")
+    if isinstance(d, dict) and d.get("dsr") is not None:
+        parts.append(f"组合日收益 DSR={d['dsr']:.2f}（观察SR {d.get('sr_obs', 0):.2f}，"
+                     f"多重试验阈值SR0 {d.get('sr0', 0):.2f}，{d.get('verdict', '')}）")
+    g = data.get("grid")
+    if isinstance(g, dict) and g.get("n"):
+        parts.append(f"分钟参数网格 {g['n']} 品种：PBO<0.2 共{g.get('pbo_good', 0)}、"
+                     f"全网格全样本亏损 {g.get('all_loss', 0)}、WF样本外Sharpe为正 {g.get('oos_pos', 0)}")
+    return "；".join(p for p in parts if p)
+
+
+def _fmt_archive_info(info):
+    if not info:
+        return ""
+    pct = info.get("percentile")
+    pct_txt = "--" if pct is None else f"{pct*100:.0f}%"
+    return (f"回测留档：本次为 backtest_runs 表第 {info['seq']}/{info['total']} 条日线回测记录，"
+            f"累计收益好于历史 {pct_txt} 的运行（纵向对比、防'挑一次最好的'）")
 
 
 def _fmt_metrics(m):
@@ -452,26 +639,60 @@ def build_report(results, errors, args):
         cost_txt = (f"真实券商手续费表{fee_date}（{real_fee_trades}/{total_trades}笔命中；按金额+按手数，开仓+平仓）"
                     f"+滑点单边{args.slip_rate*100:.3f}%；日线多日持仓不使用平今费率，未命中则回退单边{args.fee_rate*100:.3f}%")
     limit_txt = "不过滤锁板" if args.no_limit_filter else f"疑似锁板阈值±{args.limit_move*100:.0f}%"
+    fill_txt = ("信号根收盘价成交（旧口径，便于纵向比较）" if args.fill == "close"
+                else "次根开盘价成交（next_open 保守对照：看到收盘信号后已无法以该价成交，更贴近实盘）")
+    impact_txt = "未计冲击成本" if args.impact_rate <= 0 else f"另计单边冲击成本{args.impact_rate*100:.3f}%（往返两次）"
     L = ["=" * 96,
          f" 最小日线技术回测（生成于 {now}）",
          "=" * 96,
-         f"参数：样本{args.days}根日线；入场|技术分|≥{args.entry}；固定持有{args.hold}个交易日，反向信号提前退出。",
-         f"交易成本：{cost_txt}；成交限制：{limit_txt}。",
+         f"参数：样本{args.days}根日线；入场|技术分|≥{args.entry}；固定持有{args.hold}个交易日，反向信号提前退出；成交时点：{fill_txt}。",
+         f"交易成本：{cost_txt}；{impact_txt}；成交限制：{limit_txt}。",
          "口径：仅回放日线动量+RSI/MACD/KDJ多周期共振，不含历史新闻、机构、实时量仓和分钟K线；主连疑似换月跳空已置0并比例复权。",
-         "注意：单品种交易为非重叠；总体多品种净值按交易序列复利近似，实盘组合同时持仓时需另做资金权重曲线。",
-         ""]
+         "注意：单品种交易为非重叠；总体多品种净值按交易序列复利近似，实盘组合同时持仓时需另做资金权重曲线。"]
+    ref_txt = _fmt_validation_ref(getattr(args, "_validation", None))
+    if ref_txt:
+        L.append("防过拟合交叉引用（tools/backtest_validation.py 最近结论，非本次计算）：" + ref_txt)
+    arch_txt = _fmt_archive_info(getattr(args, "_archive", None))
+    if arch_txt:
+        L.append(arch_txt)
+    L.append("")
     L.append("一、总体非重叠交易表现（扣费后）")
     L.append("  净: " + _fmt_metrics(net_metrics))
     if gross_metrics:
         L.append(f"  毛: {_fmt_metrics(gross_metrics)}｜成本拖累 均收{(net_metrics['avg']-gross_metrics['avg'])*100:+.2f}%/"
                  f"累计{(net_metrics['cumulative']-gross_metrics['cumulative'])*100:+.1f}%")
-    L.append(f"  锁板过滤：入场跳过{blocked_entry}次，离场顺延{blocked_exit}次")
+    unfilled = sum(r.get("unfilled_entry", 0) for r in results)
+    extra = f"；next_open末根信号无次根成交、丢弃{unfilled}个" if unfilled else ""
+    L.append(f"  锁板过滤：入场跳过{blocked_entry}次，离场顺延{blocked_exit}次{extra}")
     for direction in ("多", "空"):
         vals = [t["ret"] for t in all_trades if t["direction"] == direction]
         L.append(f"  {direction}头：" + _fmt_metrics(metrics_from_returns(vals, args.hold)))
     for band in ("轻仓", "分批", "强信号"):
         vals = [t["ret"] for t in all_trades if score_band(t["entry_score"]) == band]
         L.append(f"  {band}：" + _fmt_metrics(metrics_from_returns(vals, args.hold)))
+    if not getattr(args, "no_bootstrap", False) and args.bootstrap > 0 and net_metrics:
+        ci = tuple(config.BACKTEST_BOOTSTRAP_CI)
+        boot_all = bootstrap_trade_stats([t["ret"] for t in all_trades], args.bootstrap,
+                                         args.seed, ci, config.BACKTEST_BOOTSTRAP_MIN_TRADES)
+        L.append("  置信区间（交易级iid bootstrap，假设逐笔近似独立；强自相关时区间偏乐观）：")
+        L.append("    全部：" + _fmt_boot_ci(boot_all))
+        for direction in ("多", "空"):
+            vals = [t["ret"] for t in all_trades if t["direction"] == direction]
+            b = bootstrap_trade_stats(vals, args.bootstrap, args.seed, ci,
+                                      config.BACKTEST_BOOTSTRAP_MIN_TRADES)
+            L.append(f"    {direction}头：" + _fmt_boot_ci(b))
+    if getattr(args, "oos_ratio", 0.0) and 0.0 < args.oos_ratio < 1.0:
+        is_tr, oos_tr = split_is_oos(all_trades, args.oos_ratio)
+        is_pct = (1.0 - args.oos_ratio) * 100
+        L.append(f"  样本内外对照（按平仓时间排序，前{is_pct:.0f}%为IS样本内、后{args.oos_ratio*100:.0f}%为OOS样本外）：")
+        L.append("    IS 全部：" + _fmt_metrics(metrics_from_returns([t["ret"] for t in is_tr], args.hold)))
+        L.append("    OOS全部：" + _fmt_metrics(metrics_from_returns([t["ret"] for t in oos_tr], args.hold)))
+        for direction in ("多", "空"):
+            iv = [t["ret"] for t in is_tr if t["direction"] == direction]
+            ov = [t["ret"] for t in oos_tr if t["direction"] == direction]
+            L.append(f"    IS/OOS {direction}头："
+                     + _fmt_metrics(metrics_from_returns(iv, args.hold)) + " ｜ "
+                     + _fmt_metrics(metrics_from_returns(ov, args.hold)))
     L.append("")
     L.append("二、信号发出后固定持有 1/5/20 个交易日的方向收益（允许样本重叠，用于观察衰减）")
     for h in (1, 5, 20):
@@ -510,6 +731,55 @@ def build_report(results, errors, args):
     return "\n".join(L) + "\n"
 
 
+def _cost_mode_text(args):
+    if args.no_cost:
+        return "不计成本"
+    if args.no_real_fees:
+        return f"兜底比例费率+滑点{args.slip_rate}+冲击{args.impact_rate}"
+    return f"真实费率表+滑点{args.slip_rate}+冲击{args.impact_rate}"
+
+
+def archive_run(args, results, errors, net_metrics, db_factory=None):
+    """把本次回测落 storage.backtest_runs 一行，并返回纵向对比信息。
+    离线研究工具：默认写生产 monitor.db；任何异常（库损坏/不可写）软降级返回 None，
+    绝不让留档失败拖垮回测报告。db_factory 供测试注入临时库。"""
+    try:
+        if db_factory is not None:
+            db = db_factory()
+        else:
+            import storage
+            db = storage.MonitorDB()
+    except Exception:
+        return None
+    try:
+        run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        params = {"days": args.days, "hold": args.hold, "entry": args.entry,
+                  "fill": args.fill, "slip_rate": args.slip_rate,
+                  "impact_rate": args.impact_rate, "fee_rate": args.fee_rate,
+                  "no_real_fees": args.no_real_fees, "no_cost": args.no_cost,
+                  "oos_ratio": args.oos_ratio, "no_limit_filter": args.no_limit_filter,
+                  "stable": not args.no_stable, "bootstrap": args.bootstrap}
+        metrics = dict(net_metrics or {})
+        rid = db.insert_backtest_run({
+            "run_ts": run_ts, "kind": "daily", "fill_mode": args.fill,
+            "cost_mode": _cost_mode_text(args), "n_symbols": len(results),
+            "n_trades": metrics.get("n", 0), "sample_days": args.days,
+            "params": params, "metrics": metrics,
+            "cumulative": metrics.get("cumulative"), "max_dd": metrics.get("max_dd"),
+            "sharpe": metrics.get("sharpe"), "win_rate": metrics.get("win_rate")})
+        hist = db.backtest_run_history("daily")
+        cums = [h["cumulative"] for h in hist if h["cumulative"] is not None]
+        pct = percentile_at_or_below(cums, metrics.get("cumulative"))
+        return {"id": rid, "seq": len(hist), "total": len(hist), "percentile": pct}
+    except Exception:
+        return None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 def write_outputs(results, errors, args):
     os.makedirs(os.path.dirname(config.BACKTEST_REPORT_FILE), exist_ok=True)
     report = build_report(results, errors, args)
@@ -525,7 +795,7 @@ def write_outputs(results, errors, args):
     with open(config.BACKTEST_TRADES_FILE, "w", encoding="utf-8-sig", newline="") as f:
         fieldnames = ["symbol", "code", "entry_date", "exit_date", "direction",
                       "entry_score", "hold", "gross_ret", "fee_cost", "slip_cost",
-                      "cost", "ret", "fee_open_yuan", "fee_close_yuan",
+                      "impact_cost", "cost", "ret", "fee_open_yuan", "fee_close_yuan",
                       "fee_round_yuan", "multiplier", "fee_mode",
                       "blocked_exits", "exit"]
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -558,10 +828,27 @@ def main(argv=None):
     parser.add_argument("--no-cost", action="store_true", help="不扣手续费和滑点")
     parser.add_argument("--no-limit-filter", action="store_true", help="不过滤疑似锁涨跌停")
     parser.add_argument("--no-stable", action="store_true", help="跳过3x3参数稳定性扫描")
+    parser.add_argument("--fill", choices=("close", "next_open"),
+                        default=config.BACKTEST_FILL_MODE,
+                        help="成交时点：close=信号根收盘(默认,旧口径)；next_open=次根开盘(保守对照)")
+    parser.add_argument("--impact-rate", type=float, default=config.BACKTEST_IMPACT_RATE,
+                        help="单边冲击成本率(价格比例)，默认0=不额外计，往返两次")
+    parser.add_argument("--bootstrap", type=int, default=config.BACKTEST_BOOTSTRAP_N,
+                        help="交易序列bootstrap重采样次数，0=关闭，默认1000")
+    parser.add_argument("--no-bootstrap", action="store_true", help="关闭bootstrap置信区间")
+    parser.add_argument("--seed", type=int, default=config.BACKTEST_BOOTSTRAP_SEED,
+                        help="bootstrap固定随机种子（可复现）")
+    parser.add_argument("--oos-ratio", type=float, default=config.BACKTEST_OOS_RATIO,
+                        help="样本外占比(0=关闭)；如0.3=后30%%交易为OOS与前70%%IS并列对照")
+    parser.add_argument("--no-archive", action="store_true",
+                        help="不向 storage.backtest_runs 落本次留档")
+    parser.add_argument("--no-validation-ref", action="store_true",
+                        help="报告抬头不引用 backtest_validation 的 DSR/PBO sidecar")
     args = parser.parse_args(argv)
     if args.no_cost:
         args.fee_rate = 0.0
         args.slip_rate = 0.0
+        args.impact_rate = 0.0
         args.no_real_fees = True
 
     items = resolve_codes(args.codes, args.limit if args.limit > 0 else None)
@@ -575,6 +862,13 @@ def main(argv=None):
             elif err:
                 errors.append((name, err))
     results.sort(key=lambda r: r["code"])
+    all_trades = [t for r in results for t in r["trades"]]
+    net_metrics = metrics_from_returns([t["ret"] for t in all_trades], args.hold)
+    if not args.no_archive and results:
+        args._archive = archive_run(args, results, errors, net_metrics)
+    else:
+        args._archive = None
+    args._validation = None if args.no_validation_ref else load_validation_sidecar()
     report = write_outputs(results, errors, args)
     print(report)
     print(f"报告已写入: {config.BACKTEST_REPORT_FILE}")

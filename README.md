@@ -17,6 +17,7 @@
 | P1-⑬ 新闻否定/转折识别 | `factors.py`：关键词命中点局部识别“并未/没有/落空/证伪/取消/推迟/不及预期”等，自动反转极性，避免“减产预期落空”被误判为利多 |
 | P1-⑭ 期权IV分位/偏度/组合Greeks/保证金 | OpenVlab页面解析真实平值IV、隐波百分位、偏度；无页面时用HV历史分位和波动率锥代理；组合输出Δ/Γ/Vega/Θ，并对卖方/备兑/比率结构给保守保证金点值估算 |
 | P1-⑩ 最小日线回测 | `backtest.py`：零新增运行依赖，主连比例复权；默认读取`data/futures_fees.csv`的真实券商手续费（按金额+按手数，开仓+平仓），另扣滑点、过滤疑似锁涨跌停、输出非重叠交易CSV和3×3参数稳定性扫描，同时保留1/5/20日信号衰减 |
+| 第26轮 G4 回测严谨性 | `backtest.py` 增 `--fill {close,next_open}` 成交时点双档（默认close旧口径，next_open次根开盘保守对照，锁板顺延/末根信号不虚构/反手先平后开）、固定种子交易级 bootstrap 1000 次给累计与回撤 P5–中位–P95（总体+多空）、`--oos-ratio` 样本内外分段、`--impact-rate` 冲击成本单列；每次运行落 storage 第11张业务表 `backtest_runs` 留档并在抬头给历史百分位；`tools/backtest_validation.py` 同步产出 `backtest_validation.json` sidecar（DSR/PBO）供回测抬头交叉引用 |
 | 第15轮 日内/平今回测（WP-D1/D2） | `intraday_backtest.py`：零新增依赖，回放自采`minute_bars`分钟库（1/5/15/30/60m，可选1m边界对齐后聚合交叉验证）；vnpy式bar内保守撮合（信号收盘确认、下一根开盘成交，止损/止盈预埋单、同根双触按止损、跳空以开盘成交）；按【交易所结算交易日】判定平今/平昨（前晚夜盘+次日日盘为同一交易日），开open/平today或close走真实券商费率并输出每手人民币与平今对照；精确锁板（前收×品种常态涨跌停、整根封死才拦截）；日内模式日终强平不隔夜，摆动模式可跨日；输出逐笔CSV与入场×止损×止盈18组稳定性网格，看板新增两页签 |
 | 第16轮 组合资金账户/权益曲线（WP-E） | `portfolio.py`：零新增依赖，多品种【共享一个资金池】统一时间轴回放（分钟复用intraday_backtest信号/日线复用backtest信号，撮合口径完全一致）；按`data/futures_margins.csv`真实公司保证金率逐bar盯市算静态/动态权益、保证金占用、可用资金、风险度；三种手数分配（等名义/等风险ATR/按综合分档）并受单品种与板块名义上限、可用资金、同时持仓数共同约束；风险度破线按浮亏最大优先强平、降到安全线为止；输出组合净值/年化/回撤/夏普/索提诺、权益曲线CSV、含手数与强平标记的逐笔成交CSV，看板新增两页签。顺带修复新浪日K主连代码（RB00→RB0，接口已不再认双零）导致backtest日线回测退化为"样本不足"的问题 |
 | 第11轮 期权完整链/PCR + 期限结构 | `option_chain.py`：新浪商品期权T型报价（五大所57个期权品种实测，零新增依赖），输出每腿买卖量/最新价/持仓量、**持仓量PCR（认沽/认购比）**、ATM定位、最大持仓行权价（支撑/压力）、PCR情绪档与近30日分位，30分钟缓存、每轮6线程并发预热、快照落`option_chains`表；`contracts.term_structure` 用全月份合约零额外请求组装近远月价差/年化展期收益率/正向(Contango)-反向(Back)结构（本轮只展示，不进综合分） |
@@ -52,6 +53,12 @@ D:\Python\python.exe backtest.py --all --days 250
 # 默认读取data/futures_fees.csv真实手续费，另加滑点万1；敏感性测试可回退统一费率/关闭成本/锁板过滤/参数网格
 D:\Python\python.exe backtest.py --codes RB0,MA0 --no-real-fees
 D:\Python\python.exe backtest.py --codes RB0,MA0 --no-cost --no-limit-filter --no-stable
+# G4 严谨性对照（第26轮）：
+D:\Python\python.exe backtest.py --all --fill next_open        # 保守档：信号次根开盘成交(默认close=信号根收盘)
+D:\Python\python.exe backtest.py --all --oos-ratio 0.3         # 后30%交易为样本外OOS，与前70%IS并列对照
+D:\Python\python.exe backtest.py --all --impact-rate 0.00005   # 另计单边万0.5冲击成本(往返两次,默认0)
+D:\Python\python.exe backtest.py --all --no-bootstrap --no-archive --no-validation-ref  # 关区间/留档/DSR引用
+# 每次运行默认落 backtest_runs 留档表并在抬头标注历史百分位；bootstrap固定种子(可--seed)可复现，交易<20笔不给区间
 ```
 
 单独运行日内/平今回测（读常驻自采的分钟库，不联网）：
@@ -88,7 +95,7 @@ D:\Python\python.exe tools\factor_eval.py --selftest         # 零网络合成�
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
-D:\Python\python.exe tools\backtest_validation.py --all-grid            # 全品种，出 reports/backtest_validation.txt
+D:\Python\python.exe tools\backtest_validation.py --all-grid            # 全品种，出 reports/backtest_validation.txt + 同名 .json sidecar（供backtest抬头引用DSR/PBO）
 ```
 
 ### 启动流程
@@ -360,7 +367,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、第22轮扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：20 个测试文件、238 个用例，约 3 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、组合账户强平、存储去重、**图表数据层（第22轮 test_charts 14 例）**及三个研究工具自测。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：21 个测试文件、255 个用例，约 3 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、组合账户强平、存储去重、图表数据层及研究工具自测。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行

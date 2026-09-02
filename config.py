@@ -577,6 +577,17 @@ DATA_HEALTH_JUMP_PCT = 0.30         # 单品种|涨跌幅|≥30%判为异常跳�
 DATA_HEALTH_MISS_ALERT_CYCLES = 2   # 某品种连续多少轮缺行情才告警（避免单轮抖动误报）
 DATA_HEALTH_SOURCE_FAIL_CYCLES = 2  # 某数据源连续多少轮全失败才告警
 
+# ---------------- G4 回测严谨性（第26轮；默认值全部等价旧版，只增量展示/留档） ----------------
+BACKTEST_FILL_MODE = "close"        # 成交时点：close=信号根收盘成交(旧口径,默认保可比)；next_open=次根开盘成交(保守对照,贴近实盘)
+BACKTEST_IMPACT_RATE = 0.0          # 单边冲击成本率(按价格比例)，默认0=不额外计；与滑点分开列示，往返计两次
+BACKTEST_BOOTSTRAP_N = 1000         # 交易序列iid bootstrap重采样次数(固定种子可复现)；0=关闭置信区间
+BACKTEST_BOOTSTRAP_SEED = 20260902  # bootstrap固定随机种子，保证同输入逐值可复现
+BACKTEST_BOOTSTRAP_CI = (0.05, 0.95)  # 置信区间分位(下界,上界)
+BACKTEST_BOOTSTRAP_MIN_TRADES = 20  # 净交易笔数少于该值不给区间(小样本不做假精确)
+BACKTEST_OOS_RATIO = 0.0            # 样本外占比：0=关闭(旧口径)；如0.3=按时间排序后30%交易为OOS、与前70%IS并列对照
+BACKTEST_VALIDATION_JSON = os.path.join(BASE_DIR, "reports", "backtest_validation.json")  # DSR/PBO sidecar(研究工具产出)
+BACKTEST_RUNS_RETENTION_DAYS = 3650  # backtest_runs 回测留档保留天数(约10年，体积极小)
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。

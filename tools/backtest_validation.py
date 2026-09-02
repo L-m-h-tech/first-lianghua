@@ -24,8 +24,10 @@ backtest_validation.py — 回测样本外验证与防过拟合工具箱（WP-F4
 产出：reports/backtest_validation.txt（utf-8-sig）
 """
 import argparse
+import json
 import csv
 import itertools
+from datetime import datetime
 import math
 import os
 import statistics
@@ -497,6 +499,8 @@ def render_grid(g, n_blocks, wf_train, wf_test):
 
 
 def build_report(args):
+    sidecar = {"generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+               "dsr": None, "grid": None, "summaries": []}
     lines = []
     lines.append("回测样本外验证与防过拟合报告（tools/backtest_validation.py）")
     lines.append("方法：Deflated Sharpe（多重试验/非正态校正）、CSCV-PBO、PurgedKFold、Walk-forward、参数高原")
@@ -510,6 +514,16 @@ def build_report(args):
             d = deflated_sharpe(rets, args.trials)
             lines += render_dsr("组合账户日收益 DSR（来源 %s，%d 个交易日）"
                                 % (os.path.basename(args.dsr_equity), len(days)), d)
+            if d["dsr"] >= 0.95:
+                dsr_verdict = "经多重试验校正后仍显著"
+            elif d["dsr"] >= 0.8:
+                dsr_verdict = "边际，需增样本/减试验复核"
+            else:
+                dsr_verdict = "无法排除多重试验偶然性"
+            sidecar["dsr"] = {"n_days": len(days), "sr_obs": d["sr_per_period"],
+                              "sr0": d["sr0_multiple_trial"], "psr_zero": d["psr_vs_zero"],
+                              "dsr": d["dsr"], "n_trials": d["n_trials"],
+                              "verdict": dsr_verdict}
             lines.append("")
         else:
             lines.append("权益序列交易日不足（%d），DSR 跳过" % len(rets))
@@ -542,6 +556,11 @@ def build_report(args):
             summaries.append((sym, c["pbo"],
                               wf.get("mean_oos_sharpe"), wf.get("oos_beat_median_rate"),
                               pl["plateau_ratio"], pl["verdict"], best_perf))
+            sidecar["summaries"].append({"sym": sym, "pbo": c["pbo"],
+                                         "oos_sharpe": wf.get("mean_oos_sharpe"),
+                                         "oos_beat_median": wf.get("oos_beat_median_rate"),
+                                         "plateau_ratio": pl["plateau_ratio"],
+                                         "best_perf": best_perf})
         except Exception as exc:  # 单品种失败不拖垮整份报告
             lines.append("=" * 96)
             lines.append("品种 %s 评估失败：%s" % (sym, exc))
@@ -564,10 +583,12 @@ def build_report(args):
                          % (sym, pbo,
                             "--" if oos is None else "%.3f" % oos,
                             _pct(beat), pr_txt, short))
+        sidecar["grid"] = {"n": n, "pbo_good": n_good_pbo, "all_loss": n_loss,
+                           "oos_pos": n_oos_pos}
     lines.append("")
     lines.append("说明：PBO/DSR 是对'选优动作'的统计校正，不是收益预测；样本越长、候选越少结论越可靠。")
     lines.append("PurgedKFold 为 WP-F4 训练 ml_samples 时的强制切分器（见 --selftest 断言），禁止随机K折。")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", sidecar
 
 
 # ============================================================
@@ -682,12 +703,16 @@ def main(argv=None):
         args.dsr_equity = ""
     if not args.grid and not args.all_grid and not args.dsr_equity:
         p.error("请至少指定 --dsr-equity / --grid / --all-grid 之一，或先 --selftest")
-    text = build_report(args)
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    text, sidecar = build_report(args)
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8-sig") as f:
         f.write(text)
+    json_out = os.path.splitext(args.out)[0] + ".json"
+    with open(json_out, "w", encoding="utf-8") as jf:
+        json.dump(sidecar, jf, ensure_ascii=False, indent=2, allow_nan=False)
     print(text)
     print("已写出", args.out)
+    print("结构化 sidecar 已写出", json_out)
     return 0
 
 
