@@ -232,6 +232,93 @@ def _sample_std(values):
     return math.sqrt(sum((x - mean) ** 2 for x in values) / (len(values) - 1))
 
 
+# ================= G7（第30轮）：多窗口时序动量 TSMOM(63/126/252)，纯函数、零网络、实时/离线共用同一口径 =================
+def _lookback_return(closes, end, lookback):
+    """时点 end 相对 end-lookback 的累计简单收益（与 ret5/ret20 同口径）；历史不足/价格非法返回 None。"""
+    j = end - int(lookback)
+    if j < 0 or lookback <= 0:
+        return None
+    base, now = closes[j], closes[end]
+    if not (base > 0 and now > 0 and math.isfinite(base) and math.isfinite(now)):
+        return None
+    return now / base - 1.0
+
+
+def _window_std(closes, end, window):
+    """[end-window+1, end] 区间日简单收益的样本标准差；样本<2 返回 None。只用 end 及之前数据，无未来信息。"""
+    lo = end - int(window)
+    if lo < 0 or window < 2:
+        return None
+    rets = [closes[k] / closes[k - 1] - 1.0
+            for k in range(lo + 1, end + 1) if closes[k - 1] > 0]
+    if len(rets) < 2:
+        return None
+    return _sample_std(rets)
+
+
+def tsmom_at(closes, end, lookbacks=None, ann=None, z_clip=None):
+    """单时点 end 的多窗口时序动量特征（纯函数）。
+
+    对每个回看窗 L：
+      ret{L}   = close[end]/close[end-L]-1，原始累计收益（历史不足为 None）；
+      tsmom{L} = ret{L} / (过去 L 日日收益样本std * sqrt(ann))，即"每单位年化波动的趋势收益"，
+                 跨窗口量纲一致、可等权合成（AQR time-series momentum 的波动调整 z 分版本）；
+      blend    = 对可得窗口 tanh(clip(tsom{L},±z_clip)) 等权平均 ∈(-1,1)，影子合成因子。
+    历史不足的窗口缺省 None、绝不编造；至少一个窗口可得时才有 blend。
+    """
+    lookbacks = tuple(lookbacks or config.TSMOM_LOOKBACKS)
+    ann = int(ann or config.TSMOM_ANN)
+    z_clip = float(config.TSMOM_Z_CLIP if z_clip is None else z_clip)
+    feat, zs = {}, []
+    for L in lookbacks:
+        r = _lookback_return(closes, end, L)
+        feat["ret%d" % L] = r
+        z = None
+        if r is not None:
+            sd = _window_std(closes, end, L)
+            if sd is not None and sd > 1e-12:
+                val = r / (sd * math.sqrt(ann))
+                if math.isfinite(val):
+                    z = val
+                    zs.append(max(-z_clip, min(z_clip, val)))
+        feat["tsmom%d" % L] = z
+    feat["blend"] = (sum(math.tanh(z) for z in zs) / len(zs)) if zs else None
+    feat["n_valid"] = len(zs)
+    return feat
+
+
+def tsmom_features(closes, lookbacks=None, ann=None, z_clip=None):
+    """序列最后时点的 TSMOM 特征（实时侧 compute_indicators 用）。"""
+    if not closes:
+        return _tsmom_empty(lookbacks)
+    return tsmom_at(closes, len(closes) - 1, lookbacks=lookbacks, ann=ann, z_clip=z_clip)
+
+
+def _tsmom_empty(lookbacks=None):
+    lookbacks = tuple(lookbacks or config.TSMOM_LOOKBACKS)
+    feat = {}
+    for L in lookbacks:
+        feat["ret%d" % L] = None
+        feat["tsmom%d" % L] = None
+    feat["blend"] = None
+    feat["n_valid"] = 0
+    return feat
+
+
+def tsmom_series(closes, lookbacks=None, ann=None, z_clip=None):
+    """每个时点 t 的 TSMOM 特征（离线 IC 评估用）；返回 {键: 与 closes 等长列表，暖机期为 None}，不在内部切片、O(n)。"""
+    lookbacks = tuple(lookbacks or config.TSMOM_LOOKBACKS)
+    keys = ["ret%d" % L for L in lookbacks] + ["tsmom%d" % L for L in lookbacks] + ["blend"]
+    out = {k: [None] * len(closes) for k in keys}
+    out["n_valid"] = [0] * len(closes)
+    for t in range(len(closes)):
+        f = tsmom_at(closes, t, lookbacks=lookbacks, ann=ann, z_clip=z_clip)
+        for k in keys:
+            out[k][t] = f[k]
+        out["n_valid"][t] = f["n_valid"]
+    return out
+
+
 def _sma_series(values, period):
     out = [None] * len(values)
     if period <= 0:
@@ -490,7 +577,11 @@ def compute_intraday_resonance(bars30):
 
 def compute_indicators(bars, max_bars=140):
     """由日线计算 HV20/HV60、MA/ATR/动量、RSI/MACD/KDJ/BOLL、多周期共振与波动率锥。"""
-    bars = [b for b in bars if _f(b.get("c")) > 0][-max_bars:]
+    all_valid = [b for b in bars if _f(b.get("c")) > 0]
+    # G7：ret252 需≥253根，必须在下面 max_bars=140 截断之前用完整序列计算；
+    # 仅新增影子键、不参与综合分，截断后的旧指标输入与历史逐字节一致。
+    tsmom = tsmom_features([_f(b["c"]) for b in all_valid])
+    bars = all_valid[-max_bars:]
     if len(bars) < 10:
         raise RuntimeError("K线数据不足")
     closes = [_f(b["c"]) for b in bars]
@@ -515,6 +606,11 @@ def compute_indicators(bars, max_bars=140):
             "hv20": hv20, "hv60": hv60,
             "ma5": tech["ma5"], "ma10": tech["ma10"], "ma20": tech["ma20"],
             "atr": atr, "ret5": tech["ret5"], "ret20": tech["ret20"],
+            # G7 多窗口时序动量（影子键，不进 analyzer 综合分；历史不足为 None）
+            "ret63": tsmom["ret63"], "ret126": tsmom["ret126"], "ret252": tsmom["ret252"],
+            "tsmom63": tsmom["tsmom63"], "tsmom126": tsmom["tsmom126"],
+            "tsmom252": tsmom["tsmom252"], "tsmom_blend": tsmom["blend"],
+            "tsmom_n_valid": tsmom["n_valid"],
             "tech": tech, "hv_percentile": tech["hv_percentile"],
             "vol_cone": tech["vol_cone"],
             "last_date": bars[-1].get("d", "")}
@@ -547,6 +643,9 @@ class KlineCache:
                         "hv60": config.DEFAULT_HV.get(cat, 0.25),
                         "ma5": 0.0, "ma10": 0.0, "ma20": 0.0,
                         "atr": 0.0, "ret5": 0.0, "ret20": 0.0,
+                        "ret63": None, "ret126": None, "ret252": None,
+                        "tsmom63": None, "tsmom126": None, "tsmom252": None,
+                        "tsmom_blend": None, "tsmom_n_valid": 0,
                         "tech": {}, "hv_percentile": None, "vol_cone": {},
                         "last_date": ""}
             return fallback, False

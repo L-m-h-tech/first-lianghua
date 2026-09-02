@@ -140,6 +140,18 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
         if intraday_info.get("ok"):
             tech_note += "；" + intraday_info.get("resonance_note", "")
 
+    # G7（第30轮）多窗口时序动量：影子记录，绝不加入 parts、绝不改变 score；
+    # TSMOM_SHADOW=False（或取数失败/历史不足）时为 None，分析行与本轮之前逐字节等价。
+    tsmom_shadow = None
+    if getattr(config, "TSMOM_SHADOW", False) and kline_ok and price > 0:
+        _shadow = {k: ind.get(k) for k in
+                   ("ret63", "ret126", "ret252", "tsmom63", "tsmom126", "tsmom252")}
+        _shadow["blend"] = ind.get("tsmom_blend")
+        _shadow["n_valid"] = int(ind.get("tsmom_n_valid") or 0)
+        if _shadow["n_valid"] > 0 or any(v is not None for k, v in _shadow.items()
+                                         if k.startswith("ret")):
+            tsmom_shadow = _shadow
+
     # 主力合约月份与期权月份（term 已在函数开头算好）
     contract_code, main_month = "", ""
     opt_month, month_note = None, ""
@@ -178,7 +190,8 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
             "opt_month": opt_month, "month_note": month_note, "term": term,
             "fundamental": fund_pack,
             "inst": inst or {}, "inst_ratio": inst_ratio, "inst_note": inst_note,
-            "page": page or {}, "forecast": ""}
+            "page": page or {}, "forecast": "",
+            "tsmom_shadow": tsmom_shadow}
     result["debate"] = build_debate(result)
     return result
 

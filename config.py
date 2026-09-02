@@ -617,6 +617,24 @@ METRICS_ROLLING_WINDOW = 60       # 滚动夏普窗口（个交易日）
 METRICS_VAR_ALPHA = 0.05          # 历史法 VaR/CVaR 左尾概率（5%）
 TEAR_MAX_POINTS = 1200            # 看板水下曲线最大绘制点数（确定性等距抽稀）
 
+# ================= G7（第30轮）：多窗口时序动量 TSMOM(63/126/252)，本轮=影子评估阶段，绝不进综合分 =================
+# 铁律：本块所有能力默认"只记录/只研究"——实时侧把影子值挂到分析行（随 signals.raw_json 落库），
+# 不加入 analyzer.parts、不改变综合分一兵一卒；只有离线 tools/tsmom_eval.py 证明"确定不更差"后，
+# 后续轮次才允许并入"日线动量"，且保留一键回退（TSMOM_SHADOW=False 即与本轮之前逐字节等价）。
+TSMOM_LOOKBACKS = (63, 126, 252)  # 多窗口回看交易日（约1/3/6个月）；现网仅 ret5/ret20 短窗，补中长期趋势
+TSMOM_ANN = 252                   # 波动标准化的年化交易日（z=窗口累计收益÷窗口日收益样本std×√252，跨窗口量纲一致）
+TSMOM_Z_CLIP = 3.0                # 单窗口波动调整动量的极值压缩带，防单一窗口主导等权合成
+TSMOM_SHADOW = True               # 影子总开关：True=只把 tsmom_shadow 挂到分析行（不改分）；False=完全等价旧版
+# ---- 离线研究侧 tools/tsmom_eval.py（不进常驻链路、可联网拉日K、零新增依赖） ----
+TSMOM_FORECAST_HORIZONS = (5, 20, 60)   # 预测未来收益的持有交易日（约1周/1月/1季），用于看预测力随期限衰减
+TSMOM_EVAL_DAYS = 1023            # 拉取日K根数（新浪主连固定上限1023，足以覆盖最长252窗口+60预测+暖机）
+TSMOM_EVAL_WORKERS = 6            # 并发拉取品种数（与 BACKTEST_WORKERS 同量级）
+TSMOM_EVAL_MIN_SAMPLE = 120       # 单因子×单地平线 pooled 配对最小样本，不足只列数不下结论
+TSMOM_EVAL_OOS_RATIO = 0.3        # IC加权合成的样本外占比（后30%为OOS），防IC权重自欺
+TSMOM_EVAL_RIC_GATE = 0.02        # "可考虑并入"判据门槛：主地平线 |RankIC| 下限（弱有效阈值，宁严勿滥）
+TSMOM_EVAL_FILE = os.path.join(BASE_DIR, "reports", "tsmom_eval.txt")
+TSMOM_EVAL_JSON = os.path.join(BASE_DIR, "reports", "tsmom_eval.json")
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。
