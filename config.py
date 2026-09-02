@@ -15,6 +15,12 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# G10 配置外置：最先加载 .env（key/token/webhook 只走环境变量），必须早于下方任何 os.environ.get。
+# 真实环境变量优先；.env 不存在/为空时零影响。路径可用环境变量 FUTURES_MONITOR_ENV 指定。
+from config_loader import load_dotenv as _load_dotenv
+_ENV_PATH = os.environ.get("FUTURES_MONITOR_ENV", os.path.join(BASE_DIR, ".env"))
+_load_dotenv(_ENV_PATH)
+
 # ---------------- 调度间隔 ----------------
 NEWS_INTERVAL = 60            # 新闻/消息刷新间隔（秒）—— 题目要求60s
 OIL_INTERVAL = 10             # 布伦特/纽约原油行情刷新间隔（秒）—— 题目要求10s
@@ -557,5 +563,30 @@ ML_SAMPLE_STOP_ATR = 1.2           # 下轨(止损)距离 = stop_atr × ATR（�
 ML_SAMPLE_MAX_BARS = 48            # 纵向时间壁垒：最多观察多少根bar，超时按到期方向收益符号定标签
 ML_SAMPLE_EMBARGO_BARS = 2         # 标签跨越训练/测试切分点时额外隔离的bar数（purged+embargo）
 ML_SAMPLES_RETENTION_DAYS = 3650   # ml_samples 长期保留（约10年，监督学习样本资产）
+
+# ---------------- G11 数据源主备熔断降级链（data_router.py） ----------------
+DATA_ROUTER_ENABLED = True          # 总开关；False=熔断器永不拦截（等价旧版逐源尝试）
+DATA_ROUTER_FAIL_THRESHOLD = 5      # 单源连续失败多少次进入熔断 OPEN
+DATA_ROUTER_COOLDOWN_SEC = 300      # 熔断冷却秒数：到期放一次半开试探，成功恢复/失败重新熔断
+DATA_ROUTER_ALERT_AFTER = 2         # G6：某源连续多少轮处于熔断/全失败则复用 alerts 告警
+
+# ---------------- G6 数据质量监控（data_health.py + storage.data_health 表） ----------------
+DATA_HEALTH_ENABLED = True          # 总开关；False=不评估/不落表/不告警（等价旧版）
+DATA_HEALTH_RETENTION_DAYS = 365    # data_health 健康记录保留天数（体积极小，默认留1年）
+DATA_HEALTH_JUMP_PCT = 0.30         # 单品种|涨跌幅|≥30%判为异常跳变（疑似脏价，真实商品期货罕见）
+DATA_HEALTH_MISS_ALERT_CYCLES = 2   # 某品种连续多少轮缺行情才告警（避免单轮抖动误报）
+DATA_HEALTH_SOURCE_FAIL_CYCLES = 2  # 某数据源连续多少轮全失败才告警
+
+# ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
+# 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
+# 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。
+from config_loader import load_config_file as _load_config_file, apply_overrides as _apply_overrides
+_CONFIG_PATH = os.environ.get("FUTURES_MONITOR_CONFIG", os.path.join(BASE_DIR, "config.json"))
+_cfg_obj, _cfg_err = _load_config_file(_CONFIG_PATH)
+CONFIG_OVERRIDE_SOURCE = _CONFIG_PATH if _cfg_obj is not None else None
+CONFIG_OVERRIDE_REPORT = _apply_overrides(globals(), _cfg_obj) if _cfg_obj is not None else {"applied": {}, "skipped": {}}
+if _cfg_err:
+    # 文件损坏只记录、不中断：全部沿用内置默认
+    CONFIG_OVERRIDE_REPORT["skipped"]["__file__"] = _cfg_err
 
 

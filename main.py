@@ -67,6 +67,8 @@ import browser_reader
 import config
 import contracts
 import cross_section
+import data_health
+from data_router import REGISTRY
 import factors
 import flow_tracker
 import fundamental_data
@@ -122,6 +124,8 @@ class State:
         self.last_forecasts = {}                  # 末轮预测走向（供复盘引用）
         self.last_cross_section = {}             # 末轮横截面相对强弱（WP-F1，供报告/看板）
         self.calibrator = signal_calibrator.SignalCalibrator(enabled=False)  # WP-F2 A3 历史胜率校准器（每轮4.7刷新，默认影子）
+        self.health_monitor = data_health.HealthMonitor()  # G6 数据质量跨轮监控
+        self.last_health = None                           # G6 末轮数据健康结果（供报告渲染）
         self.heartbeat_ts = time.time()           # 主循环最近一次心跳（看门狗监控卡死）
         self.auto_open_report = False             # 首轮真实报告生成后是否自动用浏览器打开（由 --no-launch 关闭）
         self.report_opened = False                # 实时报告 HTML 是否已自动打开过（全程只开一次）
@@ -501,6 +505,28 @@ def run_cycle(state):
                                watchlist, quotes)
     except Exception:
         LOG.warning("行情结构化入库失败（不影响本轮监控）:\n%s", traceback.format_exc())
+
+    # 2.5 G6 数据质量监控：缺数/陈旧/跳变体检 + 数据源熔断健康落 data_health 表 + 连续异常告警（只监控不改结果）
+    if getattr(config, "DATA_HEALTH_ENABLED", True):
+        try:
+            _trading_now = is_trading_time()[0]
+            health_res = state.health_monitor.observe_cycle(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), quotes, codes,
+                REGISTRY.snapshots(), today_str=datetime.now().strftime("%Y-%m-%d"),
+                session_active=_trading_now)
+            state.last_health = health_res
+            state.db.insert_data_health(health_res["ts"], health_res["rows"])
+            if health_res["alert_codes"]:
+                state.alerts.emit("数据缺失提醒",
+                    "以下品种连续%d轮无行情: %s" % (config.DATA_HEALTH_MISS_ALERT_CYCLES,
+                    ",".join(health_res["alert_codes"][:20])),
+                    level="info", key="dh_miss", cooldown=1800)
+            _src_bad = sorted(set(health_res["alert_sources"]) | set(health_res["open_sources"]))
+            if _src_bad:
+                state.alerts.emit("数据源熔断提醒", "数据源异常/熔断: %s" % ",".join(_src_bad),
+                    level="strong", key="dh_source", cooldown=1800)
+        except Exception:
+            LOG.warning("数据质量监控失败（不影响本轮监控）:\n%s", traceback.format_exc())
 
     # 3. 逐品种分析（含主力合约月份 + 机构动向因子 + 浏览器页面数据）
     inst_map = state.webdata.views_snapshot()

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 
 import config
 from http_client import http
+from data_router import REGISTRY
 from utils import LOG, clip, norm_pdf
 
 
@@ -46,19 +47,31 @@ def fetch_quotes(codes):
             r.encoding = "gbk"
         except Exception as e:
             LOG.warning("期货行情请求失败: %s", e)
+            REGISTRY.record("quote_sina", False)   # G11 主源健康上报
             continue
+        REGISTRY.record("quote_sina", True)
         for code in chunk:
             _parse_quote(code, r.text, quotes)
     missing = [c for c in codes if c not in quotes]
     if missing:
+        # G11：东财兜底源若处于熔断冷却期则直接跳过（它本来也连续失败，避免向坏源空发请求）；
+        # 健康时该 allow() 恒为 True，行为与旧版逐字节一致。
+        em_health = REGISTRY.source("quote_em")
+        if not em_health.allow():
+            em_health.note_skipped()
+            LOG.info("东财行情兜底源熔断冷却中（剩余%.0fs），本轮跳过兜底",
+                     em_health.snapshot()["cooldown_remaining"])
+            return quotes
         try:
             em_quotes = _fetch_quotes_em(missing)
             if em_quotes:
                 quotes.update(em_quotes)
                 LOG.info("新浪行情缺失%d个品种，东财主连快照兜底补回%d个",
                          len(missing), len(em_quotes))
+            REGISTRY.record("quote_em", True)
         except Exception as e:
             LOG.warning("东财行情兜底失败（不影响主流程）: %s", e)
+            REGISTRY.record("quote_em", False)
     return quotes
 
 

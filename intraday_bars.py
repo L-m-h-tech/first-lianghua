@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 import config
 from http_client import http
+from data_router import REGISTRY
 from utils import LOG
 
 # 新浪主连分钟K支持的周期（分钟）；2026-09-01 晚补测 type=1（一分钟）同样返回1023根
@@ -241,16 +242,21 @@ class MinuteCollector:
         bars = fetch_sina_minute(sina_code, ex, period, lmt)
         if bars:
             src = "sina"
+            REGISTRY.record("minute_sina", True)
+        else:
+            REGISTRY.record("minute_sina", False)   # G11 主源健康上报
         # 第二选择：通达信具体合约（仅当 probe 点亮）
-        elif has_contract and self.tdx is not None and getattr(self.tdx, "available", False):
+        if not bars and has_contract and self.tdx is not None and getattr(self.tdx, "available", False):
             bars = self.tdx.fetch(sym, ex, yy, mm, period, lmt)
             if bars:
                 src = "tdx"
+            REGISTRY.record("minute_tdx", bool(bars))
         # 第三选择：东财具体合约兜底
         if not bars and has_contract:
             bars = self.em.fetch(sym, ex, yy, mm, period, lmt)
             if bars:
                 src = "em"
+            REGISTRY.record("minute_em", bool(bars))
         self._note(src)
         return bars, src
 

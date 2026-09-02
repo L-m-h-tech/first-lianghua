@@ -1,0 +1,39 @@
+{
+  "_说明": "复制本文件为 config.json 后按需修改并【删掉不需要的键】（保持扁平、不要嵌套分组）；config.json 已在 .gitignore、不会入库。缺省或删除 config.json 时程序与历史行为完全一致。只可覆盖 config.py 中已存在的【全大写】可调常量；路径类(以 _FILE/_DB/_DIR/_JS/_HTML/_CSV 结尾及 BASE_DIR/DATA_DIR)受保护不可改；未知键、类型不符的键会被忽略并保留内置默认，不会导致启动失败。bool 必须是 true/false（不要加引号）；dict 类型(如 WEB_MACRO_THRESHOLDS)为深合并，只改写出的子键、其余保留。下列取值都是内置默认，照抄不改=无变化。",
+
+  "NEWS_INTERVAL": 60,
+  "OIL_INTERVAL": 10,
+  "REPORT_INTERVAL": 60,
+  "SESSION_EARLY_INTERVAL": 300,
+  "SESSION_INTERVAL": 1200,
+
+  "SCORE_NEUTRAL": 2.0,
+  "SCORE_LIGHT": 4.0,
+  "SCORE_MID": 6.5,
+  "OIL_JUMP_REL": 0.006,
+  "WEB_IMPACT_TRIGGER": 1.5,
+
+  "THS_AUTO_LAUNCH": true,
+  "REPORT_AUTO_OPEN": true,
+  "RISK_GATE_ENABLED": true,
+  "RISK_GATE_AUTO_DOWNGRADE": false,
+  "CALIBRATOR_ENABLED": true,
+  "ALERT_SOUND_ENABLED": true,
+  "ALERT_MID_CROSS_ENABLED": true,
+
+  "PORTFOLIO_EQUITY0": 1000000,
+  "PORTFOLIO_SIZING": "equal_notional",
+  "PORTFOLIO_PER_SYMBOL": 0.15,
+  "PORTFOLIO_MAX_SYMBOL_WEIGHT": 0.3,
+  "PORTFOLIO_MAX_SECTOR_WEIGHT": 0.6,
+  "PORTFOLIO_RISK_LIQUIDATE": 1.0,
+  "PORTFOLIO_RISK_SAFE": 0.8,
+  "PORTFOLIO_MAX_CONCURRENT": 12,
+
+  "BACKTEST_FEE_RATE": 0.00005,
+  "BACKTEST_SLIP_RATE": 0.0001,
+  "INTRADAY_BT_STOP_ATR": 1.2,
+  "INTRADAY_BT_TARGET_ATR": 2.0,
+
+  "WEB_MACRO_THRESHOLDS": {"美元指数": 0.004}
+}

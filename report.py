@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 import config
 import cross_section
+import data_health
 import charts
 from utils import (LOG, is_trading_time, now_str, pad, sanitize, trade_owner_date)
 
@@ -586,6 +587,13 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
         L.append(" 偏空: " + ("、".join(_fbrief(r) for r in bear) or "无显著偏空品种"))
         L.append(" 口径: 库存=东财注册仓单近约3个月滚动分位(样本≥%d); 龙虎榜=前20席会员合计; "
                  "carry=近远月年化; 基差源(生意社)遇反爬自动缺失不编造" % config.FUND_INV_MIN_SAMPLES)
+        L.append("")
+
+    # ---------- G6 数据源健康（缺数/陈旧/跳变/熔断，只监控不改分） ----------
+    _dh = getattr(state, "last_health", None)
+    _dh_block = data_health.format_health_block(_dh)
+    if _dh_block:
+        L.append(_dh_block)
         L.append("")
 
     # ---------- 横截面强弱（WP-F1 B1：稳健z/MAD板块榜+多空Top，只展示不改分） ----------

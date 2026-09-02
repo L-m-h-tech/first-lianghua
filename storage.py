@@ -196,6 +196,17 @@ class MonitorDB:
                 CREATE INDEX IF NOT EXISTS idx_ml_sym ON ml_samples(sym, period, bar_dt);
                 CREATE INDEX IF NOT EXISTS idx_ml_label ON ml_samples(label);
                 CREATE INDEX IF NOT EXISTS idx_ml_date ON ml_samples(trade_date);
+
+                CREATE TABLE IF NOT EXISTS data_health(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL, source TEXT NOT NULL,
+                    req INTEGER DEFAULT 0, ok INTEGER DEFAULT 0, fail INTEGER DEFAULT 0,
+                    stale INTEGER DEFAULT 0, jump INTEGER DEFAULT 0,
+                    latency_ms REAL, state TEXT, note TEXT, created_real REAL,
+                    UNIQUE(ts, source)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dh_ts ON data_health(ts);
+                CREATE INDEX IF NOT EXISTS idx_dh_source ON data_health(source, created_real);
                 """
             )
             self.conn.commit()
@@ -625,6 +636,35 @@ class MonitorDB:
             out.append(d)
         return out
 
+    # ---------------- G6 数据质量：data_health ----------------
+
+    def insert_data_health(self, ts, rows):
+        """rows: [{source,req,ok,fail,stale,jump,latency_ms,state,note}]，按 (ts,source) 覆盖。"""
+        if not rows:
+            return 0
+        now_real = datetime.now().timestamp()
+        n = 0
+        with self.lock:
+            for r in rows:
+                self.conn.execute(
+                    """INSERT OR REPLACE INTO data_health(ts,source,req,ok,fail,stale,jump,
+                       latency_ms,state,note,created_real) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (ts, str(r.get("source"))[:40], int(r.get("req", 0)), int(r.get("ok", 0)),
+                     int(r.get("fail", 0)), int(r.get("stale", 0)), int(r.get("jump", 0)),
+                     r.get("latency_ms"), str(r.get("state") or ""),
+                     str(r.get("note") or "")[:200], now_real))
+                n += 1
+            self.conn.commit()
+        return n
+
+    def data_health_recent(self, limit=200):
+        """最近的数据质量记录（按时间倒序），供看板/复盘读取。"""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM data_health ORDER BY created_real DESC, source ASC LIMIT ?",
+                (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
     # ---------------- 信号到期评估 ----------------
 
     def update_signal_outcomes(self, quotes):
@@ -714,7 +754,7 @@ class MonitorDB:
     def table_counts(self):
         out = {}
         with self.lock:
-            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples"):
+            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health"):
                 out[table] = self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
         return out
 
@@ -735,4 +775,6 @@ class MonitorDB:
             # ml_samples 是监督学习样本资产，按更长的保留期清理（默认约10年，近似长期保留）。
             ml_cut = (datetime.now() - timedelta(days=config.ML_SAMPLES_RETENTION_DAYS)).strftime("%Y-%m-%d")
             self.conn.execute("DELETE FROM ml_samples WHERE bar_dt < ?", (ml_cut,))
+            dh_cut = (datetime.now() - timedelta(days=config.DATA_HEALTH_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            self.conn.execute("DELETE FROM data_health WHERE ts < ?", (dh_cut,))
             self.conn.commit()

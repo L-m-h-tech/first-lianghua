@@ -3,6 +3,13 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.25.0] — 2026-09-02 · 第25轮 G9 工程化 + G10 配置外置 + G11 数据源熔断降级链 + G6 数据质量（数据底座一组）
+- **G9 git 工程化（零改运行代码）**：`git init` 并打基线 tag v0.24.0；新增 `.gitignore`（忽略 data/*.db、cache、logs、reports 运行产物、__pycache__、.env 等，保留源码/测试/文档与 data 下 csv/xlsx 配置表）、`.gitattributes`（统一 LF）；requirements 三个直接依赖锁 `==`（requests 2.34.2 / uiautomation 2.0.29 / websocket-client 1.9.1），requirements-freeze.txt 全量留档；新增 CHANGELOG.md / VERSION。
+- **G10 配置外置（零新增依赖，缺配置与历史逐字节一致）**：新增 `config_loader.py`（.env 解析注入且真实环境优先、dict 深合并、按默认类型矫正、只覆盖已存在的全大写可调常量、路径/内部名受保护、非法/未知项跳过不崩）；config.py 启动先载 .env（早于 environ.get）、末尾深合并 config.json；提供 `config.template.json` 与 `.env.example`；可用 FUTURES_MONITOR_CONFIG/FUTURES_MONITOR_ENV 指定外置文件。
+- **G11 数据源主备熔断降级链（纯标准库、时钟可注入）**：新增 `data_router.py`——SourceHealth 熔断器（CLOSED→连续失败 OPEN→冷却 HALF_OPEN 半开试探→成功恢复/失败再熔断）、DataRouter 有序主备（熔断跳过、异常/残缺降级下一源、全失败抛 AllSourcesFailed）、进程级 REGISTRY 健康总账；futures_data 实时行情与 intraday_bars 分钟K三源上报健康，东财兜底源熔断期内跳过（健康时行为不变）。
+- **G6 数据质量监控（只监控不改结果）**：新增 `data_health.py`（缺数/陈旧价/异常跳变体检、跨轮连续缺数与连续全失败追踪、看板文本块）；storage 新增第 11 张表 `data_health`（按 ts+source 覆盖、含保留期清理）与 insert/recent 方法；main 每轮落表并对连续异常复用 alerts 告警；report 增【数据源健康】小块；新增 `tools/db_archive.py` 零依赖按年导出 SQLite 分库/CSV 年包（只导出不删，含 --selftest）。
+- 验证：新增 4 个测试文件共 47 个用例，全量 **pytest 238 全绿（191→238，约2.7s）**；真实 `main.py --once --no-launch` exit0、零 Traceback/ERROR，data_health 落 4 行（行情64/64、分钟源320/320、三源全 closed）、非交易时段报告健康块正确、monitor.db integrity/quick_check=ok、外键无违规（11 张表）。生产 39→43 个 py、14663→15560 行，零新增运行依赖。
+
 ## [0.24.0] — 2026-09-02 · 第24轮 第三份全网/GitHub 对标 + 六文档融合（纯文档，零改生产代码）
 - 全网调研量化系统十层标准架构与 GitHub 主流量化项目（freqtrade/qlib/vnpy/nautilus/Lean 等），逐项对比本项目，产出《量化系统对标与改进报告.html》《对标能力可视化.html》（真实浏览器验证零报错）。
 - 将 2 份新 HTML 与《统一改进路线图》《未完成项落地方案》《AI量化对标与改进方案》《GitHub对标与改进清单》融合为唯一总入口《总体对标与统一改进总纲（融合版）.md》：未实现项统一 G1–G20 编号、按 P0–P3 优先级分类，含不做清单、保持强项、回退表、轮次排期。

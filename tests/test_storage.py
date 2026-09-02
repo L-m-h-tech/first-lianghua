@@ -57,6 +57,27 @@ def test_calibration_pairs_empty(tmp_db):
     assert tmp_db.calibration_pairs() == []
 
 
+def test_data_health_upsert_and_recent(tmp_db):
+    rows = [{"source": "quote_sina", "req": 64, "ok": 62, "fail": 2, "stale": 0,
+             "jump": 0, "state": "closed", "note": "avail=0.97"},
+            {"source": "__quotes__", "req": 64, "ok": 62, "fail": 2, "stale": 1,
+             "jump": 0, "state": "closed", "note": "missing=CU0,XX0"}]
+    assert tmp_db.insert_data_health("2026-09-02 10:00:00", rows) == 2
+    # 同 (ts,source) 覆盖写，不新增
+    rows[0]["ok"] = 64
+    assert tmp_db.insert_data_health("2026-09-02 10:00:00", [rows[0]]) == 1
+    recent = tmp_db.data_health_recent()
+    assert len(recent) == 2
+    sina = [r for r in recent if r["source"] == "quote_sina"][0]
+    assert sina["ok"] == 64 and sina["fail"] == 2
+    assert tmp_db.table_counts()["data_health"] == 2
+
+
+def test_data_health_empty(tmp_db):
+    assert tmp_db.insert_data_health("t", []) == 0
+    assert tmp_db.data_health_recent() == []
+
+
 def test_score_band_name():
     assert storage.score_band_name(1.0) == "观望"
     assert storage.score_band_name(3.0) == "轻仓"
