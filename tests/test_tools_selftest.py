@@ -20,6 +20,7 @@ import portfolio_lab
 import trade_journal
 import research_review
 import experiment_ledger
+import wf_cost_lab
 
 
 def test_factor_eval_selftest():
@@ -114,3 +115,8 @@ def test_research_review_selftest():
 def test_experiment_ledger_selftest():
     """G27①（第44轮）统一实验台账 --selftest：规范哈希/数据身份排mtime/重复串联/坏行宽容/safe_record吞错/CLI。"""
     assert experiment_ledger.selftest() == 0
+
+
+def test_wf_cost_lab_selftest():
+    """G27②③（第45轮）WF参数稳定性+成本曲面/换手容量 --selftest：零网络/零DB合成断言。"""
+    assert wf_cost_lab.selftest() == 0
