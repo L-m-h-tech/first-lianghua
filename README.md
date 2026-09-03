@@ -114,6 +114,7 @@ D:\Python\python.exe tools\factor_regime.py --selftest  # 零网络断言(PIT标
 D:\Python\python.exe portfolio_constructor.py      # 第40轮G26组合构建器自测(等权/逆波动/ERC全牛顿/长仓GMV/capped-simplex/目标波动)
 D:\Python\python.exe tools\portfolio_lab.py         # 第40轮G26：四方法最新权重快照+每20日滚动样本外代理回测(严格无未来,equal为基线)
 D:\Python\python.exe tools\trade_journal.py --bars  # 第42轮G30：交易复盘journal(品种/板块/多空/原因/信号强度/持仓时长分桶+日周节奏+MFE/MAE)
+D:\Python\python.exe tools\research_review.py       # 第43轮G30③：一键研究复盘(聚合各sidecar七段成稿+规则化待办,只读不重跑)
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
@@ -230,6 +231,8 @@ OpenVlab市场页的隐波排行走内部POST接口暂无法稳定获取，程�
 
 10. **交易复盘 journal（`tools/trade_journal.py`，第42轮 G30，研究侧定期人工跑）**：读组合回测的 portfolio_trades.csv（每行=一笔完整开平，净盈亏已含费与平今腿）与可选 equity CSV，按**品种/板块/多空/平仓原因组（止盈·止损·日终强平·反向信号）/平今平昨/信号强度（按|入场分|，空头负分与多头同档）/持仓时长档**七维分桶出胜率/期望/盈亏比/利润因子PF/连胜连亏/费用占比，给日·周节奏、最佳最差单与规则化观察；加 `--bars` 时按与回测同口径的比例复权分钟库、用盘中 h/l 重放每笔 MFE/MAE（多空镜像、覆盖率透明、缺区间安全跳过），出 reports/trade_journal.txt+.json。空文件/0笔/缺库全部安全降级。真实16品种30m共2563笔：**亏损高度集中在1-2bar极短单（1289笔PF0.57净−19.7万），3bar以上PF>1.2（7-12bar PF2.16）；信号强度越大概率越高（弱0.82→分批1.00单调）；日终强平反而PF1.78、反向信号PF0.03；59%亏损单盘中曾浮盈>0.1%（离场纪律线索）**。只读、不改主链/综合分/默认CSV；纸面vs真实成交一致性（需G14盘口）留续。
 
+11. **研究侧一键复盘编排器（`tools/research_review.py`，第43轮 G30③，研究侧收盘后跑一次）**：不重跑任何工具，只把各研究工具**已落盘**的 sidecar（factor_health/factor_regime/attribution/trade_journal/portfolio_lab/backtest_validation 的 .json）+ portfolio_equity.csv + 主链 signal_tracking.txt 聚合成一份七段简报（数据源新鲜度总表→信号命中→G29因子→G28归因→G30①复盘→G3/G5组合风险→WP-F4防过拟合）与**规则化待办清单（WARN/INFO/OK 排序）**，秒级出 reports/research_review.txt+.json。任一产物缺失/损坏/陈旧（默认168h）安全降级并给出刷新命令；utf-8-sig 兼容 BOM、空目录也能成稿。**命名隔离**：主链已有实时轮动复盘 reports/daily_review.txt（main 产出、铁律不动），研究侧故命名 research_review。待办只提示、不自动改参。
+
 ### 4.7 样本外验证与防过拟合工具箱（`tools/backtest_validation.py`，WP-F4 前置 / AFML ch7、11-12）
 
 研究侧、纯标准库、离线只读，回答一个问题——**"在一堆候选参数/因子里挑出回测最好的那个"，这个挑选动作本身有多大概率在拟合噪声**。五块方法（公式来自公开论文，代码自写）：
@@ -318,6 +321,8 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/factor_regime.txt` / `factor_regime.json` | 第39轮 G29续 由 `tools/factor_regime.py` 生成的**因子 regime/换手/衰减形态**：牛熊震荡×高中低波分桶前向 RankIC、1/5/20日秩自相关与隐含换手、指数vs幂律衰减 R² 择优；只研究不改权重 |
 | `reports/portfolio_lab.txt` / `portfolio_lab.json` | 第40轮 G26 由 `tools/portfolio_lab.py` 生成的**组合构建实验台**：等权/逆波动/ERC/GMV 最新目标权重快照（年化波动/有效N/分散化度/风险贡献/目标波动杠杆）+ 每20日滚动样本外代理回测（年化收益/波动/夏普/回撤/换手，equal为基线，严格无未来）；默认不改线上sizing |
 | `reports/trade_journal.txt` / `trade_journal.json` | 第42轮 G30 由 `tools/trade_journal.py` 生成的**交易复盘**：七维分桶（胜率/期望/盈亏比/PF/费用占比/连胜连亏）、日周盈亏节奏、盘中MFE/MAE与由盈转亏比例、最佳最差单、规则化观察；只读不改主链 |
+| `reports/research_review.txt` / `research_review.json` | 第43轮 G30③ 由 `tools/research_review.py` 聚合各研究 sidecar 的**一键研究复盘**：七段简报（新鲜度/信号/因子/归因/复盘/风险/防过拟合）+规则化待办WARN/INFO；只读不重跑、缺损陈旧安全降级，不覆盖主链 daily_review.txt |
+
 | `reports/backtest_validation.txt` | 由 `tools/backtest_validation.py` 生成的防过拟合报告：组合 DSR、逐品种参数网格 CSCV-PBO、Walk-forward 衰减、参数高原/孤峰与全市场结论（只评估不改参） |
 | `data/futures_fees.csv` | 由用户券商手续费表通过`tools/build_fee_table.py`转换的64品种真实费率：投机账户、按金额费率、按手数固定金额、合约乘数；回测运行时只用标准库csv读取，原始xlsx归档在同目录 |
 | `data/futures_margins.csv` | 由`tools/build_margin_table.py`从银河期货保证金比例页解析的64品种**公司保证金率（投机档）+基础板幅+每手报价单位乘数**，组合账户`portfolio.py`运行时只用标准库csv读取；交易所基准档无干净免费源故`exchange_margin`列留空不编造，临近交割/长假公司会上浮、以公司通知为准 |
@@ -420,7 +425,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：31 个测试文件、469 个用例，约 9 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：32 个测试文件、486 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行

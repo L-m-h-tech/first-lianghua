@@ -3,6 +3,21 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.43.0] — 2026-09-03 · 第43轮 G30③ 研究侧一键复盘编排器 research_review（聚合各研究sidecar七段成稿+规则化待办，纯标准库只读，不重跑/不import主链/不覆盖主链daily_review）
+- **任务与定位**：承接第42轮 G30① trade_journal，落地总纲 G30③「一键日/周复盘：行情→因子表现G29→信号命中→交易归因G28→风险G3/G5→待办」。新增 `tools/research_review.py`：把各研究工具**已落盘**的 reports/*.json sidecar + 组合权益 CSV + 主链信号追踪文本聚合成一份"收盘研究简报+规则化待办清单"，秒级出 reports/research_review.txt+.json。**设计取舍：不 subprocess 重跑任何工具**（解耦、秒级、零副作用；各工具按各自节奏人工跑，编排器只串联最新结论并指出先做什么），任一 sidecar 缺失/损坏/字段不全/陈旧全部安全降级并给出刷新命令。**命名隔离**：主链已有 reports/daily_review.txt（report.build_daily_review 实时轮动+新闻、永久保留，属 main 铁律不动），故研究侧模块/产物命名 research_review.*，绝不覆盖主链文件。守三铁律：纯标准库零新依赖、不 import 任何生产模块、不被 main import、不改主链/综合分/默认CSV。
+- **`tools/research_review.py`（777行，11组零网络自测，SOURCES 台账登记9个数据源与刷新命令）**：
+  - **装载与新鲜度**：load_sidecar 坏 JSON 返(None,mtime)区分 missing/broken；freshness_state 三态（ok/stale/missing，默认陈旧阈值168h）+ age_label；**utf-8-sig 读 CSV/TXT 兼容 Windows BOM**（真实 portfolio_equity.csv 带 BOM，首列键否则变 `\ufeffdt`——本轮踩出的坑）；load_equity_summary 跳过末尾空记录、期初取首行/期末取末行、全表扫最大回撤；load_signal_tracking 正则提取主链信号追踪各周期样本/胜率/方向收益。
+  - **六段提取器（缺字段安全返{}）**：sec_factor_health（G29 事件因子 verdict 收集"失效预警"、日频5日RankIC排序、IC半衰期）、sec_attribution（G28 指定周期 alpha/R²、因子贡献与板块BHB effect 排序）、sec_journal（G30① 总览+持仓/信号弱势桶[n≥10且PF<0.7]+由盈转亏比例）、sec_lab（G26 四方法滚动年化/波动/夏普/回撤/换手+快照有效N）、sec_validation（WP-F4 DSR/SR0/裁决+网格PBO）。
+  - **规则化待办引擎 build_actions**：纯规则产出 (WARN/INFO/OK,文本) 并按级排序；覆盖 sidecar 缺失（可选产物 expr_research 与主链 signal_tracking 缺失降 INFO）、陈旧、因子失效预警、journal 整体PF<1与弱势桶、由盈转亏、组合回撤>15%/风险度>80%、DSR<0.95、归因alpha偏负、ERC显著优于等权的决策素材（不自动改 sizing）；全绿给 OK。**待办是提示不是调参令**，改参仍须另开轮次双样本+影子。
+  - **成稿/CLI**：build_report 抬头+〇数据源新鲜度总表+一信号命中+二G29+三G28+四journal+五组合风险+六防过拟合+七规则待办+固定声明；build_json_payload allow_nan=False；CLI `--reports-dir/--stale-hours/--out/--json-out`，空目录也能出全降级报告。
+- **真实聚合诚实结论（reports 9个数据源全部新鲜，秒级成稿）**：
+  - 信号命中：30分钟464样本胜率49.3%/方向收益-0.01%、2小时441/50.9%/+0.02%、**次日315/55.2%/+0.25%（方向优势随持有期拉长才显现，分钟级≈掷硬币）**。
+  - G29 事件因子 30m **4个失效预警**：新闻消息面（IC+0.711%、最长连失6、失败占比62.5%）、机构动向（+2.355%/连失3）、日线动量（-4.519%/连失5）、技术共振（+7.656%/连失5）；日频5日RankIC 最弱 ret20 -2.673%、最强 tsmom252 +1.118%（长周期动量仍最稳，与第39轮 regime 结论一致）。
+  - G28 30m n=376 alpha=-0.00021/根、R²仅2.7%，贡献最负日线动量、最正技术共振，板块农产品 effect+0.00099 最正。
+  - 组合风险：默认8品种回测 100万→92.09万（-7.91%）、最大回撤10.5%；G26 滚动504日61品种 equal夏普0.42/回撤9.5% vs inv_vol0.55/7.8%、erc0.53/6.5%、gmv0.35/5.3%（年换手177%过高）；WP-F4 组合 DSR=0.0001（试18组）无法排除多重试验偶然性、2品种网格0个样本外为正。
+  - 一键待办 6 WARN+3 INFO，把"4个失效因子、journal PF0.90与极短桶PF0.57、59%由盈转亏、DSR不达标、ERC降回撤素材"按优先级一次列齐，免去人翻7份报告。
+- **验证**：新增 tests/test_research_review.py 15 例零网络（缺/损sidecar、新鲜度三态、equity BOM+末尾空记录+全表回撤、信号正则、各段提取排序与弱势桶门槛、待办WARN优先/可选降级/全OK、collect空目录与合成sidecar、七段成稿与allow_nan），test_tools_selftest 注册 selftest（+1）、test_compileall 随新生产py自动+1；全量 **pytest 469→486 全绿（约7.3s、32个测试文件+conftest）0失败0错误0跳过**、compileall 过；**默认8品种（I,MA,RB,SA,TA,AU,AG,CU）组合回测 equity/trades CSV 与 cache 基线哈希逐字节一致**（本轮 git 仅新增 tools/research_review.py 与两 tests、主链零改动，trades/equity 双哈希复现一致）；真实 main --once 43s exit0 无 ERROR/Traceback。规模：生产 py 60→**61（根43/tools17→18含research_review）、26244→27021 行**；测试 31→32文件、4806→5011行；运行依赖仍仅 requests/uiautomation/websocket-client。总纲 G30 段补③落地、3.5表/6.3排期更新。tag v0.43.0。
+
 ## [0.42.0] — 2026-09-03 · 第42轮 G30 交易复盘 journal（七维分桶+日周节奏+盘中MFE/MAE一键成稿，研究侧纯标准库只读，不碰主链/综合分/默认CSV）
 - **任务与定位**：总纲 G30「交易复盘 journal + 纸面/回测一致性 + 一键日/周复盘」的第一块（复盘三件套 G28归因✅/G29体检✅ 之后补齐 journal）。现状是有逐笔成交与纸面账户，但"钱亏在哪类单上"靠人翻报告。本轮新增 `tools/trade_journal.py`：读 `portfolio.py` 产出的 portfolio_trades.csv（每行=一笔完整开平 round-trip，净盈亏已含开平费与平今腿）与可选 equity CSV，一键出分桶/节奏/MFE-MAE/典型单/规则化观察的 txt+json 报告。守三铁律：纯标准库零新依赖、**只读分析不改 main/analyzer/综合分、不改 portfolio 默认 CSV 输出（8品种基线哈希仍逐字节一致）**；G30②纸面vs真实成交一致性（需 G14 自采盘口）与全链路 daily_review 编排器本轮不做、留续。
 - **`tools/trade_journal.py`（710行，17组零网络自测，复用 metrics.trade_stats/excursion 同口径）**：
