@@ -16,6 +16,7 @@ import factor_expr
 import expr_research
 import factor_regime
 import microstructure_lab
+import spread_lab
 import portfolio_constructor
 import portfolio_lab
 import trade_journal
@@ -100,6 +101,11 @@ def test_factor_regime_selftest():
 def test_microstructure_lab_selftest():
     """G24（第54轮）微结构/持仓/季节因子族 --selftest：ΔOI/Amihud/特异波动/偏度PIT、前向IC、日历季节 共8组。"""
     assert microstructure_lab.selftest() == 0
+
+
+def test_spread_lab_selftest():
+    """G12（第55轮）产业链/跨期价差监控 --selftest：尾窗z/分位、近-次价差形态、公共日对齐比价、产业链z 共8组。"""
+    assert spread_lab.selftest() == 0
 
 
 def test_portfolio_constructor_selftest():

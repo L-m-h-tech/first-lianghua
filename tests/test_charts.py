@@ -352,7 +352,9 @@ def test_sync_asset_missing_source_safe(tmp_path, monkeypatch):
 CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
              "c-ic", "c-mono", "c-cal", "c-out",
              "c-paper", "c-paper-dd", "c-paper-risk",
-             "c-tear-uw", "c-tear-rs", "c-tear-m")
+             "c-tear-uw", "c-tear-rs", "c-tear-m",
+             "c-pnav", "c-creview-sweep", "c-creview-fwd",
+             "c-attr-factor", "c-attr-bhb")
 
 
 def test_dashboard_embed_parts_are_fragments():
@@ -542,3 +544,42 @@ def test_circuit_review_payload(tmp_path):
     # 坏 JSON None
     bad = tmp_path / "bad.json"; bad.write_text("{not json", encoding="utf-8")
     assert charts.circuit_review_payload(str(bad)) is None
+
+
+def test_attribution_payload(tmp_path):
+    p = tmp_path / "attribution.json"
+    assert charts.attribution_payload(str(p)) is None        # 缺文件 None
+
+    def fac(name, contrib):
+        return {"factor": name, "beta": 0.1, "tstat": 1.2, "ic": 0.05,
+                "contrib": contrib, "share": 0.2, "n": 100}
+    payload = {
+        "main_h": 1440,
+        "horizons": {
+            "30": {"n": 10, "factors": [], "bhb": {}, "bhb_sectors": []},
+            "1440": {"n": 235, "alpha": 0.0007, "r2": 0.19,
+                     "factors": [fac("A", 0.003), fac("B", -0.001), fac("C", 0.001)],
+                     "bhb": {"alloc": 8e-5, "select": 1.1e-4, "inter": -4e-5,
+                             "total": 1.5e-4, "excess": 1.5e-4},
+                     "bhb_sectors": [
+                         {"sector": "农产品", "alloc": 1e-5, "select": 2e-4, "inter": -5e-5, "effect": 1.6e-4},
+                         {"sector": "有色", "alloc": 7e-6, "select": -1e-5, "inter": 0.0, "effect": -3e-6}]}},
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.attribution_payload(str(p))
+    assert d is not None and d["h"] == 1440 and d["n"] == 235
+    # 因子按 contrib 升序（横向柱最大值落顶）：B(-.001) -> C(.001) -> A(.003)
+    assert [f["name"] for f in d["factors"]] == ["B", "C", "A"]
+    assert abs(d["factors"][-1]["contrib"] - 0.003) < 1e-12
+    assert len(d["sectors"]) == 2 and d["sectors"][0]["name"] == "农产品"
+    assert abs(d["bhb"]["total"] - 1.5e-4) < 1e-15 and d["horizons"] == [30, 1440]
+    # main_h 缺失时回退到最大 horizon
+    payload2 = dict(payload); payload2["main_h"] = 9999
+    (tmp_path / "a2.json").write_text(json.dumps(payload2), encoding="utf-8")
+    d2 = charts.attribution_payload(str(tmp_path / "a2.json"))
+    assert d2["h"] == 1440
+    # horizons 非 dict / 空 -> None；坏 JSON -> None
+    (tmp_path / "a3.json").write_text(json.dumps({"horizons": []}), encoding="utf-8")
+    assert charts.attribution_payload(str(tmp_path / "a3.json")) is None
+    bad = tmp_path / "bad.json"; bad.write_text("{bad", encoding="utf-8")
+    assert charts.attribution_payload(str(bad)) is None

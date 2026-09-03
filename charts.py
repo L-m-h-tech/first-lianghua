@@ -409,6 +409,45 @@ def circuit_review_payload(path=None):
         return None
 
 
+# ---------------- ⑨ G28续 因子/BHB 板块归因（attribution.json） ----------------
+def attribution_payload(path=None):
+    """读 reports/attribution.json：抽主周期(main_h)各因子日均收益贡献 + BHB 板块三效应。缺文件/坏表返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "attribution.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        hz = data.get("horizons")
+        if not isinstance(hz, dict) or not hz:
+            return None
+        main_h = data.get("main_h")
+        hkey = str(main_h) if main_h is not None else None
+        if hkey not in hz:                       # 缺主周期就退到最大 horizon
+            hkey = sorted(hz, key=lambda k: int(k))[-1]
+        blk = hz[hkey]
+        factors = []
+        for fr in (blk.get("factors") or []):
+            factors.append({"name": fr.get("factor"), "contrib": fr.get("contrib"),
+                            "beta": fr.get("beta"), "tstat": fr.get("tstat"),
+                            "ic": fr.get("ic"), "share": fr.get("share")})
+        # 贡献升序：ECharts 横向类目轴首项在底，升序喂入后最大值自然落在最顶
+        factors.sort(key=lambda x: (x["contrib"] is None,
+                                    x["contrib"] if x["contrib"] is not None else 0.0))
+        sectors = [{"name": s.get("sector"), "alloc": s.get("alloc"), "select": s.get("select"),
+                    "inter": s.get("inter"), "effect": s.get("effect")}
+                   for s in (blk.get("bhb_sectors") or [])]
+        bhb = blk.get("bhb") or {}
+        return {"h": int(hkey), "n": blk.get("n"), "alpha": blk.get("alpha"), "r2": blk.get("r2"),
+                "factors": factors, "sectors": sectors,
+                "bhb": {"alloc": bhb.get("alloc"), "select": bhb.get("select"),
+                        "inter": bhb.get("inter"), "total": bhb.get("total"),
+                        "excess": bhb.get("excess")},
+                "horizons": sorted(int(k) for k in hz)}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
 # ---------------- 汇总与落盘 ----------------
 
 def _tear_from_series(dts, equity, source, max_points=1200):
@@ -535,6 +574,11 @@ def build_payload(state=None):
         payload["circuit_review"] = circuit_review_payload()
     except Exception:
         payload["circuit_review"] = None
+    # ⑨ G28续 因子/BHB 板块归因（attribution 离线 JSON；缺文件自动 None 显空态）
+    try:
+        payload["attribution"] = attribution_payload()
+    except Exception:
+        payload["attribution"] = None
     return payload
 
 
@@ -714,6 +758,15 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>1%校准档·触发后条件远期 vs 基准 <span class="sub">T+1/3/5/10 平均收益（柱=触发后条件、点线=全样本基准）</span></h3>
     <div id="c-creview-fwd" class="chart" style="height:280px"></div>
   </div>
+  <div class="card full">
+    <h3>⑨ 因子收益归因·主周期 <span class="sub">attribution.json：多元 OLS 各因子日均收益贡献（%/日，红正绿负，悬停看 β/t/IC/占比；先跑 tools/attribution.py）</span></h3>
+    <div class="chips" id="attr-chips"></div>
+    <div id="c-attr-factor" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card full">
+    <h3>BHB 板块归因·配置/选择/交互效应 <span class="sub">组合相对等权基准的超额来源分解（%/日：配置=板块权重差、选择=板块内选品、交互=两者交叉）</span></h3>
+    <div id="c-attr-bhb" class="chart" style="height:300px"></div>
+  </div>
 </div>
 """
 
@@ -725,7 +778,8 @@ var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-ic", "c-mono", "c-cal", "c-out",
                  "c-paper", "c-paper-dd", "c-paper-risk",
                  "c-tear-uw", "c-tear-rs", "c-tear-m",
-                 "c-pnav", "c-creview-sweep", "c-creview-fwd"];
+                 "c-pnav", "c-creview-sweep", "c-creview-fwd",
+                 "c-attr-factor", "c-attr-bhb"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -1159,6 +1213,63 @@ function setGen(text) {
   var el = document.getElementById("cp-gen");
   if (el) el.textContent = text;
 }
+function renderAttr(d) {
+  if (!d || !d.factors || !d.factors.length) {
+    empty("c-attr-factor", "暂无因子归因：先运行 python tools/attribution.py 生成 reports/attribution.json。");
+    empty("c-attr-bhb", "暂无 BHB 板块归因数据。");
+    return;
+  }
+  var names = d.factors.map(function (f) { return f.name; });
+  var contrib = d.factors.map(function (f) {
+    return f.contrib == null ? null : +(f.contrib * 100).toFixed(5);
+  });
+  var chipEl = document.getElementById("attr-chips");
+  if (chipEl) {
+    chipEl.textContent = "主周期 " + d.h + "分钟 / n=" + (d.n == null ? "—" : d.n)
+      + " / α=" + (d.alpha == null ? "—" : pct(d.alpha, 4))
+      + " / R²=" + (d.r2 == null ? "—" : (+d.r2).toFixed(3));
+  }
+  mk("c-attr-factor").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "item", formatter: function (p) {
+      var f = d.factors[p.dataIndex];
+      return f.name + "<br/>日均贡献 " + (f.contrib == null ? "—" : pct(f.contrib, 5))
+        + "<br/>β=" + (f.beta == null ? "—" : (+f.beta).toFixed(5))
+        + "  t=" + (f.tstat == null ? "—" : (+f.tstat).toFixed(2))
+        + "<br/>IC=" + (f.ic == null ? "—" : (+f.ic).toFixed(3))
+        + "  贡献占比=" + (f.share == null ? "—" : pct(f.share, 1)); }},
+    grid: baseGrid({left: 120, right: 56, top: 14, bottom: 28}),
+    xAxis: {type: "value", axisLabel: {color: AXIS, formatter: function (v) { return v.toFixed(3) + "%"; }},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    yAxis: {type: "category", data: names, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    series: [{type: "bar", barWidth: "58%",
+      data: contrib.map(function (v) {
+        return {value: v, itemStyle: {color: signedColor(v == null ? 0 : v)}};
+      }),
+      label: {show: true, position: "right", color: AXIS,
+              formatter: function (p) { return p.value == null ? "" : (+p.value).toFixed(4) + "%"; }}}]
+  });
+  var secs = d.sectors || [];
+  if (!secs.length) { empty("c-attr-bhb", "暂无 BHB 板块归因（bhb_sectors 为空）。"); return; }
+  function sarr(k) {
+    return secs.map(function (s) { var v = s[k]; return v == null ? null : +(v * 100).toFixed(5); });
+  }
+  var sNames = secs.map(function (s) { return s.name; });
+  mk("c-attr-bhb").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+              valueFormatter: function (v) { return v == null ? "—" : (+v).toFixed(4) + "%"; }},
+    legend: {data: ["配置效应", "选择效应", "交互效应"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 38}),
+    xAxis: {type: "category", data: sNames, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "value", axisLabel: {color: AXIS, formatter: function (v) { return v.toFixed(3) + "%"; }},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    series: [
+      {name: "配置效应", type: "bar", data: sarr("alloc"), itemStyle: {color: BLUE}},
+      {name: "选择效应", type: "bar", data: sarr("select"), itemStyle: {color: GOLD}},
+      {name: "交互效应", type: "bar", data: sarr("inter"), itemStyle: {color: NEUT}}]
+  });
+}
 function loadAndRender() {
   if (typeof echarts === "undefined") {
     setGen("本地 ECharts 资源缺失（assets/echarts.min.js）：运行 python charts.py --rebuild 或等下一轮监控自动同步。");
@@ -1180,11 +1291,12 @@ function loadAndRender() {
     renderTear(D.tear);
     renderPnav(D.portfolio_nav);
     renderCreview(D.circuit_review);
+    renderAttr(D.attribution);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
-    renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); };
+    renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }
