@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：29 个 `test_*.py` + `conftest.py`，共 **391** 个用例，全绿约 4.7 秒。
+当前规模：29 个 `test_*.py` + `conftest.py`，共 **397** 个用例，全绿约 4.7 秒。
 
 ## 设计纪律（必须保持）
 
@@ -45,6 +45,6 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_data_health.py | 缺数/陈旧/跳变体检、跨轮连续缺数与连续全失败、增量折算、报告块（第25轮 G6） |
 | test_paper_broker.py | 三阈值迟滞、close/next两档成交时点（next严格晚于信号）、实时锁板顺延、滑点与双边费、反手先平后开、离场撤单、临时约束排队不膨胀、强平、资金不足拒单、三表落库与持仓中/平仓后重启恢复、默认休眠（第27轮 G1） |
 | test_attribution.py | 方向化暴露/动态键归一、OLS恢复与奇异、加法归因闭合/零方差剔除/空样本、BHB手算+随机fuzz恒等、板块统计rb无方向、累计曲线闭合、IS-OOS、端到端报告（第35轮 G28） |
-| test_research_panel.py | 特征注册表与config一致/唯一/动态键、PIT严格asof边界与基本面当日不可见、暖机ret1d手算、扰动法无未来+故意泄漏反向用例、时间戳扫描、训练-服务parity一致+注入检出、PanelStore幂等重建回读、缓存结构审计干净/破坏检出（第36轮 G21） |
-| test_tools_selftest.py | factor_eval/carry_eval/attribution/panel_builder/pit_audit/build_ml_samples/backtest_validation/db_archive 及根模块 factors_catalog 自带合成断言 |
+| test_research_panel.py | 特征注册表与config一致/唯一/动态键、PIT严格asof边界与基本面当日不可见、暖机ret1d手算、扰动法无未来+故意泄漏反向用例、时间戳扫描、训练-服务parity一致+注入检出、PanelStore幂等重建回读、缓存结构审计干净/破坏检出、G21续面板回读roundtrip与xsmom/tsmom面板路径==网络路径/load_adjusted_bars不二次复权（第36/37轮 G21） |
+| test_tools_selftest.py | factor_eval/carry_eval/attribution/panel_builder/pit_audit/factor_health/build_ml_samples/backtest_validation/db_archive 及根模块 factors_catalog 自带合成断言 |
 | test_compileall.py | 参数化编译全部生产 .py，语法损坏即变红（防“假全绿”） |
