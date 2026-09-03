@@ -104,7 +104,8 @@ def test_example_plugins_values():
 
 
 def test_main_chain_does_not_import_plugin_host():
-    """G2第一切片铁律：main/analyzer 不 import factor_plugin，综合分主链逐字节不变。"""
+    """G2第一/二切片铁律：main/analyzer 不 import factor_plugin/factor_parts，综合分主链逐字节不变。"""
     for fn in ("main.py", "analyzer.py"):
         src = open(os.path.join(_ROOT, fn), "r", encoding="utf-8").read()
         assert "factor_plugin" not in src, "%s 不得接入插件宿主（切换留待后续 parity 切片）" % fn
+        assert "factor_parts" not in src, "%s 不得接入 live part 适配器（第二切片仍只平行 parity）" % fn

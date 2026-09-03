@@ -274,6 +274,8 @@ def test_build_payload_full_and_empty(tmp_path, monkeypatch):
                   encoding="utf-8")
     monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(eq))
     monkeypatch.setattr(charts.config, "FACTOR_EVAL_JSON", str(fj))
+    # 离线 JSON 类 payload（spread/journal/prisk/wf_cost/fhealth 等）统一指向空 tmp，确定性显 None
+    monkeypatch.setattr(charts.config, "PC_JSON", str(tmp_path / "lab.json"))
     st = _State()
     st.db = _FakeDB([{"horizon_min": 30, "direction": "做多", "n": 4,
                       "evaluated": 4, "expired": 0, "wins": 2, "avg_ret": 0.0}])
@@ -291,6 +293,8 @@ def test_build_payload_full_and_empty(tmp_path, monkeypatch):
     assert decoded["factor_ic"]["main_h"] == 120
     # _FakeDB 无 paper_equity_series -> 纸面块安全 None（休眠等价）
     assert decoded["paper"] is None
+    # PC_JSON 指向空 tmp -> 离线 JSON 两块安全 None，不读真实 reports
+    assert decoded["wf_cost"] is None and decoded["fhealth"] is None
 
     # 带纸面快照时第五块正常产出
     st2 = _State()
@@ -303,6 +307,7 @@ def test_build_payload_full_and_empty(tmp_path, monkeypatch):
     empty = charts.build_payload(None)
     assert empty["cross_section"] is None and empty["calibration"] is None
     assert empty["paper"] is None
+    assert empty["wf_cost"] is None and empty["fhealth"] is None
     json.loads(charts.payload_to_js(empty)[len("window.CHART_DATA = "):-2])
 
 
@@ -357,7 +362,9 @@ CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
              "c-attr-factor", "c-attr-bhb",
              "c-spread-term", "c-spread-chain", "c-spread-margin",
              "c-jr-hold", "c-jr-reason", "c-jr-daily",
-             "c-prl-method", "c-prl-stress", "c-prl-pairs")
+             "c-prl-method", "c-prl-stress", "c-prl-pairs",
+             "c-wf-stab", "c-wf-pos", "c-wf-surface",
+             "c-fh-event", "c-fh-daily")
 
 
 def test_dashboard_embed_parts_are_fragments():
@@ -679,3 +686,78 @@ def test_portfolio_risk_payload(tmp_path):
     assert charts.portfolio_risk_payload(str(tmp_path / "r2.json")) is None
     (tmp_path / "rbad.json").write_text("xx{", encoding="utf-8")
     assert charts.portfolio_risk_payload(str(tmp_path / "rbad.json")) is None
+
+
+# ---------------- 第58轮：⑬ wf_cost_lab / ⑭ factor_health 接看板 ----------------
+
+def _synth_wf_cell(comp, win=0.5, n=100, cg=0.1):
+    return {"total_compound": comp, "win_rate": win, "n_trades": n, "cost_to_gross": cg}
+
+
+def test_wf_cost_payload_mapping_and_safe(tmp_path):
+    def row(fee, comps):
+        return {"fee": fee, "cells": [_synth_wf_cell(c) for c in comps]}
+    payload = {"generated": "2026-09-03 00:00:00", "results": [{
+        "sym": "RB", "name": "螺纹", "period": "60m",
+        "best_param": {"lookback": 20, "hold": 3},
+        "wf_summary": {"mean_is_sharpe": 0.5, "mean_oos_sharpe": 0.3},
+        "stability": {"grade": "稳健", "is_oos_decay": 0.2, "switch_rate": 0.25,
+                      "selection_regret": 0.02, "oos_positive_rate": 0.75},
+        "surface": {"fee_grid": [0.0, 2.5e-5, 5e-5], "slip_grid": [0.0, 5e-5, 1e-4],
+                    "rows": [row(0.0, [0.10, 0.05, -0.02]),
+                             row(2.5e-5, [0.08, 0.03, -0.04]),
+                             row(5e-5, [0.06, 0.01, -0.06])]}}]}
+    p = tmp_path / "wf_cost_lab.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.wf_cost_payload(str(p))
+    assert d is not None
+    assert d["fee_labels"] == ["0", "0.25", "0.5"] and d["slip_labels"] == ["0", "0.5", "1"]
+    s0 = d["syms"][0]
+    assert s0["sym"] == "RB" and s0["grade"] == "稳健" and s0["best"] == {"lookback": 20, "hold": 3}
+    assert abs(s0["is_sharpe"] - 0.5) < 1e-12 and abs(s0["oos_sharpe"] - 0.3) < 1e-12
+    assert len(s0["surface"]) == 9                      # 3x3 网格
+    assert s0["surface"][0] == [0, 0, 10.0, 50.0, 100, 10.0]   # [滑点idx,费率idx,复利%,胜率%,笔数,成本占毛利%]
+    assert s0["surface"][8][:3] == [2, 2, -6.0]
+    assert abs(d["vmin"] + 6.0) < 1e-9 and abs(d["vmax"] - 10.0) < 1e-9
+    # 缺文件/坏JSON/空results -> None
+    assert charts.wf_cost_payload(str(tmp_path / "no.json")) is None
+    (tmp_path / "bad.json").write_text("{xx", encoding="utf-8")
+    assert charts.wf_cost_payload(str(tmp_path / "bad.json")) is None
+    (tmp_path / "empty.json").write_text(json.dumps({"results": []}), encoding="utf-8")
+    assert charts.wf_cost_payload(str(tmp_path / "empty.json")) is None
+
+
+def test_factor_health_payload_mapping_and_safe(tmp_path):
+    def cell(ic, n, ci, verdict):
+        return {"ic": ic, "n": n, "ci": ci, "verdict": verdict,
+                "n_flip": 0, "max_consec_fail": 0}
+    good_ci = {"p5": 0.0, "p95": 0.2, "prob_same_sign": 0.9}
+    payload = {"generated": "2026-09-03 00:00:00", "event": {
+        "30": {"新闻消息面": cell(0.10, 100, good_ci, "健康"),
+               "盘中动量": cell(0.0, 0, None, "样本不足")},
+        "1440": {"新闻消息面": cell(-0.05, 80, {"p5": -0.15, "p95": 0.05,
+                                               "prob_same_sign": 0.6}, "方向不稳"),
+                 "盘中动量": cell(0.0, 0, None, "样本不足")}},
+        "daily": {"ret5": {"1": {"ic": 0.02}, "2": {"ic": 0.01},
+                           "halflife": {"half_life": 40.0, "tau": 57.7}},
+                  "ret20": {"1": {"ic": -0.01}, "2": {"ic": -0.02}, "halflife": None}}}
+    p = tmp_path / "factor_health.json"
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.factor_health_payload(str(p))
+    assert d is not None
+    assert d["factors"] == ["新闻消息面", "盘中动量"]        # 保工具写入顺序
+    assert [b["h"] for b in d["event"]] == [30, 1440]     # 周期数值升序
+    c0 = d["event"][0]["by"][0]
+    assert c0["ic"] == 0.1 and c0["lo"] == 0.0 and c0["hi"] == 0.2 and c0["same"] == 0.9
+    c1 = d["event"][0]["by"][1]                            # ci=None 安全降级
+    assert c1["lo"] is None and c1["hi"] is None and c1["same"] is None and c1["n"] == 0
+    assert d["daily_hs"] == [1, 2]
+    assert d["daily"][0]["name"] == "ret5" and d["daily"][0]["half"] == 40.0
+    assert d["daily"][0]["ic"] == [0.02, 0.01]
+    assert d["daily"][1]["half"] is None and d["daily"][1]["ic"] == [-0.01, -0.02]
+    # 缺文件/坏JSON/空event -> None
+    assert charts.factor_health_payload(str(tmp_path / "no.json")) is None
+    (tmp_path / "bad.json").write_text("xx{", encoding="utf-8")
+    assert charts.factor_health_payload(str(tmp_path / "bad.json")) is None
+    (tmp_path / "noev.json").write_text(json.dumps({"event": {}}), encoding="utf-8")
+    assert charts.factor_health_payload(str(tmp_path / "noev.json")) is None

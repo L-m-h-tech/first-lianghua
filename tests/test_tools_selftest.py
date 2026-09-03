@@ -12,6 +12,7 @@ import backtest_validation
 import db_archive
 import factors_catalog
 import factor_plugin
+import factor_parts
 import factor_health
 import factor_expr
 import expr_research
@@ -74,6 +75,11 @@ def test_factors_catalog_selftest():
 def test_factor_plugin_selftest():
     """G2（第57轮第一切片）插件宿主 --selftest：契约校验/注册表/异常隔离/catalog一致性/PART顺序 共8组。"""
     assert factor_plugin.selftest() == 0
+
+
+def test_factor_parts_selftest():
+    """G2（第58轮第二切片）日线动量 live part 适配器 --selftest：门控/手算/对公式与真analyzer逐位parity/注册 共8组。"""
+    assert factor_parts.selftest() == 0
 
 
 def test_panel_builder_selftest():

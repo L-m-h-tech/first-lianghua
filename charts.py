@@ -575,6 +575,122 @@ def portfolio_risk_payload(path=None):
         return None
 
 
+# ---------------- ⑬ G27②③ walk-forward 稳定性 + 成本敏感性曲面（wf_cost_lab.json） ----------------
+def _bp_label(rate):
+    """小数费率 -> bp 紧凑文本（0/0.25/0.5/1/2）。"""
+    return "%g" % round(float(rate) * 1e4, 4)
+
+
+def wf_cost_payload(path=None):
+    """读 reports/wf_cost_lab.json：每品种 IS/OOS 夏普与稳定性评级 + 5×5(费率×滑点)逐笔复利曲面。缺/坏返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "wf_cost_lab.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        results = data.get("results")
+        if not isinstance(results, list) or not results:
+            return None
+        syms, vmin, vmax = [], None, None
+        for r in results:
+            stab = r.get("stability") or {}
+            ws = r.get("wf_summary") or {}
+            surf = r.get("surface") or {}
+            cells = []
+            for fi, row in enumerate(surf.get("rows") or []):
+                for si, c in enumerate(row.get("cells") or []):
+                    comp = c.get("total_compound")
+                    if not isinstance(comp, (int, float)):
+                        continue
+                    pctv = round(comp * 100, 3)                    # 复利净收益 %（热力图直接用）
+                    cells.append([si, fi, pctv,
+                                  round((c.get("win_rate") or 0) * 100, 1),
+                                  c.get("n_trades"),
+                                  round((c.get("cost_to_gross") or 0) * 100, 1)])
+                    vmin = pctv if vmin is None else min(vmin, pctv)
+                    vmax = pctv if vmax is None else max(vmax, pctv)
+            syms.append({"sym": r.get("sym"), "name": r.get("name") or r.get("sym"),
+                         "grade": stab.get("grade"), "best": r.get("best_param"),
+                         "is_sharpe": ws.get("mean_is_sharpe"),
+                         "oos_sharpe": ws.get("mean_oos_sharpe"),
+                         "decay": stab.get("is_oos_decay"),
+                         "switch": stab.get("switch_rate"),
+                         "regret": stab.get("selection_regret"),
+                         "pos_rate": stab.get("oos_positive_rate"),
+                         "surface": cells})
+        if not syms or vmin is None:
+            return None
+        g0 = (results[0].get("surface") or {})
+        fee_labels = [_bp_label(x) for x in (g0.get("fee_grid") or [])]
+        slip_labels = [_bp_label(x) for x in (g0.get("slip_grid") or [])]
+        return {"generated": data.get("generated"), "period": results[0].get("period"),
+                "fee_labels": fee_labels, "slip_labels": slip_labels,
+                "vmin": vmin, "vmax": vmax, "syms": syms}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+# ---------------- ⑭ G29 因子体检（factor_health.json：事件层三周期 RankIC + 日频 IC 期限衰减） ----------------
+def _fh_event_cell(c):
+    """事件层单因子单周期块 -> 图表结构（ci 缺失如样本不足时 lo/hi/same 为 None）。"""
+    if not isinstance(c, dict):
+        return None
+    ci = c.get("ci") or {}
+
+    def _r(key, nd):
+        v = ci.get(key)
+        return round(v, nd) if isinstance(v, (int, float)) else None
+
+    return {"ic": round(c["ic"], 4) if isinstance(c.get("ic"), (int, float)) else 0.0,
+            "n": c.get("n"), "verdict": c.get("verdict"),
+            "lo": _r("p5", 4), "hi": _r("p95", 4), "same": _r("prob_same_sign", 3),
+            "flip": c.get("n_flip"), "consec": c.get("max_consec_fail")}
+
+
+def factor_health_payload(path=None):
+    """读 reports/factor_health.json：事件层 30/120/1440 分钟 × 9 part RankIC（带块自助CI/裁决），
+    以及日频层因子对未来 H 交易日的池化 RankIC 衰减曲线与半衰期。缺/坏返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "factor_health.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        event = data.get("event")
+        if not isinstance(event, dict) or not event:
+            return None
+        horizons = sorted(int(k) for k in event.keys())
+        h0 = event[str(horizons[0])]
+        if not isinstance(h0, dict) or not h0:
+            return None
+        factors = list(h0.keys())                       # 工具写入顺序即 PART_KEYS 规范顺序
+        hname = {30: "30分", 120: "2小时", 1440: "次日"}
+        ev_blocks = []
+        for h in horizons:
+            blk = event[str(h)]
+            ev_blocks.append({"h": h, "name": hname.get(h, "%d分" % h),
+                              "by": [_fh_event_cell(blk.get(f)) for f in factors]})
+        dlines, daily_hs = [], []
+        daily = data.get("daily")
+        if isinstance(daily, dict) and daily:
+            daily_hs = sorted(int(k) for k in next(iter(daily.values())).keys()
+                              if str(k) != "halflife")
+            for fname, blk in daily.items():
+                ics = []
+                for h in daily_hs:
+                    cell = blk.get(str(h)) or {}
+                    ics.append(round(cell["ic"], 4) if isinstance(cell.get("ic"), (int, float)) else None)
+                hl = blk.get("halflife")
+                half = round(hl["half_life"], 1) if isinstance(hl, dict) and \
+                    isinstance(hl.get("half_life"), (int, float)) else None
+                dlines.append({"name": fname, "ic": ics, "half": half})
+        return {"generated": data.get("generated"), "factors": factors,
+                "event": ev_blocks, "daily_hs": daily_hs, "daily": dlines}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, StopIteration):
+        return None
+
+
 # ---------------- 汇总与落盘 ----------------
 def _tear_from_series(dts, equity, source, max_points=1200):
     """等长 dts/equity 原始权益序列 -> G3 绩效三件（水下曲线/滚动夏普/月度热力）+标量摘要。
@@ -720,6 +836,16 @@ def build_payload(state=None):
         payload["prisk"] = portfolio_risk_payload()
     except Exception:
         payload["prisk"] = None
+    # ⑬ G27②③ walk-forward 稳定性+成本敏感性曲面（wf_cost_lab 离线 JSON；缺文件自动 None）
+    try:
+        payload["wf_cost"] = wf_cost_payload()
+    except Exception:
+        payload["wf_cost"] = None
+    # ⑭ G29 因子体检（factor_health 离线 JSON：事件层三周期IC + 日频IC衰减；缺文件自动 None）
+    try:
+        payload["fhealth"] = factor_health_payload()
+    except Exception:
+        payload["fhealth"] = None
     return payload
 
 
@@ -946,6 +1072,26 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>最强/最弱品种相关对·等名义 <span class="sub">近126日收益相关：红=高正相关(集中风险)、绿=负相关(分散来源)，各取6对</span></h3>
     <div id="c-prl-pairs" class="chart" style="height:320px"></div>
   </div>
+  <div class="card">
+    <h3>⑬ Walk-forward·样本内外夏普 <span class="sub">wf_cost_lab.json：蓝=样本内IS、金=样本外OOS（越接近越不漂），悬停看评级/选参切换率/IS→OOS衰减/选参遗憾；先跑 tools/wf_cost_lab.py</span></h3>
+    <div id="c-wf-stab" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>成本安全垫·OOS为正段占比 <span class="sub">金=OOS段为正比例（越高越稳）；悬停看最优参数与成本/毛利口径</span></h3>
+    <div id="c-wf-pos" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card full">
+    <h3>成本敏感性曲面·逐笔复利净收益% <span class="sub">wf_cost_lab.json：行=每腿费率bp、列=单边滑点bp；点图例切换品种；红=盈利/绿=亏损，悬停看胜率/笔数/成本占毛利</span></h3>
+    <div id="c-wf-surface" class="chart" style="height:340px"></div>
+  </div>
+  <div class="card full">
+    <h3>⑭ 因子体检·事件层三周期 RankIC <span class="sub">factor_health.json：9个综合分part在30分/2小时/次日的方向收益RankIC（0轴上方为正），悬停看块自助CI/同号率/裁决/翻窗；先跑 tools/factor_health.py</span></h3>
+    <div id="c-fh-event" class="chart" style="height:340px"></div>
+  </div>
+  <div class="card full">
+    <h3>日频层·IC 期限衰减 <span class="sub">G21面板日频因子对未来H交易日的池化RankIC；|IC|&lt;0.1为弱（当前全部近零=日频回看收益无稳定截面预测力），悬停看半衰期</span></h3>
+    <div id="c-fh-daily" class="chart" style="height:320px"></div>
+  </div>
 </div>
 """
 
@@ -961,7 +1107,9 @@ var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-attr-factor", "c-attr-bhb",
                  "c-spread-term", "c-spread-chain", "c-spread-margin",
                  "c-jr-hold", "c-jr-reason", "c-jr-daily",
-                 "c-prl-method", "c-prl-stress", "c-prl-pairs"];
+                 "c-prl-method", "c-prl-stress", "c-prl-pairs",
+                 "c-wf-stab", "c-wf-pos", "c-wf-surface",
+                 "c-fh-event", "c-fh-daily"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -988,6 +1136,7 @@ function axisStyle(name) {
 }
 function pct(v, d) { return (v * 100).toFixed(d == null ? 2 : d) + "%"; }
 function wan(v) { return (v / 10000).toFixed(1) + "万"; }
+function f3(v) { return v == null ? "—" : (+v).toFixed(3); }
 function signedColor(v) { return v > 1e-9 ? UP : (v < -1e-9 ? DOWN : NEUT); }
 
 function renderEquity(p) {
@@ -1664,6 +1813,169 @@ function renderPrisk(d) {
               formatter: function (p) { return (+p.value).toFixed(2); }}}]
   });
 }
+var FH_PALETTE = ["#7ecbff", "#ffd66b", "#ef6b6b", "#43c589", "#c792ea",
+                  "#ffb86b", "#6bd5ff", "#b6e36b", "#e38baf"];
+function renderWf(d) {
+  if (!d || !d.syms || !d.syms.length) {
+    empty("c-wf-stab", "暂无 walk-forward 实验：先运行 python tools/wf_cost_lab.py 生成 reports/wf_cost_lab.json。");
+    empty("c-wf-pos", "暂无 OOS 为正段占比。");
+    empty("c-wf-surface", "暂无成本敏感性曲面。");
+    return;
+  }
+  var syms = d.syms;
+  var cats = syms.map(function (s) { return s.sym + " " + (s.name || ""); });
+  function r3(v) { return v == null ? null : +(+v).toFixed(3); }
+  mk("c-wf-stab").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"}, formatter: function (ps) {
+      var s = syms[ps[0].dataIndex];
+      return s.sym + " " + s.name + "（评级" + (s.grade || "—") + "）<br/>样本内IS夏普=" + f3(s.is_sharpe)
+        + "<br/>样本外OOS夏普=" + f3(s.oos_sharpe)
+        + "<br/>IS→OOS衰减=" + f3(s.decay)
+        + "<br/>选参切换率=" + (s.switch == null ? "—" : pct(s.switch, 0))
+        + "<br/>选参遗憾=" + f3(s.regret)
+        + "<br/>最优参数=" + (s.best || "—"); }},
+    legend: {data: ["样本内IS", "样本外OOS"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 36}),
+    xAxis: {type: "category", data: cats, axisLabel: {color: AXIS, interval: 0, fontSize: 10},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "value", name: "夏普", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    series: [
+      {name: "样本内IS", type: "bar", barWidth: "30%", itemStyle: {color: BLUE},
+       data: syms.map(function (s) { return r3(s.is_sharpe); }),
+       markLine: {silent: true, symbol: "none", lineStyle: {color: NEUT}, data: [{yAxis: 0}]}},
+      {name: "样本外OOS", type: "bar", barWidth: "30%", itemStyle: {color: GOLD},
+       data: syms.map(function (s) { return r3(s.oos_sharpe); })}]
+  });
+  mk("c-wf-pos").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"}, formatter: function (ps) {
+      var s = syms[ps[0].dataIndex];
+      return s.sym + " " + s.name + "<br/>OOS为正段占比=" + (s.pos_rate == null ? "—" : pct(s.pos_rate, 1))
+        + "<br/>选参切换率=" + (s.switch == null ? "—" : pct(s.switch, 0))
+        + "<br/>稳定评级=" + (s.grade || "—"); }},
+    grid: baseGrid({top: 24}),
+    xAxis: {type: "category", data: cats, axisLabel: {color: AXIS, interval: 0, fontSize: 10},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "value", min: 0, max: 1, name: "OOS为正占比", nameTextStyle: {color: AXIS},
+            axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(0) + "%"; }},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    series: [{type: "bar", barWidth: "48%",
+      data: syms.map(function (s) {
+        if (s.pos_rate == null) return null;
+        var v = +(s.pos_rate * 100).toFixed(1);
+        return {value: v, itemStyle: {color: s.pos_rate >= 0.5 ? UP : DOWN}};
+      }),
+      label: {show: true, position: "top", color: AXIS,
+              formatter: function (p) { return p.value == null ? "" : p.value + "%"; }},
+      markLine: {silent: true, symbol: "none", lineStyle: {color: NEUT, type: "dashed"},
+                 data: [{yAxis: 50, name: "50%"}]}}]
+  });
+  var feeLabels = d.fee_labels || [], slipLabels = d.slip_labels || [];
+  var span = Math.max(Math.abs(d.vmin || 0), Math.abs(d.vmax || 0), 1e-9);
+  var legendNames = syms.map(function (s) { return s.sym + " " + (s.name || ""); });
+  var legendSelected = {};
+  syms.forEach(function (s, i) { legendSelected[s.sym + " " + (s.name || "")] = i === 0; });
+  mk("c-wf-surface").setOption({
+    backgroundColor: BG,
+    tooltip: {formatter: function (p) {
+      var v = p.value;
+      return p.seriesName + "<br/>每腿费率=" + feeLabels[v[1]] + "bp 单边滑点=" + slipLabels[v[0]] + "bp"
+        + "<br/>逐笔复利净收益=" + (+v[2]).toFixed(2) + "%"
+        + "<br/>胜率=" + (v[3] == null ? "—" : v[3] + "%")
+        + "<br/>成交笔数=" + (v[4] == null ? "—" : v[4])
+        + "<br/>成本/|毛利|=" + (v[5] == null ? "—" : v[5] + "%"); }},
+    legend: {data: legendNames, selected: legendSelected, top: 2, type: "scroll",
+             textStyle: {color: AXIS}},
+    grid: baseGrid({top: 44, left: 76, right: 96, bottom: 44}),
+    xAxis: {type: "category", data: slipLabels, name: "滑点bp", nameTextStyle: {color: AXIS},
+            splitArea: {show: true}, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: feeLabels, name: "费率bp", nameTextStyle: {color: AXIS},
+            splitArea: {show: true}, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    visualMap: {min: -span, max: span, calculable: true, orient: "vertical", right: 8, top: "center",
+                textStyle: {color: AXIS}, inRange: {color: [DOWN, "#262626", UP]}},
+    series: syms.map(function (s) {
+      return {name: s.sym + " " + (s.name || ""), type: "heatmap", data: s.surface,
+              label: {show: true, color: "#eee", fontSize: 9,
+                      formatter: function (p) { return p.value[2] == null ? "" : (+p.value[2]).toFixed(1); }},
+              emphasis: {focus: "series"}};
+    })
+  });
+}
+function renderFh(d) {
+  if (!d || !d.factors || !d.factors.length || !d.event || !d.event.length) {
+    empty("c-fh-event", "暂无因子体检：先运行 python tools/factor_health.py 生成 reports/factor_health.json。");
+    empty("c-fh-daily", "暂无日频IC衰减数据。");
+    return;
+  }
+  var facs = d.factors, blocks = d.event;
+  var evColors = [NEUT, BLUE, GOLD];
+  var evSeries = blocks.map(function (b, bi) {
+    var opt = {name: b.name, type: "bar", barWidth: "22%",
+      itemStyle: {color: evColors[bi] || NEUT},
+      data: b.by.map(function (c) { return c == null ? null : +(+c.ic).toFixed(3); })};
+    if (bi === 0) {
+      opt.markLine = {silent: true, symbol: "none", lineStyle: {color: NEUT}, data: [{yAxis: 0}]};
+    }
+    return opt;
+  });
+  mk("c-fh-event").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"}, formatter: function (ps) {
+      var lines = [facs[ps[0].dataIndex]];
+      ps.forEach(function (p) {
+        var c = blocks[p.seriesIndex].by[p.dataIndex];
+        if (!c) return;
+        var ci = (c.lo == null || c.hi == null)
+          ? "[—,—]" : "[" + (+c.lo).toFixed(3) + "," + (+c.hi).toFixed(3) + "]";
+        lines.push(p.marker + p.seriesName + " n=" + (c.n == null ? "—" : c.n)
+          + " IC=" + (c.ic == null ? "—" : (+c.ic).toFixed(3))
+          + " CI" + ci + (c.same == null ? "" : " 同号" + (c.same * 100).toFixed(0) + "%")
+          + " 翻窗" + (c.flip == null ? "—" : c.flip)
+          + " " + (c.verdict || ""));
+      });
+      return lines.join("<br/>"); }},
+    legend: {data: blocks.map(function (b) { return b.name; }), textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 36}),
+    xAxis: {type: "category", data: facs, axisLabel: {color: AXIS, interval: 0, rotate: 28, fontSize: 10},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "value", name: "RankIC", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    series: evSeries
+  });
+  var dl = d.daily || [], hs = (d.daily_hs || []).map(String);
+  if (!dl.length || !hs.length) {
+    empty("c-fh-daily", "暂无日频层IC衰减：需要 G21 标准面板，重跑 tools/factor_health.py 日频层。");
+    return;
+  }
+  function lineName(x) { return x.half == null ? x.name : x.name + "(半衰期" + x.half + ")"; }
+  mk("c-fh-daily").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", formatter: function (ps) {
+      var lines = ["未来 H=" + hs[ps[0].dataIndex] + " 交易日"];
+      ps.forEach(function (p) {
+        lines.push(p.marker + p.seriesName.split("(")[0] + " IC=" + (p.value == null ? "—" : (+p.value).toFixed(3)));
+      });
+      return lines.join("<br/>"); }},
+    legend: {type: "scroll", top: 2, textStyle: {color: AXIS},
+             data: dl.map(function (x) { return lineName(x); })},
+    grid: baseGrid({top: 44}),
+    xAxis: {type: "category", data: hs, name: "未来H交易日", nameTextStyle: {color: AXIS},
+            axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "value", name: "池化RankIC", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    series: dl.map(function (x, i) {
+      var opt = {name: lineName(x), type: "line", symbol: "circle", symbolSize: 5,
+        itemStyle: {color: FH_PALETTE[i % FH_PALETTE.length]}, lineStyle: {width: 1.6}, data: x.ic};
+      if (i === 0) {
+        opt.markLine = {silent: true, symbol: "none", lineStyle: {color: NEUT, type: "dashed"},
+                        data: [{yAxis: 0.1, name: "|IC|=0.1"}, {yAxis: -0.1}]};
+      }
+      return opt;
+    })
+  });
+}
 function loadAndRender() {
   if (typeof echarts === "undefined") {
     setGen("本地 ECharts 资源缺失（assets/echarts.min.js）：运行 python charts.py --rebuild 或等下一轮监控自动同步。");
@@ -1689,12 +2001,15 @@ function loadAndRender() {
     renderSpread(D.spread);
     renderJournal(D.journal);
     renderPrisk(D.prisk);
+    renderWf(D.wf_cost);
+    renderFh(D.fhealth);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
     renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
-    renderSpread(null); renderJournal(null); renderPrisk(null); };
+    renderSpread(null); renderJournal(null); renderPrisk(null);
+    renderWf(null); renderFh(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }
