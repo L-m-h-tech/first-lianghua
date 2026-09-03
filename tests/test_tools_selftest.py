@@ -15,6 +15,7 @@ import factor_health
 import factor_expr
 import expr_research
 import factor_regime
+import microstructure_lab
 import portfolio_constructor
 import portfolio_lab
 import trade_journal
@@ -94,6 +95,11 @@ def test_expr_research_selftest():
 def test_factor_regime_selftest():
     """G29续（第39轮）regime分层/换手/衰减形态 --selftest：PIT标签、分层IC、持续性、指数vs幂律择优。"""
     assert factor_regime.selftest() == 0
+
+
+def test_microstructure_lab_selftest():
+    """G24（第54轮）微结构/持仓/季节因子族 --selftest：ΔOI/Amihud/特异波动/偏度PIT、前向IC、日历季节 共8组。"""
+    assert microstructure_lab.selftest() == 0
 
 
 def test_portfolio_constructor_selftest():

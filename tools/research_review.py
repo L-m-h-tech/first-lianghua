@@ -38,6 +38,7 @@ SUB = "-" * 96
 SOURCES = [
     ("factor_health.json", "G29 因子体检(IC/失效预警/半衰期)", r"D:\Python\python.exe tools\factor_health.py"),
     ("factor_regime.json", "G29续 因子regime/换手/衰减形态", r"D:\Python\python.exe tools\factor_regime.py"),
+    ("microstructure_lab.json", "G24 微结构/持仓/季节因子族(ΔOI/Amihud/特异波动/偏度/日历)", r"D:\Python\python.exe tools\microstructure_lab.py"),
     ("attribution.json", "G28 收益归因(OLS/BHB/板块)", r"D:\Python\python.exe tools\attribution.py"),
     ("trade_journal.json", "G30① 交易复盘journal(分桶/MFE-MAE)", r"D:\Python\python.exe tools\trade_journal.py --bars --period 30"),
     ("portfolio_lab.json", "G26 组合构建实验台(等权/逆波/ERC/GMV)", r"D:\Python\python.exe tools\portfolio_lab.py"),
