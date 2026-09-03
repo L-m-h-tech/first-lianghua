@@ -26,6 +26,7 @@ reports/*.txt
 reports/*.csv
 reports/*.js
 reports/*.json
+reports/*.jsonl
 reports/assets/
 
 # ===== 本地私密配置（含 token/key/webhook，绝不入库）=====

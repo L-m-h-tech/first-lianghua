@@ -19,6 +19,7 @@ import portfolio_constructor
 import portfolio_lab
 import trade_journal
 import research_review
+import experiment_ledger
 
 
 def test_factor_eval_selftest():
@@ -108,3 +109,8 @@ def test_trade_journal_selftest():
 def test_research_review_selftest():
     """G30③（第43轮）研究侧一键复盘编排器 --selftest：sidecar安全装载/新鲜度/equity-BOM/信号正则/各段提取/规则待办/空目录降级。"""
     assert research_review.selftest() == 0
+
+
+def test_experiment_ledger_selftest():
+    """G27①（第44轮）统一实验台账 --selftest：规范哈希/数据身份排mtime/重复串联/坏行宽容/safe_record吞错/CLI。"""
+    assert experiment_ledger.selftest() == 0

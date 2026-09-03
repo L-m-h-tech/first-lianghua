@@ -31,6 +31,7 @@ for p in (_ROOT, _HERE):
 
 import config                                   # noqa: E402
 import metrics                                  # noqa: E402
+import experiment_ledger as el                  # noqa: E402  G27① 统一实验台账（旁路登记）
 
 DEFAULT_TRADES = os.path.join(_ROOT, "reports", "portfolio_trades.csv")
 DEFAULT_EQUITY = os.path.join(_ROOT, "reports", "portfolio_equity.csv")
@@ -584,10 +585,35 @@ def run(argv=None):
             os.makedirs(od, exist_ok=True)
         with io.open(args.out, "w", encoding="utf-8", newline="\n") as f:
             f.write(report)
+    payload = build_json_payload(trades, equity, exmeta, exsum, args.review)
     if args.json_out:
         with io.open(args.json_out, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(build_json_payload(trades, equity, exmeta, exsum, args.review),
-                      f, ensure_ascii=False, indent=1, allow_nan=False)
+            json.dump(payload, f, ensure_ascii=False, indent=1, allow_nan=False)
+    # G27① 统一实验台账（旁路：登记失败绝不影响本工具产物）
+    try:
+        ov = payload.get("overall") or {}
+        ex = payload.get("excursion") or {}
+        j_metrics = {"n_trades": payload.get("n_trades", 0),
+                     "win_rate": ov.get("win_rate"), "profit_factor": ov.get("profit_factor"),
+                     "payoff_ratio": ov.get("payoff_ratio"), "expectancy": ov.get("expectancy"),
+                     "max_loss_streak": ov.get("max_loss_streak")}
+        if ex:
+            j_metrics["loss_once_green"] = ex.get("loss_once_green")
+            j_metrics["n_loss"] = ex.get("n_loss")
+        el.safe_record(
+            "trade_journal",
+            {"bars": bool(args.bars), "period": args.period, "review": args.review,
+             "lookback": args.lookback, "aggregate_from": args.aggregate_from,
+             "trades": os.path.basename(args.trades)},
+            j_metrics,
+            inputs=[p for p in (args.trades, args.equity) if p],
+            artifacts=[p for p in (args.out, args.json_out) if p],
+            conclusion="%d笔 胜率%s PF%s%s"
+                       % (payload.get("n_trades", 0), ov.get("win_rate", "—"),
+                          ov.get("profit_factor", "—"),
+                          " 含盘中MFE/MAE" if args.bars else ""))
+    except Exception:
+        pass
     print(report)
     return 0
 

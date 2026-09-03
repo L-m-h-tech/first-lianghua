@@ -20,6 +20,16 @@ for p in (ROOT, TOOLS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# G27①（第44轮）测试隔离：统一实验台账重定向到系统临时文件，
+# 防止测试调用宿主工具 run() 时其登记钩子写真实 reports/experiment_runs.jsonl
+import tempfile
+_PYTEST_LEDGER = os.path.join(tempfile.gettempdir(), "fm_pytest_experiment_runs.jsonl")
+os.environ["FUTURES_EXPERIMENT_LEDGER"] = _PYTEST_LEDGER
+try:
+    os.remove(_PYTEST_LEDGER)
+except OSError:
+    pass
+
 
 @pytest.fixture
 def flat_calendar(monkeypatch):

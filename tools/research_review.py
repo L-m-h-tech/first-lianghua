@@ -638,6 +638,35 @@ def run(argv=None):
         payload = build_json_payload(bundle, freshness, stale_hours=args.stale_hours)
         with io.open(args.json_out, "w", encoding="utf-8", newline="\n") as f:
             json.dump(payload, f, ensure_ascii=False, indent=1, allow_nan=False)
+    else:
+        payload = build_json_payload(bundle, freshness, stale_hours=args.stale_hours)
+    # G27① 统一实验台账（惰性导入：保持本模块模块级"不 import 任何项目模块"的纪律；旁路失败不影响成稿）
+    try:
+        if _ROOT not in sys.path:      # 本工具按纪律不把项目根放 sys.path，惰性导入前补一次
+            sys.path.insert(0, _ROOT)
+        import experiment_ledger as el
+        state_count = {"ok": 0, "stale": 0, "missing": 0}
+        for _name, fr in freshness.items():
+            st = fr.get("state") if isinstance(fr, dict) else None
+            if st in state_count:
+                state_count[st] += 1
+        act_count = {}
+        for a in payload.get("actions", []):
+            act_count[a.get("level")] = act_count.get(a.get("level"), 0) + 1
+        src_paths = [os.path.join(args.reports_dir, name) for name, _l, _c in SOURCES]
+        el.safe_record(
+            "research_review",
+            {"stale_hours": args.stale_hours, "reports_dir": os.path.basename(os.path.abspath(args.reports_dir))},
+            {"sources": state_count, "actions": act_count},
+            inputs=[p for p in src_paths if os.path.isfile(p)],
+            artifacts=[p for p in (args.out, args.json_out) if p],
+            conclusion="数据源 ok%d/陈旧%d/缺失%d；待办 %s"
+                       % (state_count["ok"], state_count["stale"], state_count["missing"],
+                          "/".join("%s%d" % (k, v) for k, v in sorted(act_count.items()))))
+    except Exception:
+        import traceback as _tb
+        with io.open(os.path.join(_ROOT, "cache", "r44_rr_hook_err.txt"), "w", encoding="utf-8") as _ef:
+            _ef.write(_tb.format_exc())
     print(report)
     return 0
 

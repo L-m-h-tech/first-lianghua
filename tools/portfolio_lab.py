@@ -23,6 +23,7 @@ for p in (_ROOT, _HERE):
 import config                                  # noqa: E402
 import portfolio_constructor as pc             # noqa: E402
 import panel_builder as pb                     # noqa: E402
+import experiment_ledger as el                 # noqa: E402  G27① 统一实验台账（旁路登记，失败不影响本工具）
 
 DEFAULT_DB = os.path.join(_ROOT, "cache", "research_panel.db")
 ANALYSIS_DAYS = 504                            # 取最近约2年做固定稠密面板
@@ -210,6 +211,27 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
                "n_days": len(mat), "rolling_stats": stats, "snapshot": snap}
     with open(json_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, allow_nan=False, indent=1)
+    # G27① 统一实验台账（旁路：登记失败绝不影响本工具产物与返回值）
+    try:
+        lab_metrics = {"n_universe": len(syms), "n_days": len(mat)}
+        for m in config.PC_METHODS:
+            s = stats.get(m, {})
+            lab_metrics[m] = {k: s.get(k) for k in
+                              ("ann_ret", "ann_vol", "sharpe", "maxdd", "calmar",
+                               "avg_eff_n", "ann_turnover")}
+        el.safe_record(
+            "portfolio_lab",
+            {"analysis_days": ANALYSIS_DAYS, "coverage_min": COVERAGE_MIN, "lookback": config.PC_LOOKBACK,
+             "rebal": config.PC_REBAL, "shrink": config.PC_SHRINK, "max_weight": config.PC_MAX_WEIGHT,
+             "target_vol_annual": config.PC_TARGET_VOL_ANNUAL, "max_gross": config.PC_MAX_GROSS,
+             "methods": list(config.PC_METHODS), "panel_db": os.path.basename(db_path)},
+            lab_metrics,
+            inputs=[db_path], artifacts=[txt_path, json_path],
+            conclusion="equal夏普%.2f / erc夏普%.2f / inv_vol夏普%.2f（固定宇宙%d品种 %s~%s）"
+                       % (stats["equal"]["sharpe"], stats["erc"]["sharpe"], stats["inv_vol"]["sharpe"],
+                          len(syms), dates[0], dates[-1]))
+    except Exception:
+        pass
     return payload
 
 

@@ -1177,6 +1177,33 @@ def main(argv=None):
     span = f"{_dt(firsts[0])} ~ {_dt(lasts[-1])}"
     report = build_report(pf, perf, args, feeds, errors, span, compare_block=compare_block)
     write_outputs(pf, report)
+    # G27① 统一实验台账：仅 --compare-risk 影子对照时登记三法对照（旁路，绝不改基线CSV/报告口径）
+    if args.compare_risk:
+        try:
+            import experiment_ledger as el
+            method_key = {"等名义(基线)": "equal", "逆波动": "inv_vol", "ERC风险平价": "erc"}
+            cr_metrics = {}
+            for label, _pfp, pp in compare_runs:
+                key = method_key.get(label, label)
+                cr_metrics[key] = None if pp is None else {
+                    k: pp.get(k) for k in
+                    ("end_equity", "total_ret", "ann_ret", "sharpe", "max_dd",
+                     "avg_risk", "max_npos", "n_trades")}
+            el.safe_record(
+                "portfolio.compare_risk",
+                {"mode": "daily" if args.daily else "%dm" % args.period,
+                 "codes": sorted(feeds.keys()), "n_symbols": len(feeds), "sizing": args.sizing,
+                 "risk_window": args.risk_window, "risk_rebalance": args.risk_rebalance,
+                 "risk_min_hist": args.risk_min_hist, "risk_gross": args.risk_gross,
+                 "risk_cap": args.risk_cap, "entry": args.entry, "stop_atr": args.stop_atr,
+                 "target_atr": args.target_atr, "real_fees": args.use_real_fees},
+                cr_metrics,
+                inputs=[args.fees_file, args.margins_file],
+                artifacts=[config.PORTFOLIO_REPORT_FILE, config.PORTFOLIO_EQUITY_FILE,
+                           config.PORTFOLIO_TRADES_FILE],
+                conclusion="同宇宙三法对照 %s（%d品种，基线CSV逐字节不变）" % (span, len(feeds)))
+        except Exception:
+            pass
     print("\n" + report[:3500])
     if compare_block and compare_block not in report[:3500]:
         print("\n" + compare_block)   # 报告头被截断时补打对照表；未截断则不重复
