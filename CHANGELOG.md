@@ -3,6 +3,17 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.46.0] — 2026-09-03 · 第46轮 G19 数据库在线热备份+滚动保留+开机自启/定时任务导出+灾备恢复+main --version（新增根模块 db_backup.py，只读源库只写backup/，主链与默认CSV零改动）
+- **任务与定位**：补运维安全短板——monitor.db（WAL、约360MB，含 quotes/minute_bars/signals/signal_outcomes/news/options/paper_*/backtest_runs 全部家当）此前**没有任何自动备份**，磁盘损坏/误写/误删即全损。新增**根模块 `db_backup.py`（533行，纯标准库 sqlite3/os/shutil，零网络，不接 main 主循环、不改综合分、不改任何生产数据）**。区别于 tools/db_archive.py（按年导出归档快照）：本工具做**高频在线热备+滚动保留+一键恢复+自启导出**。
+- **在线热备（不用停程序）**：用 SQLite 官方 **Online Backup API**（`src.backup(dst,pages=-1)`），源库以**只读 URI（mode=ro）**打开，main 常驻写库时也得到事务一致性快照、对 WAL 安全、不持长锁；约360MB 实测约10秒。备份后对**副本**跑 `PRAGMA quick_check`，不通过立即删除坏副本并报错——**不留"看着有、实际坏"的假备份**；每份配同名 `.json` sidecar（源/副本大小、双 quick_check、各表行数、VERSION、时间）。
+- **滚动保留/只认自己命名**：`backup/monitor_YYYYMMDD-HHMMSS.db`，默认保留最近 **30 份**（--keep 调，<=0 全保留），按时间戳删最旧、sidecar 同步删；parse_backup_stamp 严格校验命名，目录里其它文件（notes.txt/别的.db）**绝不误删**；同秒碰撞自动加序号不覆盖。
+- **校验/列举/恢复**：--list（时间/大小/副本qc/版本）、--verify（全部或 --latest-n 最新N份 quick_check，异常返退出码1）、--restore（先校验备份非坏→现有 monitor.db 及 -wal/-shm **改名留存为 .before_restore_时间戳、绝不直接覆盖丢现场**→反向 Online Backup 写回→新库再 quick_check；交互需输 yes，--yes 供脚本）。
+- **自启/定时只导出、不擅自改系统**：--emit-bat 生成 `run_backup.bat`（chcp65001+切目录+--once，失败 pause，可双击/任务调用）；--emit-task-xml 生成 Windows 任务计划可直接导入的 `backup/futures_monitor_db_backup_task.xml`（**每日16:30 + 用户登录**各一次、最小权限 LeastPrivilege、错过补跑 StartWhenAvailable、30分钟超时、IgnoreNew 防重入）；**不执行 schtasks /register**，导入步骤（图形/命令行二选一）与异地保管写进《灾备恢复Runbook.md》。
+- **main 只读 --version（G19④，默认等价）**：main.py 新增 `--version`，parse 后最早分支读 VERSION 打印即 return，**不 setup_environment/不连库/不启动常驻**；不传该参数代码路径完全不变（默认8品种 equity/trades 双 sha256 逐字节一致为证）。db_backup 自身也有 --version。
+- **真实冒烟诚实结果**：对真实 monitor.db 备份成功——源359.8MB→副本359.8MB、14张用户表467,695行、源/副本 quick_check 均 ok、约10秒；--list/--verify 正常识别且只认本工具文件；selftest 在 tmp 库演练"备份→改坏现场→恢复到备份点、旧库留存、坏备份拒绝恢复"全链路。`.gitignore` 忽略 backup/*.db、*.db.json、*.before_restore_*（二进制不入库），任务 XML 模板入库。
+- **测试与零改动证据**：新增 `tests/test_db_backup.py`（161行22例零网络/零生产库，全部 tmp_path 造临时 sqlite，绝不碰 data/monitor.db：文件名解析反例参数化、prune_plan、只认前缀、在线备份一致性+源只读、sidecar行数、滚动删最旧连同sidecar、同秒碰撞、缺源报错、恢复留存旧库、坏备份拒绝、坏库quick_check返OPEN_ERROR、XML/bat内容、版本缺失安全）+ test_tools_selftest 注册模块13组 selftest；全量 **pytest 526→549 全绿（0失败/错误/跳过）**、compileall 过。默认8品种(I,MA,RB,SA,TA,AU,AG,CU) equity=c4da4cdf61f3bcdc/trades=50dcc800d326f8e9 与 cache/base 双 sha256 逐字节一致；真实 `main --once` exit0、stderr 0行零异常；运行依赖仍仅 requests/uiautomation/websocket-client 零新增。
+- **规模**：生产 py 63→64（根44→45新增 db_backup 533行、tools19不变）/28352→28897 行；tests 34→35 文件/5430→5597 行；用例 526→549。代码 commit 2f86514。运维侧下一步：用户按 Runbook 导入任务计划即实现每日自动备份；G19 主体闭环。
+
 ## [0.45.0] — 2026-09-03 · 第45轮 G27②③ walk-forward 参数稳定性 + fee/slip 成本敏感性曲面/换手容量（新增 tools/wf_cost_lab.py，复用既有 WF/回放内核，主链与默认CSV零改动）
 - **任务与定位**：补齐总纲 G27 剩余两切片（①统一实验台账已在第44轮 experiment_ledger 落地）。新增**研究侧工具 `tools/wf_cost_lab.py`（601行，纯标准库、零网络、只读 monitor.db、只写 reports/wf_cost_lab.txt|.json，不被 main/analyzer import）**：②滚动 walk-forward 检验"最优参数是稳定锚定还是每窗都在换、样本内优势到样本外衰减多少"；③在每腿费率×单边滑点网格上重放，出净复利/夏普/胜率曲面与"成本加到多少策略由盈转亏"的安全垫，并用分钟 bar 成交量做换手率与可承载资金的**数量级**估算。MLflow 只借实验组织思想、不引服务；不引 numpy/pandas/vectorbt。
 - **复用而非重写（关键工程决策）**：第34轮 backtest_validation 已实现同一套信号/撮合的参数网格回放 `build_param_grid_matrix`（对 config 的 entry/stop/target 稳定性网格逐组合回放、按平仓交易日聚合成 T×N 日收益矩阵）与 AFML 式 `walk_forward`（滚动 IS 窗按夏普选最优参数、下一 OOS 窗验证，输出衰减/跑赢中位数比例/切换率）。本轮**不重写 WF 引擎**，wf_cost_lab 只补"跨品种批量组织 + 选中参数轨迹 + 稳定度评级 + 成本曲面 + 换手容量 + sidecar/台账登记"。

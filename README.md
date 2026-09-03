@@ -45,6 +45,7 @@
 | `--once` | 只跑一轮分析后退出（测试用） |
 | `--no-launch` | 启动时不自动打开同花顺期货通 |
 | `--force-review` | 立即生成当日复盘报告（测试用，正常情况下在归属交易日全部夜盘结束后自动生成） |
+| `--version` | 打印版本号（读 VERSION）后退出，不连库/不启动监控（第46轮 G19） |
 
 单独运行最小回测（不启动常驻监控）：
 
@@ -119,6 +120,7 @@ D:\Python\python.exe experiment_ledger.py --list    # 第44轮G27①：统一实
 D:\Python\python.exe experiment_ledger.py           # 无参=零网络自测(13组)；台账 reports/experiment_runs.jsonl 由4宿主自动旁路登记
 D:\Python\python.exe tools\wf_cost_lab.py --codes RB,MA,I,TA  # 第45轮G27②③：WF参数稳定性轨迹+fee/slip成本曲面+换手容量(只读)
 D:\Python\python.exe tools\wf_cost_lab.py           # 无参=零网络自测(8组)；出 reports/wf_cost_lab.txt+.json，末尾旁路登记台账
+D:\Python\python.exe db_backup.py --once              # 第46轮G19：monitor.db在线热备到backup/(滚动30份,副本校验);--list/--verify/--restore/--emit-task-xml
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
@@ -131,6 +133,20 @@ D:\Python\python.exe tools\backtest_validation.py --all-grid            # 全品
 1. **自动打开同花顺期货通**（已运行则跳过；路径 `config.THS_EXE`）
 2. **探测64个品种的主力合约月份**（按未来8个月各月份合约的成交量+持仓量排序，约20~40秒）
 3. 第一轮全品种分析（首次需预取64个品种的日线，约30~60秒；之后走缓存）
+
+### 数据库备份与灾备（G19，第46轮，根模块 `db_backup.py`）
+
+monitor.db 是全部结构化家当（行情/分钟库/信号/成交/纸面账户）。`db_backup.py` 用 SQLite 官方在线热备 API（源库只读打开、main 常驻写库也能一致性快照、WAL 安全、约360MB/10秒），备份后对副本 quick_check、坏副本立即删除（不留假备份），滚动保留最近30份到 `backup/`：
+
+```powershell
+D:\Python\python.exe db_backup.py --once                  # 立即热备一次（保留30份，--keep 调）
+D:\Python\python.exe db_backup.py --list                  # 列备份（大小/副本qc/版本）
+D:\Python\python.exe db_backup.py --verify                # 校验所有备份 quick_check
+D:\Python\python.exe db_backup.py --restore backup/monitor_xxxx.db   # 用备份恢复（现有库先改名留存，不覆盖丢现场）
+D:\Python\python.exe db_backup.py --emit-bat --emit-task-xml         # 生成看门狗bat+任务计划XML（每日16:30+登录，不自动注册）
+```
+
+开机自启/每日定时：导入 `backup/futures_monitor_db_backup_task.xml` 到任务计划程序（或 schtasks /Create /XML），完整导入/恢复/异地保管/无备份兜底步骤见 **《灾备恢复Runbook.md》**。备份二进制已 gitignore、任务 XML 模板入库；db_backup 只读源库只写 backup/，不接主循环、不改综合分。
 
 ---
 
@@ -337,6 +353,7 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `data/futures_fees.csv` | 由用户券商手续费表通过`tools/build_fee_table.py`转换的64品种真实费率：投机账户、按金额费率、按手数固定金额、合约乘数；回测运行时只用标准库csv读取，原始xlsx归档在同目录 |
 | `data/futures_margins.csv` | 由`tools/build_margin_table.py`从银河期货保证金比例页解析的64品种**公司保证金率（投机档）+基础板幅+每手报价单位乘数**，组合账户`portfolio.py`运行时只用标准库csv读取；交易所基准档无干净免费源故`exchange_margin`列留空不编造，临近交割/长假公司会上浮、以公司通知为准 |
 | `data/monitor.db` | SQLite 结构化数据库：`quotes` 行情（相同快照自动去重）、`signals` 非中性期货信号、`news` 新闻、`options` 单腿/组合策略、`signal_outcomes` 信号后续结果、`option_chains` 期权完整链/PCR快照（第12轮起每品种按真实挂牌月份存多行：同一ts下不同expiry各一行，供PCR历史分位与跨月IV曲面）、`fundamentals` 基本面日频快照（第13轮：库存分位/周环比、龙虎榜净多、carry、基差、基本面综合分，每品种每交易日一行、长期保留）、`minute_bars` 分钟K自采库（第14轮：1/5/15/30/60m，唯一键 contract+period+bar_dt 去重，主连RB0与具体合约按sym共存，默认保留400天）、`ml_samples` triple-barrier监督学习样本库（WP-F2：三分类标签+PIT特征快照，UNIQUE(sym,period,bar_dt)可重复跑、约保留10年）；行情/新闻/期权/链快照明细默认保留180天，可交易信号、评估结果、基本面日频快照与分钟K长期积累用于回测调参 |
+| `backup/monitor_YYYYMMDD-HHMMSS.db`（gitignore）+同名`.json` | 第46轮 G19 由 `db_backup.py` 在线热备的 monitor.db 一致性快照（滚动保留30份，副本quick_check、sidecar记表行数/版本）；`backup/futures_monitor_db_backup_task.xml` 为任务计划模板（入库）；恢复见《灾备恢复Runbook.md》 |
 | `reports/history_report.txt` | **仅交易时段轮次**的当日归档：每轮打包 `============ 交易时段 第N轮 | 时间 | 节奏 ============` + 完整报告 + 本轮信号流水，**新块置顶**；**次日启动时自动清除其中昨日的轮动块** |
 | `reports/offhours_report.txt` | **仅非交易时段轮次**，滚动保留最近5轮（**最新在最前**），含预测走向 |
 | `reports/offhours_history.txt` | **仅非交易时段轮次**的当日归档，**新块置顶**；**次日启动时自动清除其中昨日的轮动块** |
@@ -435,7 +452,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：34 个测试文件、526 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：35 个测试文件、549 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行

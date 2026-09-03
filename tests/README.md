@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：34 个 `test_*.py` + `conftest.py`，共 **526** 个用例，全绿约 8 秒。
+当前规模：35 个 `test_*.py` + `conftest.py`，共 **549** 个用例，全绿约 8 秒。
 
 ## 设计纪律（必须保持）
 
@@ -46,10 +46,11 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_paper_broker.py | 三阈值迟滞、close/next两档成交时点（next严格晚于信号）、实时锁板顺延、滑点与双边费、反手先平后开、离场撤单、临时约束排队不膨胀、强平、资金不足拒单、三表落库与持仓中/平仓后重启恢复、默认休眠（第27轮 G1） |
 | test_attribution.py | 方向化暴露/动态键归一、OLS恢复与奇异、加法归因闭合/零方差剔除/空样本、BHB手算+随机fuzz恒等、板块统计rb无方向、累计曲线闭合、IS-OOS、端到端报告（第35轮 G28） |
 | test_research_panel.py | 特征注册表与config一致/唯一/动态键、PIT严格asof边界与基本面当日不可见、暖机ret1d手算、扰动法无未来+故意泄漏反向用例、时间戳扫描、训练-服务parity一致+注入检出、PanelStore幂等重建回读、缓存结构审计干净/破坏检出、G21续面板回读roundtrip与xsmom/tsmom面板路径==网络路径/load_adjusted_bars不二次复权（第36/37轮 G21） |
-| test_tools_selftest.py | factor_eval/carry_eval/attribution/panel_builder/pit_audit/factor_health/factor_expr/expr_research/factor_regime/portfolio_constructor/portfolio_lab/trade_journal/research_review/build_ml_samples/backtest_validation/db_archive 及根模块 factors_catalog/experiment_ledger、tools/wf_cost_lab 自带合成断言 |
+| test_tools_selftest.py | factor_eval/carry_eval/attribution/panel_builder/pit_audit/factor_health/factor_expr/expr_research/factor_regime/portfolio_constructor/portfolio_lab/trade_journal/research_review/build_ml_samples/backtest_validation/db_archive 及根模块 factors_catalog/experiment_ledger/db_backup、tools/wf_cost_lab 自带合成断言 |
 | test_trade_journal.py | 第42轮 G30 交易复盘journal：CSV往返类型/排序、原因归并、信号强度按|分|、七维分桶手算PF、日周ISO聚合、盘中MFE/MAE多空镜像与闭区间、monkeypatch注入bars不碰生产库、全胜桶不误报/弱桶命中、run端到端txt+json、空数据安全 |
 | test_research_review.py | 第43轮 G30③ 研究侧一键复盘编排器：sidecar缺/损安全、新鲜度三态、equity的BOM/末尾空记录/全表回撤、signal正则、各段提取排序与弱势桶门槛、规则待办WARN优先/可选降级/全OK、collect空目录与合成sidecar、七段成稿与allow_nan |
 | test_experiment_ledger.py | 第44轮 G27① 统一实验台账：config_hash键序无关/同配置一致/参数类型数据敏感、json_safe清洗NaN/时间/集合、文件指纹与数据身份排除mtime内容变才变、记录字段与run_id形态、追加回读/repeat_of串联/同秒碰撞-r2/坏行宽容/原子LF/filter、safe_record成功与不可写吞错、list/show/repeats/export CLI、环境变量关闭重定向 |
+| test_db_backup.py | 第46轮 G19 在线热备/灾备：备份文件名解析与非法名反例(参数化)、prune_plan滚动保留/全保留、只认本工具命名不误删、online_backup一致性+源只读、sidecar表行数、滚动删最旧连同sidecar、同秒碰撞不覆盖、缺源报错、restore恢复到备份点且旧库改名留存、坏备份拒绝恢复、坏库quick_check返OPEN_ERROR、任务XML/bat内容、版本缺失安全（全 tmp_path 造库、绝不碰生产 monitor.db） |
 | test_wf_cost_lab.py | 第45轮 G27②③ WF稳定性+成本曲面/换手容量：笔统计与复利、成本曲面沿fee/slip单调与基准格定位、break-even 转负/全程为正/基准已亏三态、WF 稳定-漂移-越界chosen防御与评级、combo名解析、容量手算（市场日均名义/单手名义/参与率上限手数/年换手/空与零乘数降级/字符串日期）、成稿与JSON无NaN（注入假runner零DB） |
 | test_factor_expr.py | 第38轮 G25 表达式引擎：21个危险/畸形解析反向用例（未知算子/dunder/属性点/语句拼接/非常量窗口/元数）、delay-delta-窗口统计-ts_rank-minmax-decay_linear-corr嵌套手算、无未来扰动、截面cross_rank/scale/zscore、pearson-spearman/OLS正交恢复β/IC·ICIR加权、实时离线结构性parity、表达式因子必登记且validate干净 |
 | test_compileall.py | 参数化编译全部生产 .py，语法损坏即变红（防“假全绿”） |
