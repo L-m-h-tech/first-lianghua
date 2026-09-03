@@ -721,6 +721,21 @@ HEALTH_N_Q = 5                          # Q5-Q1 分档
 HEALTH_FILE = os.path.join(BASE_DIR, "reports", "factor_health.txt")
 HEALTH_JSON = os.path.join(BASE_DIR, "reports", "factor_health.json")
 
+# G29续（第39轮）因子体检的 regime 分层/换手稳定性/衰减形态：纯研究侧、只读 G21 面板、不接 main
+REGIME_TREND_FIELD = "ret126"          # 用面板已PIT落库的126日动量判牛/熊/震荡
+REGIME_TREND_FLAT = 0.02               # |ret126|<2% 判为震荡(flat)，否则 up/down
+REGIME_VOL_FIELD = "hv60"              # 用60日历史波动率判高低波
+REGIME_VOL_LOOKBACK = 120              # 波动率 regime 用过去120日 ts_rank（只用过去、PIT；纯Py滚动秩，窗不宜过大）
+REGIME_VOL_LOW = 1.0 / 3.0             # ts_rank<1/3=低波
+REGIME_VOL_HIGH = 2.0 / 3.0            # ts_rank>2/3=高波，其间=中波
+REGIME_HORIZONS = (5, 20)              # regime 分层 IC 的未来持有期（交易日）
+REGIME_TURNOVER_LAGS = (1, 5, 20)      # 因子秩自相关/隐含换手的再平衡间隔（交易日）
+REGIME_RANK_WIN = 20                   # 换手稳定性用的短滚动 ts_rank 窗（纯Py O(n·win)，取短窗）
+REGIME_MIN_N = 40                      # 单 regime 桶最少样本，不足不给 IC
+REGIME_DECAY_H = HEALTH_DECAY_H        # 衰减形态拟合复用日频期限网格
+REGIME_FILE = os.path.join(BASE_DIR, "reports", "factor_regime.txt")
+REGIME_JSON = os.path.join(BASE_DIR, "reports", "factor_regime.json")
+
 
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；

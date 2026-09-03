@@ -14,6 +14,7 @@ import factors_catalog
 import factor_health
 import factor_expr
 import expr_research
+import factor_regime
 
 
 def test_factor_eval_selftest():
@@ -78,3 +79,8 @@ def test_factor_expr_selftest():
 def test_expr_research_selftest():
     """G25（第38轮）表达式研究台 --selftest：面板/bar parity、表达式==实时ret5、前向无未来。"""
     assert expr_research.selftest() == 0
+
+
+def test_factor_regime_selftest():
+    """G29续（第39轮）regime分层/换手/衰减形态 --selftest：PIT标签、分层IC、持续性、指数vs幂律择优。"""
+    assert factor_regime.selftest() == 0
