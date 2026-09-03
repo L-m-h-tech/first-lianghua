@@ -1133,8 +1133,8 @@ function renderCreview(d) {
     legend: {data: sw.methods.map(function (m) { return m.name; }), textStyle: {color: AXIS}, top: 2},
     grid: baseGrid({top: 38}),
     xAxis: {type: "category", data: sw.labels, axisLabel: {color: AXIS},
-            name: "单日损失阈值", nameTextStyle: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
-    yAxis: Object.assign({type: "value", minInterval: 1}, axisStyle("触发次数"),
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: Object.assign({type: "value", minInterval: 1}, axisStyle(),
                          {splitLine: {lineStyle: {color: SPLIT}}}),
     series: sw.methods.map(function (m) {
       return {name: m.name, type: "bar", itemStyle: {color: palette[m.method] || NEUT}, data: m.n_trigger};

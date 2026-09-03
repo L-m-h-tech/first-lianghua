@@ -108,3 +108,21 @@ def test_dense_matrix_fill_missing_keeps_all():
     d_all, sy_all, m_all = pl.dense_matrix(rm, analysis_days=3, fill_missing=True)
     assert sy_all == ["A", "B"] and len(m_all) == 3                 # 全品种：缺失补0、日期不剔
     assert m_all[1][1] == 0.0 and m_all[0][1] == 0.02
+
+
+def test_all_universe_gross_grid_runs_three_levels():
+    # 续二①：全品种口径（fill_missing，含稀疏品种）也要跑满 1.0/1.2/1.5 三档 gross×换手成本
+    rm, _ = pl._toy_panel()
+    rm["S4"] = {"2025-260": 0.01}                                   # 极稀疏品种，稠密口径会被剔除
+    _, sy_all, m_all = pl.dense_matrix(rm, analysis_days=260, fill_missing=True)
+    assert "S4" in sy_all and len(sy_all) == 5
+    proxy_all = pl.rolling_proxy(m_all, lookback=60, rebal=20, shrink=0.1, cap=0.5)
+    grid_all = pl.gross_cost_grid(proxy_all, (1.0, 1.2, 1.5), 1.5e-4)
+    assert set(grid_all) == set(proxy_all)                          # 四方法全出
+    for m, rows in grid_all.items():
+        assert [r["gross"] for r in rows] == [1.0, 1.2, 1.5]        # 三档齐全（不再只有 gross=1）
+        assert rows[2]["ann_vol_net"] >= rows[0]["ann_vol_net"]     # 杠杆放大波动
+        assert rows[0]["gross"] == 1.0
+        for r in rows:
+            assert r["sharpe_net"] <= r["sharpe_gross"] + 1e-9      # 成本只减不增
+            assert r["ann_cost_drag"] >= 0.0
