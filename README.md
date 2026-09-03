@@ -119,7 +119,9 @@ D:\Python\python.exe tools\research_review.py       # 第43轮G30③：一键研
 D:\Python\python.exe experiment_ledger.py --list    # 第44轮G27①：统一实验台账(列出各研究/回测实验登记,--repeats看同配置漂移,--show看全文)
 D:\Python\python.exe experiment_ledger.py           # 无参=零网络自测(13组)；台账 reports/experiment_runs.jsonl 由4宿主自动旁路登记
 D:\Python\python.exe tools\wf_cost_lab.py --codes RB,MA,I,TA  # 第45轮G27②③：WF参数稳定性轨迹+fee/slip成本曲面+换手容量(只读)
-D:\Python\python.exe tools\wf_cost_lab.py           # 无参=零网络自测(8组)；出 reports/wf_cost_lab.txt+.json，末尾旁路登记台账
+D:\Python\python.exe tools\wf_cost_lab.py           # 无参=零网络自测(9组)；出 reports/wf_cost_lab.txt+.json，末尾旁路登记台账
+D:\Python\python.exe tools\wf_cost_lab.py --codes RB,MA,I,TA --wf-train 20,40 --wf-test 10,20 --purge 2 --embargo 1  # 第52轮多周期+AFML隔离带
+D:\Python\python.exe tools\portfolio_lab.py     # 第52轮gross网格:另出 portfolio_gross_grid.csv（四方法x1/1.2/1.5x换手成本+全64对照）
 D:\Python\python.exe db_backup.py --once              # 第46轮G19：monitor.db在线热备到backup/(滚动30份,副本校验);--list/--verify/--restore/--emit-task-xml
 D:\Python\python.exe tools\portfolio_risk_lab.py    # 第47轮G5①②③：相关矩阵+组合VaR(历史/参数)/ES+原油SC压力,四套权重对照,只读面板出reports/portfolio_risk_lab.txt|.json
 D:\Python\python.exe tools\circuit_review.py    # 第50轮G5④校准：组合层熔断阈值历史回放(日频逐日代理,只读面板),三档穿越计数/触发后T+1~10条件远期vs基准/halt阈值网格,出reports/circuit_review.txt|.json
@@ -348,11 +350,12 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/expr_research.txt` / `expr_research.json` | 第38轮 G25 由 `tools/expr_research.py` 生成的**表达式因子研究台**结果：面板列 vs bar回读同表达式全64品种 parity（maxAbsDiff=0）、表达式动量对齐实时 ret5、5个表达式因子对未来1/5/20日的逐品种/池化 RankIC 与截面 cross_rank 演示；research 因子不进综合分 |
 | `reports/factor_regime.txt` / `factor_regime.json` | 第39轮 G29续 由 `tools/factor_regime.py` 生成的**因子 regime/换手/衰减形态**：牛熊震荡×高中低波分桶前向 RankIC、1/5/20日秩自相关与隐含换手、指数vs幂律衰减 R² 择优；只研究不改权重 |
 | `reports/portfolio_lab.txt` / `portfolio_lab.json` | 第40轮 G26 由 `tools/portfolio_lab.py` 生成的**组合构建实验台**：等权/逆波动/ERC/GMV 最新目标权重快照（年化波动/有效N/分散化度/风险贡献/目标波动杠杆）+ 每20日滚动样本外代理回测（年化收益/波动/夏普/回撤/换手，equal为基线，严格无未来）；默认不改线上sizing |
-| `reports/portfolio_nav.csv` | 第49轮 G5⑤ 由 `tools/portfolio_lab.py` 生成的**多品种组合历史净值曲线**：date + equal/inv_vol/erc/gmv 四方法逐日对齐的日收益与复利净值（初始1.0，严格样本外、无成本），供看板/绩效包画长期净值与回撤；研究侧只读、不覆盖默认 portfolio_equity/trades.csv |
+| `reports/portfolio_nav.csv` | 第49轮 G5⑤ 由 `tools/portfolio_lab.py` 生成的**多品种组合历史净值曲线**：date + equal/inv_vol/erc/gmv 四方法逐日对齐的日收益与复利净值（初始1.0，严格样本外、无成本），
+| `reports/portfolio_gross_grid.csv` | 第52轮 G26续二 由 `tools/portfolio_lab.py` 生成的**总敞口 gross(1.0/1.2/1.5)×换手成本网格影子**长表：四方法×三档 gross 的年化净/毛收益、净/毛夏普、净波动/回撤、年成本拖累（线性多头杠杆近似、段首日扣1.5bp单边换手，另含全64品种 fill_missing 对照口径） |供看板/绩效包画长期净值与回撤；研究侧只读、不覆盖默认 portfolio_equity/trades.csv |
 | `reports/trade_journal.txt` / `trade_journal.json` | 第42轮 G30 由 `tools/trade_journal.py` 生成的**交易复盘**：七维分桶（胜率/期望/盈亏比/PF/费用占比/连胜连亏）、日周盈亏节奏、盘中MFE/MAE与由盈转亏比例、最佳最差单、规则化观察；只读不改主链 |
 | `reports/research_review.txt` / `research_review.json` | 第43轮 G30③ 由 `tools/research_review.py` 聚合各研究 sidecar 的**一键研究复盘**：七段简报（新鲜度/信号/因子/归因/复盘/风险/防过拟合）+规则化待办WARN/INFO；只读不重跑、缺损陈旧安全降级，不覆盖主链 daily_review.txt |
 | `reports/experiment_runs.jsonl`（gitignore，运行日志） | 第44轮 G27① 由根模块 `experiment_ledger.py` 维护的**统一实验台账**：4 宿主（portfolio --compare-risk/portfolio_lab/trade_journal/research_review）自动旁路追加，每行一条（类型/参数/config_hash/输入内容指纹/指标/产物/结论/复现命令）；同配置 hash 一致、重跑 repeat_of 串联；用 `experiment_ledger.py --list/--repeats/--show/--export` 查询，不覆盖任何既有产物 |
-| `reports/wf_cost_lab.txt` / `wf_cost_lab.json` | 第45轮 G27②③ 由 `tools/wf_cost_lab.py` 生成的**WF参数稳定性+成本敏感性曲面/换手容量**：逐品种选中参数轨迹与稳定评级、fee×slip 净收益曲面与成本安全垫、日均换手与参与率容量数量级；只读不改主链 |
+| `reports/wf_cost_lab.txt` / `wf_cost_lab.json` | 第45轮 G27②③ 由 `tools/wf_cost_lab.py` 生成的**WF参数稳定性+成本敏感性曲面/换手容量**：逐品种选中参数轨迹与稳定评级、fee×slip 净收益曲面与成本安全垫；第52轮 G27续增多周期窗口对照（`--wf-train 20,40 --wf-test 10,20`）与 AFML 防前视隔离带（`--purge/--embargo`，默认0等价旧版）、日均换手与参与率容量数量级；只读不改主链 |
 | `reports/portfolio_risk_lab.txt` / `.json` | 第47轮 G5①②③ 由 `tools/portfolio_risk_lab.py` 生成的**组合层风险快照**：平均/板块相关、equal/inv_vol/erc/gmv 的历史&参数 VaR/ES/10日VaR/肥尾溢价/分散化收益、原油 SC ±5%/−10% 压力损益与贡献品种；只读研究、不产生任何减仓动作 |
 | `reports/circuit_review.txt` / `.json` | 第50轮 G5④ 由 `tools/circuit_review.py` 生成的**组合层熔断阈值历史校准**：默认 warn/halt/delever 三档历史穿越次数、触发后 T+1/3/5/10 条件远期收益 vs 全样本基准、halt 阈值网格(0.5%~3%)频次与条件收益；日频逐日代理、只读研究、不改 circuit_breaker 默认值、不产生任何动作 |
 
@@ -366,7 +369,7 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/offhours_history.txt` | **仅非交易时段轮次**的当日归档，**新块置顶**；**次日启动时自动清除其中昨日的轮动块** |
 | `reports/daily_review.txt` | **每日复盘报告（永久保留，从不删除）**：交易日全部夜盘结束后自动生成一次——汇总当日轮动表现、最近7天信号胜率/平均方向收益、当日新闻（利多/利空统计、影响力Top）、末轮期权策略回顾与后续关注；**新一天的复盘写在最前面**，同日重复生成会替换当天旧块 |
 | `reports/实时报告.html` | **多页签实时看板**：双击打开（或双击根目录 `查看实时报告.bat`），页签切换交易轮次、**图表看板（第22轮 ECharts 9图，第23轮起同页内嵌渲染、不再 iframe 套独立页）**、CSV流水、信号胜率追踪、日线/日内/组合三套回测、当日归档、非交易时段和每日复盘（共14个页签=13个txt/csv走iframe+1个内嵌图表）。页面每10秒轻量探测 `reports/report_status.js`（极小状态文件），**只有程序真写出新一轮报告时才重载内容**——定时轮动（5/20/1分钟刻度）与原油急动紧急轮动都能在10秒内显示，平时不刷新（图表页签改为重新注入 chart_data.js 重渲染）；页头显示最新报告时间/轮次、紧急标记与计划下一轮倒计时 |
-| `reports/图表看板.html` / `chart_data.js` / `assets/echarts.min.js` | **第22轮新增 P1-3 图表看板、第23轮改为片段拼装**：本地 ECharts 5.5.1（Apache-2.0，离线可看、零 Python 依赖）渲染 9 张图——组合权益/回撤/风险度、横截面板块与全品种强弱、因子 RankIC 与分档单调性、信号胜率校准；chart_data.js 每轮由 charts.py 从既有 CSV/SQLite/内存态注入（缺数据显空态）；echarts 从根目录 assets/ 幂等同步，删了下轮自动补；独立页保留可直链打开，与实时看板内嵌的图表页签共用 charts.py 的 _PANEL_STYLE/DOM/JS 同一片段 |
+| `reports/图表看板.html` / `chart_data.js` / `assets/echarts.min.js` | **第22轮新增 P1-3 图表看板、第23轮改为片段拼装**：本地 ECharts 5.5.1（Apache-2.0，离线可看、零 Python 依赖）渲染 18 张图——组合权益/回撤/风险度、横截面板块与全品种强弱、因子 RankIC 与分档单调性、信号胜率校准、纸面三件、绩效三件（水下/滚动夏普/月度热力），以及第52轮新增的组合构建四方法历史净值、熔断阈值网格触发数、1%校准档条件远期vs基准；chart_data.js 每轮由 charts.py 从既有 CSV/SQLite/内存态注入（缺数据显空态，研究产物缺失时对应新卡显空态、不拖垮其余图）；echarts 从根目录 assets/ 幂等同步，删了下轮自动补；独立页保留可直链打开，与实时看板内嵌的图表页签共用 charts.py 的 _PANEL_STYLE/DOM/JS 同一片段 |
 | `reports/report_status.js` | 看板专用状态文件，每轮落盘时自动更新（无需查看、勿删） |
 | `logs/monitor.log` | 运行日志（含每轮开始/完成时间、下一轮计划时间、日切清理记录） |
 
@@ -459,7 +462,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：39 个测试文件、618 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**熔断阈值历史校准（第50轮 test_circuit_review 9例：损失口径/远期复利/事件穿越/三档分档/续跌vs反弹条件分布/阈值网格单调/空序列安全/渲染）**、**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：39 个测试文件、623 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**熔断阈值历史校准（第50轮 test_circuit_review 9例：损失口径/远期复利/事件穿越/三档分档/续跌vs反弹条件分布/阈值网格单调/空序列安全/渲染）**、**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行
