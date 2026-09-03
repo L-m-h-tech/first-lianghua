@@ -11,12 +11,15 @@ import build_ml_samples
 import backtest_validation
 import db_archive
 import factors_catalog
+import factor_plugin
 import factor_health
 import factor_expr
 import expr_research
 import factor_regime
 import microstructure_lab
 import spread_lab
+import spec_pressure_lab
+import web_dashboard
 import portfolio_constructor
 import portfolio_lab
 import trade_journal
@@ -68,6 +71,11 @@ def test_factors_catalog_selftest():
     assert factors_catalog.selftest() == 0
 
 
+def test_factor_plugin_selftest():
+    """G2（第57轮第一切片）插件宿主 --selftest：契约校验/注册表/异常隔离/catalog一致性/PART顺序 共8组。"""
+    assert factor_plugin.selftest() == 0
+
+
 def test_panel_builder_selftest():
     """G21（第36轮）标准研究面板 --selftest：PIT asof/未来扰动/训练服务一致/PanelStore幂等。"""
     assert panel_builder.selftest() == 0
@@ -106,6 +114,16 @@ def test_microstructure_lab_selftest():
 def test_spread_lab_selftest():
     """G12（第55/56轮）产业链/跨期价差+盘面利润 --selftest：尾窗z/分位、近-次价差形态、对齐比价、产业链z、盘面利润额系数 共10组。"""
     assert spread_lab.selftest() == 0
+
+
+def test_spec_pressure_lab_selftest():
+    """G24续（第57轮）投机/套保压力代理 --selftest：成交/持仓投机度、尾窗z/分位、量仓四象限、近月集中度自身分位换月信号 共9组。"""
+    assert spec_pressure_lab.selftest() == 0
+
+
+def test_web_dashboard_selftest():
+    """G8（第57轮）只读Web看板 --selftest：safe_join穿越防护、content-type、方法白名单、首页转义/viewport 共6组。"""
+    assert web_dashboard.selftest() == 0
 
 
 def test_portfolio_constructor_selftest():

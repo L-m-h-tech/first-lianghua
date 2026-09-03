@@ -40,6 +40,7 @@ SOURCES = [
     ("factor_regime.json", "G29续 因子regime/换手/衰减形态", r"D:\Python\python.exe tools\factor_regime.py"),
     ("microstructure_lab.json", "G24 微结构/持仓/季节因子族(ΔOI/Amihud/特异波动/偏度/日历)", r"D:\Python\python.exe tools\microstructure_lab.py"),
     ("spread_lab.json", "G12 产业链/跨期价差监控(期限carry/backwardation/产业链比价z)", r"D:\Python\python.exe tools\spread_lab.py"),
+    ("spec_pressure_lab.json", "G24续 投机/套保压力代理(成交持仓比/量仓四象限/近月集中度)", r"D:\Python\python.exe tools\spec_pressure_lab.py"),
     ("attribution.json", "G28 收益归因(OLS/BHB/板块)", r"D:\Python\python.exe tools\attribution.py"),
     ("trade_journal.json", "G30① 交易复盘journal(分桶/MFE-MAE)", r"D:\Python\python.exe tools\trade_journal.py --bars --period 30"),
     ("portfolio_lab.json", "G26 组合构建实验台(等权/逆波/ERC/GMV)", r"D:\Python\python.exe tools\portfolio_lab.py"),

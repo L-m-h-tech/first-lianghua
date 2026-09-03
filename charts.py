@@ -529,8 +529,53 @@ def journal_payload(path=None):
         return None
 
 
-# ---------------- 汇总与落盘 ----------------
+def portfolio_risk_payload(path=None):
+    """读 reports/portfolio_risk_lab.json（G5/G27组合风险）：四 sizing 方法风险标量、原油情景压力、最强/最弱相关对。缺/坏返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "portfolio_risk_lab.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        pm = data.get("per_method")
+        if not isinstance(pm, dict) or not pm:
+            return None
+        labels = {"equal": "等名义", "inv_vol": "逆波动", "erc": "风险平价ERC", "gmv": "全局最小方差"}
+        order = [m for m in ("equal", "inv_vol", "erc", "gmv") if m in pm]
+        methods = []
+        stress = {}
+        for m in order:
+            blk = pm[m]
+            param = blk.get("param") or {}
+            methods.append({"key": m, "name": labels.get(m, m),
+                            "eff_n": blk.get("eff_n"), "div": blk.get("div_benefit"),
+                            "ann_vol": param.get("ann_vol"), "avg_corr": blk.get("avg_abs_corr"),
+                            "var": blk.get("port_param_var")})
+            osd = {}
+            for sc, v in (blk.get("oil_stress") or {}).items():
+                osd[sc] = v.get("total") if isinstance(v, dict) else None
+            stress[m] = osd
+        # 相关对取等名义方法：最强正相关(集中风险)+最弱负相关(分散来源)各6，按相关系数升序使横向最大值落顶
+        pairs = []
+        eq = pm.get("equal") or {}
+        for a, b, c in (eq.get("strongest_pairs") or [])[:6]:
+            pairs.append({"name": a + "/" + b, "corr": c})
+        for a, b, c in (eq.get("weakest_pairs") or [])[:6]:
+            pairs.append({"name": a + "/" + b, "corr": c})
+        pairs = [p for p in pairs if isinstance(p["corr"], (int, float))]
+        pairs.sort(key=lambda x: x["corr"])
+        scenarios = sorted({s for m in stress.values() for s in m.keys()},
+                           key=lambda x: float(x))  # -0.1/-0.05/0.05 数值序（非字典序）
+        return {"methods": methods, "stress": {"order": [labels.get(m, m) for m in order],
+                                               "keys": order, "scenarios": scenarios,
+                                               "by_method": stress}, "pairs": pairs,
+                "meta": {"window": (data.get("meta") or {}).get("window"),
+                         "n_universe": (data.get("meta") or {}).get("n_universe")}}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
 
+
+# ---------------- 汇总与落盘 ----------------
 def _tear_from_series(dts, equity, source, max_points=1200):
     """等长 dts/equity 原始权益序列 -> G3 绩效三件（水下曲线/滚动夏普/月度热力）+标量摘要。
 
@@ -670,6 +715,11 @@ def build_payload(state=None):
         payload["journal"] = journal_payload()
     except Exception:
         payload["journal"] = None
+    # ⑫ G5/G27 组合风险实验室（portfolio_risk_lab 离线 JSON；缺文件自动 None 显空态）
+    try:
+        payload["prisk"] = portfolio_risk_payload()
+    except Exception:
+        payload["prisk"] = None
     return payload
 
 
@@ -884,6 +934,18 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <div class="chips" id="jr-chips"></div>
     <div id="c-jr-daily" class="chart" style="height:300px"></div>
   </div>
+  <div class="card">
+    <h3>⑫ 组合风险·四 sizing 方法 <span class="sub">portfolio_risk_lab.json：柱=年化波动%（左）、金线=有效持仓N（右），悬停看分散化收益/平均相关/参数VaR；先跑 tools/portfolio_risk_lab.py</span></h3>
+    <div id="c-prl-method" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>原油情景压力·组合损益 <span class="sub">SC 原油 ±5%/−10% 情景经 beta 传导的组合损益%（四方法）</span></h3>
+    <div id="c-prl-stress" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card full">
+    <h3>最强/最弱品种相关对·等名义 <span class="sub">近126日收益相关：红=高正相关(集中风险)、绿=负相关(分散来源)，各取6对</span></h3>
+    <div id="c-prl-pairs" class="chart" style="height:320px"></div>
+  </div>
 </div>
 """
 
@@ -898,7 +960,8 @@ var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-pnav", "c-creview-sweep", "c-creview-fwd",
                  "c-attr-factor", "c-attr-bhb",
                  "c-spread-term", "c-spread-chain", "c-spread-margin",
-                 "c-jr-hold", "c-jr-reason", "c-jr-daily"];
+                 "c-jr-hold", "c-jr-reason", "c-jr-daily",
+                 "c-prl-method", "c-prl-stress", "c-prl-pairs"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -1526,6 +1589,81 @@ function renderJournal(d) {
        itemStyle: {color: GOLD}, lineStyle: {color: GOLD, width: 2}, data: cumArr}]
   });
 }
+function renderPrisk(d) {
+  if (!d || !d.methods || !d.methods.length) {
+    empty("c-prl-method", "暂无组合风险实验室：先运行 python tools/portfolio_risk_lab.py 生成 reports/portfolio_risk_lab.json。");
+    empty("c-prl-stress", "暂无原油情景压力。");
+    empty("c-prl-pairs", "暂无品种相关对。");
+    return;
+  }
+  var ms = d.methods, names = ms.map(function (m) { return m.name; });
+  mk("c-prl-method").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"}, formatter: function (ps) {
+      var i = ps[0].dataIndex, m = ms[i];
+      return m.name + "<br/>年化波动=" + (m.ann_vol == null ? "—" : pct(m.ann_vol, 2))
+        + "<br/>有效持仓N=" + (m.eff_n == null ? "—" : (+m.eff_n).toFixed(1))
+        + "<br/>分散化收益=" + (m["div"] == null ? "—" : (+m["div"]).toFixed(3))
+        + "<br/>平均|相关|=" + (m.avg_corr == null ? "—" : (+m.avg_corr).toFixed(3))
+        + "<br/>参数日VaR=" + (m.var == null ? "—" : pct(m["var"], 2)); }},
+    legend: {data: ["年化波动", "有效持仓N"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 36, right: 54}),
+    xAxis: {type: "category", data: names, axisLabel: {color: AXIS, interval: 0, fontSize: 10, rotate: 16},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: [
+      {type: "value", name: "年化波动", nameTextStyle: {color: AXIS},
+       axisLabel: {color: AXIS, formatter: function (v) { return v.toFixed(0) + "%"; }},
+       axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+      {type: "value", name: "有效N", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+       splitLine: {show: false}}],
+    series: [
+      {name: "年化波动", type: "bar", barWidth: "44%", itemStyle: {color: BLUE},
+       data: ms.map(function (m) { return m.ann_vol == null ? null : +(m.ann_vol * 100).toFixed(2); })},
+      {name: "有效持仓N", type: "line", yAxisIndex: 1, symbol: "circle", symbolSize: 7,
+       itemStyle: {color: GOLD}, lineStyle: {color: GOLD},
+       data: ms.map(function (m) { return m.eff_n == null ? null : +(+m.eff_n).toFixed(1); })}]
+  });
+  var st = d.stress || {}, scenarios = st.scenarios || [], keys = st.keys || [];
+  var stressColor = {"-0.1": NEUT, "-0.05": BLUE, "0.05": GOLD};
+  mk("c-prl-stress").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+              valueFormatter: function (v) { return v == null ? "—" : (+v).toFixed(3) + "%"; }},
+    legend: {data: scenarios.map(function (s) { return "原油" + s * 100 + "%"; }),
+             textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 36}),
+    xAxis: {type: "category", data: st.order || [], axisLabel: {color: AXIS, interval: 0, fontSize: 10},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "value", axisLabel: {color: AXIS, formatter: function (v) { return v.toFixed(2) + "%"; }},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    series: scenarios.map(function (sc) {
+      return {name: "原油" + sc * 100 + "%", type: "bar",
+              itemStyle: {color: stressColor[sc] || NEUT},
+              data: keys.map(function (k) {
+                var v = (st.by_method[k] || {})[sc];
+                return v == null ? null : +(v * 100).toFixed(3);
+              })};
+    })
+  });
+  var pairs = d.pairs || [];
+  if (!pairs.length) { empty("c-prl-pairs", "暂无品种相关对。"); return; }
+  var pn = pairs.map(function (x) { return x.name; });
+  mk("c-prl-pairs").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "item", formatter: function (p) {
+      var x = pairs[p.dataIndex]; return x.name + "<br/>相关系数=" + (+x.corr).toFixed(3); }},
+    grid: baseGrid({left: 110, right: 56, top: 10, bottom: 26}),
+    xAxis: {type: "value", splitNumber: 4, axisLabel: {color: AXIS},
+            axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+    yAxis: {type: "category", data: pn, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    series: [{type: "bar", barWidth: "60%",
+      data: pairs.map(function (x) {
+        return {value: +(+x.corr).toFixed(3), itemStyle: {color: signedColor(x.corr)}};
+      }),
+      label: {show: true, position: "right", color: AXIS,
+              formatter: function (p) { return (+p.value).toFixed(2); }}}]
+  });
+}
 function loadAndRender() {
   if (typeof echarts === "undefined") {
     setGen("本地 ECharts 资源缺失（assets/echarts.min.js）：运行 python charts.py --rebuild 或等下一轮监控自动同步。");
@@ -1550,12 +1688,13 @@ function loadAndRender() {
     renderAttr(D.attribution);
     renderSpread(D.spread);
     renderJournal(D.journal);
+    renderPrisk(D.prisk);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
     renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
-    renderSpread(null); renderJournal(null); };
+    renderSpread(null); renderJournal(null); renderPrisk(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }
@@ -1574,6 +1713,7 @@ if (window.__CHARTS_STANDALONE__) { started = true; loadAndRender(); }   // 独�
 """
 
 _PAGE_SHELL_HEAD = ('<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n'
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
                     '<title>期货监控·图表看板（ECharts 本地渲染，数据随每轮监控自动刷新）</title>\n'
                     '<style>')
 _PAGE_SHELL_MID = ('\n</style>\n<script src="assets/echarts.min.js"></script>\n</head>\n<body>\n'

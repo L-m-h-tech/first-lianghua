@@ -356,7 +356,8 @@ CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
              "c-pnav", "c-creview-sweep", "c-creview-fwd",
              "c-attr-factor", "c-attr-bhb",
              "c-spread-term", "c-spread-chain", "c-spread-margin",
-             "c-jr-hold", "c-jr-reason", "c-jr-daily")
+             "c-jr-hold", "c-jr-reason", "c-jr-daily",
+             "c-prl-method", "c-prl-stress", "c-prl-pairs")
 
 
 def test_dashboard_embed_parts_are_fragments():
@@ -641,3 +642,40 @@ def test_journal_payload(tmp_path):
     assert charts.journal_payload(str(tmp_path / "j2.json")) is None
     (tmp_path / "jbad.json").write_text("{xx", encoding="utf-8")
     assert charts.journal_payload(str(tmp_path / "jbad.json")) is None
+
+
+def test_portfolio_risk_payload(tmp_path):
+    p = tmp_path / "portfolio_risk_lab.json"
+    assert charts.portfolio_risk_payload(str(p)) is None
+    payload = {
+        "meta": {"window": ["2026-03-01", "2026-09-02"], "n_universe": 61},
+        "per_method": {
+            "equal": {"eff_n": 61.0, "div_benefit": 0.6, "avg_abs_corr": 0.16,
+                      "port_param_var": 0.0098, "param": {"ann_vol": 0.093},
+                      "strongest_pairs": [["PX", "TA", 0.81], ["AA", "BB", 0.7]],
+                      "weakest_pairs": [["AU", "PF", -0.39], ["CC", "DD", -0.3]],
+                      "oil_stress": {"-0.1": {"total": -0.012}, "-0.05": {"total": -0.006},
+                                     "0.05": {"total": 0.006}}},
+            "erc": {"eff_n": 34.8, "div_benefit": 0.69, "avg_abs_corr": 0.16,
+                    "port_param_var": 0.0062, "param": {"ann_vol": 0.058},
+                    "strongest_pairs": [], "weakest_pairs": [],
+                    "oil_stress": {"-0.1": {"total": -0.005}, "-0.05": {"total": -0.0025},
+                                   "0.05": {"total": 0.0025}}}}}
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.portfolio_risk_payload(str(p))
+    assert d is not None
+    # 方法固定顺序 equal->inv_vol->erc->gmv（缺的跳过）
+    assert [m["key"] for m in d["methods"]] == ["equal", "erc"]
+    assert abs(d["methods"][0]["ann_vol"] - 0.093) < 1e-12
+    # 情景自然升序 -0.1/-0.05/0.05
+    assert d["stress"]["scenarios"] == ["-0.1", "-0.05", "0.05"]
+    assert abs(d["stress"]["by_method"]["equal"]["-0.1"] + 0.012) < 1e-12
+    # 相关对：最强+最弱合并按 corr 升序（横向最大值落顶）
+    names = [x["name"] for x in d["pairs"]]
+    assert names[0] == "AU/PF" and names[-1] == "PX/TA" and len(d["pairs"]) == 4
+    assert d["meta"]["n_universe"] == 61
+    # per_method 空/非 dict -> None；坏 JSON -> None
+    (tmp_path / "r2.json").write_text(json.dumps({"per_method": {}}), encoding="utf-8")
+    assert charts.portfolio_risk_payload(str(tmp_path / "r2.json")) is None
+    (tmp_path / "rbad.json").write_text("xx{", encoding="utf-8")
+    assert charts.portfolio_risk_payload(str(tmp_path / "rbad.json")) is None
