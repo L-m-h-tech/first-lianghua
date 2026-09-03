@@ -117,6 +117,8 @@ D:\Python\python.exe tools\trade_journal.py --bars  # 第42轮G30：交易复盘
 D:\Python\python.exe tools\research_review.py       # 第43轮G30③：一键研究复盘(聚合各sidecar七段成稿+规则化待办,只读不重跑)
 D:\Python\python.exe experiment_ledger.py --list    # 第44轮G27①：统一实验台账(列出各研究/回测实验登记,--repeats看同配置漂移,--show看全文)
 D:\Python\python.exe experiment_ledger.py           # 无参=零网络自测(13组)；台账 reports/experiment_runs.jsonl 由4宿主自动旁路登记
+D:\Python\python.exe tools\wf_cost_lab.py --codes RB,MA,I,TA  # 第45轮G27②③：WF参数稳定性轨迹+fee/slip成本曲面+换手容量(只读)
+D:\Python\python.exe tools\wf_cost_lab.py           # 无参=零网络自测(8组)；出 reports/wf_cost_lab.txt+.json，末尾旁路登记台账
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
@@ -237,6 +239,8 @@ OpenVlab市场页的隐波排行走内部POST接口暂无法稳定获取，程�
 
 12. **统一实验台账（`experiment_ledger.py`，第44轮 G27①，根模块、研究侧）**：给分散的研究/回测实验建 MLflow 式登记处。4 个宿主（portfolio **仅 `--compare-risk`**、portfolio_lab、trade_journal、research_review）跑完自动**旁路追加**一条到 `reports/experiment_runs.jsonl`（登记实验类型/规范化参数/输入数据内容指纹/关键指标/产物/结论/一键复现命令/版本，登记失败只吞错绝不影响宿主）。**config_hash=sha256(类型+参数+输入内容身份)、刻意不含 mtime**，故同配置两次实验 hash 一致、重跑则写 `repeat_of` 串联以看指标漂移。查询：`experiment_ledger.py --list`（一行一次）/`--repeats`（同配置漂移）/`--show run_id`（全文）/`--export`；环境变量 `FUTURES_EXPERIMENT_LEDGER` 可重定向或关闭。台账是 gitignore 的运行日志、绝不覆盖既有报告/CSV，main/analyzer 零 import。
 
+13. **WF参数稳定性+成本敏感性/换手容量（`tools/wf_cost_lab.py`，第45轮 G27②③，研究侧）**：复用 backtest_validation 的参数网格回放与 walk-forward 引擎（不重写）。②滚动 IS 选参/OOS 验证，输出选中参数轨迹、锚定率、切换率、IS→OOS 衰减、选参遗憾并按 稳定/一般/漂移 评级；③固定全样本最优参数在 每腿费率×单边滑点 5×5 网格重放，出净复利/夏普/胜率曲面与成本安全垫倍数（首个转负档/基准），并用分钟量做换手率与参与率上限下可承载资金的**数量级**估算（线性忽略冲击，精确容量待 G14 盘口）。`--codes/--all/--period/--wf-train/--wf-test/--participation`，只读 monitor.db、只写 reports/wf_cost_lab.txt|.json，末尾经台账旁路登记一条；main/analyzer 零 import、默认 CSV 双哈希不变。
+
 ### 4.7 样本外验证与防过拟合工具箱（`tools/backtest_validation.py`，WP-F4 前置 / AFML ch7、11-12）
 
 研究侧、纯标准库、离线只读，回答一个问题——**"在一堆候选参数/因子里挑出回测最好的那个"，这个挑选动作本身有多大概率在拟合噪声**。五块方法（公式来自公开论文，代码自写）：
@@ -327,6 +331,7 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/trade_journal.txt` / `trade_journal.json` | 第42轮 G30 由 `tools/trade_journal.py` 生成的**交易复盘**：七维分桶（胜率/期望/盈亏比/PF/费用占比/连胜连亏）、日周盈亏节奏、盘中MFE/MAE与由盈转亏比例、最佳最差单、规则化观察；只读不改主链 |
 | `reports/research_review.txt` / `research_review.json` | 第43轮 G30③ 由 `tools/research_review.py` 聚合各研究 sidecar 的**一键研究复盘**：七段简报（新鲜度/信号/因子/归因/复盘/风险/防过拟合）+规则化待办WARN/INFO；只读不重跑、缺损陈旧安全降级，不覆盖主链 daily_review.txt |
 | `reports/experiment_runs.jsonl`（gitignore，运行日志） | 第44轮 G27① 由根模块 `experiment_ledger.py` 维护的**统一实验台账**：4 宿主（portfolio --compare-risk/portfolio_lab/trade_journal/research_review）自动旁路追加，每行一条（类型/参数/config_hash/输入内容指纹/指标/产物/结论/复现命令）；同配置 hash 一致、重跑 repeat_of 串联；用 `experiment_ledger.py --list/--repeats/--show/--export` 查询，不覆盖任何既有产物 |
+| `reports/wf_cost_lab.txt` / `wf_cost_lab.json` | 第45轮 G27②③ 由 `tools/wf_cost_lab.py` 生成的**WF参数稳定性+成本敏感性曲面/换手容量**：逐品种选中参数轨迹与稳定评级、fee×slip 净收益曲面与成本安全垫、日均换手与参与率容量数量级；只读不改主链 |
 
 | `reports/backtest_validation.txt` | 由 `tools/backtest_validation.py` 生成的防过拟合报告：组合 DSR、逐品种参数网格 CSCV-PBO、Walk-forward 衰减、参数高原/孤峰与全市场结论（只评估不改参） |
 | `data/futures_fees.csv` | 由用户券商手续费表通过`tools/build_fee_table.py`转换的64品种真实费率：投机账户、按金额费率、按手数固定金额、合约乘数；回测运行时只用标准库csv读取，原始xlsx归档在同目录 |
@@ -430,7 +435,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：33 个测试文件、510 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：34 个测试文件、526 个用例，约 8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。组合风险型sizing（第41轮 test_portfolio：严格PIT/权重定手数/重复回放）、**交易复盘journal（第42轮 test_trade_journal 17例：CSV往返/七维分桶手算/|分|档位/MFE-MAE多空镜像/注入bars不碰生产库/全胜桶不误报/端到端成稿）**。**研究侧一键复盘编排（第43轮 test_research_review 15例：sidecar缺损/新鲜度/BOM兼容/各段提取/规则待办排序/空目录降级/七段成稿）**。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行
