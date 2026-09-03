@@ -563,12 +563,12 @@ RISK_GATE_ALERT = True            # veto 是否走声音/Webhook 告警通道（
 # ---- G5④（第48轮）组合层单日浮亏熔断（与上面单品种信号级 risk_gate 正交；见 circuit_breaker.py）----
 # 纪律：默认 observe 只计算/标注、绝不改变纸面成交（等价旧版）；显式 paper_halt 才在 halt/delever 时停开新仓（平仓照常）。
 CIRCUIT_ENABLED = True            # 总开关：False 时 PaperBroker 不挂断路器
-CIRCUIT_ACTION = "observe"        # observe=只标注(默认,allow_open恒True) / paper_halt=纸面层停开新仓（真实账户永不自动操作）
+CIRCUIT_ACTION = "observe"        # observe=只标注(默认,allow_open恒True) / paper_halt=纸面层停开新仓 / paper_delever=停开+delever档按比例自动减仓（只平不反向；真实账户永不自动操作，纸面默认关）
 CIRCUIT_WARN_LOSS = 0.02          # 单日浮亏≥2% -> warn（只提示降杠杆）
-CIRCUIT_HALT_LOSS = 0.03          # 单日浮亏≥3% -> halt（paper_halt 模式停开新仓、当日粘性、日切解除）
-CIRCUIT_DELEVER_LOSS = 0.05       # 单日浮亏≥5% -> delever（停开+建议减仓比例，仅文字不自动砍仓）
+CIRCUIT_HALT_LOSS = 0.03          # 单日浮亏≥3% -> halt（paper_halt/paper_delever 停开新仓、当日粘性、日切解除）
+CIRCUIT_DELEVER_LOSS = 0.05       # 单日浮亏≥5% -> delever（observe/paper_halt仅文字建议；paper_delever按CIRCUIT_DELEVER_RATIO自动减仓）
 CIRCUIT_RISK_HALT = 0.95          # 保证金风险度(占用/权益)≥95% 作为第二触发源抬到 halt
-CIRCUIT_DELEVER_RATIO = 0.50      # delever 档建议减仓到的比例（仅建议）
+CIRCUIT_DELEVER_RATIO = 0.50      # delever 档减仓比例（paper_delever 下每品种当日按此向下取整减一次，不足1手不减）
 
 
 # ================= WP-F2（P1-2）：信号胜率校准 / 因子IC评估 / triple-barrier 样本资产 =================

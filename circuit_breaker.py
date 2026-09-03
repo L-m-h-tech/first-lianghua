@@ -22,7 +22,9 @@ _LEVEL_RANK = {NORMAL: 0, WARN: 1, HALT: 2, DELEVER: 3}
 
 OBSERVE = "observe"          # 默认：只计算/标注，allow_open 恒 True
 PAPER_HALT = "paper_halt"    # 纸面层：halt/delever 时停开新仓（平仓照常），不自动减仓
-ACTION_MODES = (OBSERVE, PAPER_HALT)
+PAPER_DELEVER = "paper_delever"  # 纸面层：在 paper_halt 停开基础上，delever 档对当前持仓按比例自动减仓（只平不反向）
+ACTION_MODES = (OBSERVE, PAPER_HALT, PAPER_DELEVER)
+_HALT_MODES = (PAPER_HALT, PAPER_DELEVER)   # 这两种模式在 halt/delever 档停开新仓
 
 # 委托动作里属于"开新仓/增加敞口"的类型（与 paper_broker _make_order 的 action 对齐）
 OPEN_ACTIONS = ("open", "reverse_open")
@@ -88,6 +90,38 @@ def filter_orders(orders, allow_open):
     return kept
 
 
+def reduce_lots_of(held_lots, ratio):
+    """单品种按减仓比例算应减手数：向下取整（不足1手不减=绝不清仓式过度减仓）；非法返0。"""
+    try:
+        held = int(held_lots)
+        r = float(ratio)
+    except (TypeError, ValueError):
+        return 0
+    if held <= 0 or not (0 < r <= 1):
+        return 0
+    import math
+    return max(0, int(math.floor(held * r)))
+
+
+def delever_plan(positions_brief, ratio, done=None):
+    """据当前持仓简报 [{sym,direction,lots}] 生成减仓计划（纯函数、不改入参）。
+    跳过 done 集合中当日已减过的品种；只纳入应减手数≥1 的品种；按 sym 排序保证确定性。
+    返回 [{sym,direction,held_lots,reduce_lots}]，reduce_lots 严格 < held_lots（只减不清、不反向）。"""
+    done = done or set()
+    plan = []
+    for b in positions_brief or []:
+        sym = (b or {}).get("sym")
+        if not sym or sym in done:
+            continue
+        held = int(b.get("lots") or 0)
+        rl = reduce_lots_of(held, ratio)
+        if rl >= 1 and rl < held:
+            plan.append({"sym": sym, "direction": int(b.get("direction") or 0),
+                         "held_lots": held, "reduce_lots": rl})
+    plan.sort(key=lambda x: x["sym"])
+    return plan
+
+
 class CircuitBreaker:
     """组合层日内熔断状态机。阈值/动作模式构造时注入（不 import config，便于零环境自测）。"""
 
@@ -107,6 +141,7 @@ class CircuitBreaker:
         self.peak_loss = 0.0
         self.level = NORMAL
         self.events = []          # 当日升档事件 [(ts, new_level, loss)]
+        self._delever_done = set()  # 当日已执行自动减仓的 sym（当日只减一次，_reset_day 清空）
 
     # ---------------- 状态更新 ----------------
     def _reset_day(self, day, equity):
@@ -115,6 +150,7 @@ class CircuitBreaker:
         self.peak_loss = 0.0
         self.level = NORMAL
         self.events = []
+        self._delever_done = set()
 
     def update(self, ts, equity, risk_degree=None, n_positions=None):
         """喂入本轮权益快照，返回 decision dict。跨日自动重置；当日级别只升不降（粘性）。"""
@@ -152,7 +188,7 @@ class CircuitBreaker:
                  day_changed=False, risk_trigger=False):
         """由当前 level + 动作模式组装决策（不改变状态）。"""
         allow_open = True
-        if self.action_mode == PAPER_HALT and _LEVEL_RANK[self.level] >= _LEVEL_RANK[HALT]:
+        if self.action_mode in _HALT_MODES and _LEVEL_RANK[self.level] >= _LEVEL_RANK[HALT]:
             allow_open = False
         msgs = []
         warn, halt, delever = self.thresholds["warn"], self.thresholds["halt"], self.thresholds["delever"]
@@ -168,25 +204,44 @@ class CircuitBreaker:
                 msgs.append("组合当日浮亏%.2f%%达停开线%.0f%%%s（observe只标注：若切 paper_halt 将停开新仓）"
                             % (self.peak_loss * 100, halt * 100, src))
         elif self.level == DELEVER:
-            msgs.append("组合当日浮亏%.2f%%达减仓线%.0f%%，建议主动减仓约%.0f%%（仅建议、不自动砍仓），%s"
-                        % (self.peak_loss * 100, delever * 100, self.delever_ratio * 100,
-                           "已停开新仓" if not allow_open else "observe未拦截"))
+            if self.action_mode == PAPER_DELEVER:
+                msgs.append("组合当日浮亏%.2f%%达减仓线%.0f%%，paper_delever 已对持仓自动减仓约%.0f%%"
+                            "（只平不反向、当日各品种只减一次、日切可再评估）并停开新仓"
+                            % (self.peak_loss * 100, delever * 100, self.delever_ratio * 100))
+            else:
+                msgs.append("组合当日浮亏%.2f%%达减仓线%.0f%%，建议主动减仓约%.0f%%（%s），%s"
+                            % (self.peak_loss * 100, delever * 100, self.delever_ratio * 100,
+                               "paper_delever才自动执行" if self.action_mode == OBSERVE else "仅建议、不自动砍仓",
+                               "已停开新仓" if not allow_open else "observe未拦截"))
+        auto_delever = self.action_mode == PAPER_DELEVER and self.level == DELEVER
         return {
             "ts": str(ts) if ts is not None else None, "day": self.day, "day_changed": day_changed,
             "level": self.level, "action_mode": self.action_mode, "allow_open": allow_open,
             "daily_loss": loss, "peak_loss": self.peak_loss,
             "day_open_equity": self.day_open_equity, "equity": equity,
             "risk_degree": risk_degree, "risk_trigger": risk_trigger,
-            "n_positions": n_positions, "suggest_reduce_ratio":
+            "n_positions": n_positions, "auto_delever": auto_delever,
+            "suggest_reduce_ratio":
                 (self.delever_ratio if self.level == DELEVER else 0.0),
             "messages": msgs,
         }
 
     def open_allowed(self):
-        """当前是否允许开新仓：observe 恒 True；paper_halt 仅在 level 达 halt/delever 时 False。"""
-        if self.action_mode != PAPER_HALT:
+        """当前是否允许开新仓：observe 恒 True；paper_halt/paper_delever 在 level 达 halt/delever 时 False。"""
+        if self.action_mode not in _HALT_MODES:
             return True
         return _LEVEL_RANK[self.level] < _LEVEL_RANK[HALT]
+
+    def delever_targets(self, positions_brief):
+        """paper_delever 且当前处于 delever 档时，返回待自动减仓计划（跳过当日已减品种）；其余返 []。"""
+        if self.action_mode != PAPER_DELEVER or self.level != DELEVER:
+            return []
+        return delever_plan(positions_brief, self.delever_ratio, self._delever_done)
+
+    def mark_delevered(self, sym):
+        """某品种本轮自动减仓成交后登记，当日不再对其重复减仓（日切由 _reset_day 清空）。"""
+        if sym:
+            self._delever_done.add(sym)
 
     # ---------------- 工厂/渲染 ----------------
     @classmethod
@@ -306,8 +361,48 @@ def selftest():
     txt = cbc.render()
     assert "halt" in txt
 
+    # 12) reduce_lots_of：向下取整、不足1手不减、非法安全
+    assert reduce_lots_of(10, 0.5) == 5 and reduce_lots_of(3, 0.5) == 1
+    assert reduce_lots_of(1, 0.5) == 0       # 1手减半=0.5手向下取整0，绝不清仓
+    assert reduce_lots_of(10, 0) == 0 and reduce_lots_of(-1, 0.5) == 0
+    assert reduce_lots_of("x", 0.5) == 0
+
+    # 13) delever_plan：只减不清、跳过done、按sym排序、不改入参
+    brief = [{"sym": "RB", "direction": 1, "lots": 4},
+             {"sym": "I", "direction": -1, "lots": 1},
+             {"sym": "CU", "direction": 1, "lots": 10}]
+    plan = delever_plan(brief, 0.5, done={"CU"})
+    # I 仅1手→减半0手不减；CU 已减过跳过；故只剩 RB（4手减2手）
+    assert plan == [{"sym": "RB", "direction": 1, "held_lots": 4, "reduce_lots": 2}]
+    assert brief[0]["lots"] == 4 and delever_plan([], 0.5) == []
+    assert delever_plan(None, 0.5) == []
+
+    # 14) paper_delever：delever 档停开 + 出减仓计划 + 当日只减一次（mark 后跳过）+ 日切重置
+    cb5 = CircuitBreaker(action_mode=PAPER_DELEVER)
+    cb5.update("2026-09-03 09:30:00", 1_000_000)
+    assert cb5.update("2026-09-03 10:00:00", 940_000)["level"] == DELEVER
+    assert cb5.open_allowed() is False
+    tgt = cb5.delever_targets(brief)
+    assert [p["sym"] for p in tgt] == ["CU", "RB"] and tgt[0]["reduce_lots"] == 5
+    cb5.mark_delevered("CU"); cb5.mark_delevered("RB")
+    assert cb5.delever_targets(brief) == []     # 当日已减不再减
+    d2 = cb5.update("2026-09-04 09:30:00", 1_000_000)   # 日切 normal、done 清空
+    assert d2["level"] == NORMAL and cb5._delever_done == set()
+    # observe/paper_halt 模式不出自动减仓计划
+    assert CircuitBreaker(action_mode=OBSERVE).delever_targets(brief) == []
+    assert CircuitBreaker(action_mode=PAPER_HALT).delever_targets(brief) == []
+
+    # 15) decision 的 auto_delever 标志只在 paper_delever+delever 档为真
+    cb6 = CircuitBreaker(action_mode=PAPER_DELEVER)
+    cb6.update("2026-09-03 09:30:00", 1_000_000)
+    assert cb6.update("2026-09-03 10:00:00", 940_000)["auto_delever"] is True
+    cb7 = CircuitBreaker()
+    cb7.update("2026-09-03 09:30:00", 1_000_000)
+    assert cb7.update("2026-09-03 10:00:00", 940_000)["auto_delever"] is False
+
     print("circuit_breaker selftest ALL PASS（日期解析/浮亏口径/三档边界/参数校验/observe恒可开/"
-          "当日粘性/日切重置/paper_halt逐档/风险度第二触发/委托过滤/渲染与工厂 共11组）")
+          "当日粘性/日切重置/paper_halt逐档/风险度第二触发/委托过滤/渲染与工厂/"
+          "减仓手数/减仓计划/paper_delever执行与当日一次/auto_delever标志 共15组）")
     return 0
 
 

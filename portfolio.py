@@ -314,23 +314,50 @@ class Portfolio:
         self._last_prices[sym] = price
         return pos
 
-    def close(self, sym, price, dt, reason, *, leg="close", forced=False, hold_bars=0):
-        pos = self.positions.pop(sym, None)
+    def close(self, sym, price, dt, reason, *, leg="close", forced=False, hold_bars=0,
+              reduce_lots=None):
+        """平仓。reduce_lots=None（默认）=整仓全平，逐字节等价旧版；
+        reduce_lots 为正且 < 持仓手数时=部分减仓（G5④ delever 自动减仓用），只平 reduce_lots 手、
+        剩余持仓保留（同开仓价/方向/pos_ref），开仓费按手数比例分摊、剩余部分继续挂在持仓上。
+        reduce_lots<=0 不减返 None；>=持仓手数按全平处理。绝不过度减仓、绝不反向。"""
+        pos = self.positions.get(sym)
         if pos is None or price <= 0:
             return None
-        close_fee = self.fee_yuan(sym, price, leg, pos.lots)
-        gross_yuan = pos.direction * (price - pos.entry_price) * pos.mult * pos.lots
-        net_yuan = gross_yuan - pos.open_fee_yuan - close_fee
+        held = pos.lots
+        if reduce_lots is None:
+            close_lots, partial = held, False
+        else:
+            rl = int(reduce_lots)
+            if rl <= 0:
+                return None
+            if rl >= held:
+                close_lots, partial = held, False
+            else:
+                close_lots, partial = rl, True
+        # 全平直接取原开仓费（逐字节等价旧路径，不做 x*held/held 引入浮点末位误差）；仅部分减仓按手数分摊
+        open_fee_part = pos.open_fee_yuan * close_lots / held if partial else pos.open_fee_yuan
+        close_fee = self.fee_yuan(sym, price, leg, close_lots)
+        gross_yuan = pos.direction * (price - pos.entry_price) * pos.mult * close_lots
+        net_yuan = gross_yuan - open_fee_part - close_fee
         self.realized += gross_yuan - close_fee     # 开仓费开仓时已扣
         self.fees_paid += close_fee
         self._last_prices[sym] = price
+        remaining = 0
+        if partial:
+            # 部分减仓：保留剩余手数与剩余应担开仓费，持仓不弹出
+            pos.lots = held - close_lots
+            pos.open_fee_yuan = pos.open_fee_yuan - open_fee_part
+            remaining = pos.lots
+        else:
+            self.positions.pop(sym, None)
         rec = {"sym": sym, "name": pos.name, "sector": pos.sector,
-               "dir": "多" if pos.direction > 0 else "空", "lots": pos.lots,
+               "dir": "多" if pos.direction > 0 else "空", "lots": close_lots,
                "entry_dt": pos.entry_dt, "exit_dt": dt, "entry_px": pos.entry_price,
                "exit_px": price, "leg": "平今" if leg == "today" else "平昨",
                "hold_bars": hold_bars, "gross_yuan": gross_yuan,
-               "open_fee_yuan": pos.open_fee_yuan, "close_fee_yuan": close_fee,
+               "open_fee_yuan": open_fee_part, "close_fee_yuan": close_fee,
                "net_yuan": net_yuan, "reason": reason, "forced": forced,
+               "partial": partial, "remaining": remaining,
                "entry_score": pos.score, "margin_rate": pos.margin_rate,
                "mfe": getattr(pos, "mfe", None) or 0.0,
                "mae": getattr(pos, "mae", None) or 0.0,

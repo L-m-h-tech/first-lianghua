@@ -371,3 +371,70 @@ def test_account_views_and_status_counts(tmp_db):
     am = pb_mem.account_summary()
     assert am["status"]["pending"] == am["n_pending"] == 1
     assert len(pb_mem.pending_view()) == 1
+
+
+# ==================== 第51轮 G5④ delever 自动减仓 / 内核部分平仓 ====================
+import circuit_breaker as _cb
+
+
+def _delever_broker(mode):
+    br = _cb.CircuitBreaker(action_mode=mode)
+    b = PaperBroker(db=None, equity0=10_000_000, fill_mode="close", slip_rate=0.0,
+                    margin_table=MARGIN, fee_table=FEE, sector_of=SECTOR,
+                    restore=False, circuit=br)
+    return b, br
+
+
+def test_portfolio_partial_close_keeps_remainder(loose):
+    b = make_broker("close", slip=0.0)
+    pos = b.pf.open("RB", "螺纹", "黑色", 1, 3000.0, "2026-09-01 09:30:00")
+    held = pos.lots
+    assert held >= 2
+    half = held // 2
+    rec = b.pf.close("RB", 3000.0, "2026-09-02 09:30:00", "熔断自动减仓", reduce_lots=half)
+    assert rec["partial"] is True and rec["lots"] == half and rec["remaining"] == held - half
+    assert b.pf.positions["RB"].lots == held - half          # 剩余持仓保留
+    # 分批平净盈亏之和 == 一次全平（同价、零滑点）
+    rest = b.pf.close("RB", 3000.0, "2026-09-02 09:31:00", "清")
+    b2 = make_broker("close", slip=0.0)
+    p2 = b2.pf.open("RB", "螺纹", "黑色", 1, 3000.0, "2026-09-01 09:30:00")
+    assert p2.lots == held
+    full = b2.pf.close("RB", 3000.0, "2026-09-02 09:30:00", "全")
+    assert abs((rec["net_yuan"] + rest["net_yuan"]) - full["net_yuan"]) < 1e-6
+    # 0 手不减、超持仓按全平
+    b3 = make_broker("close", slip=0.0)
+    b3.pf.open("CU", "沪铜", "有色", 1, 70000.0, "2026-09-01 09:30:00")
+    assert b3.pf.close("CU", 70000.0, "t", "x", reduce_lots=0) is None
+    rec_big = b3.pf.close("CU", 70000.0, "t", "x", reduce_lots=9999)
+    assert "CU" not in b3.pf.positions and rec_big["partial"] is False
+
+
+def test_paper_delever_auto_cuts_half_once(loose):
+    b, br = _delever_broker(_cb.PAPER_DELEVER)
+    pos = b.pf.open("RB", "螺纹", "黑色", 1, 3000.0, "2026-09-03 09:30:00")
+    held = pos.lots
+    hold_row = [row("RB", "螺纹", "黑色", 3.0, 3000.0)]     # 迟滞带内：不平不开
+    s0 = b.on_cycle("2026-09-03 09:30:00", hold_row)        # 断路器记日初权益
+    assert "RB" in b.pf.positions
+    br.update("2026-09-03 10:00:00", s0["snapshot"]["equity"] * 0.94)   # 打到 delever
+    assert br.level == _cb.DELEVER
+    s1 = b.on_cycle("2026-09-03 10:01:00", hold_row)        # 晚一轮自动减仓
+    expect = held // 2
+    assert s1["n_delever"] == 1
+    assert b.pf.positions["RB"].lots == held - expect       # 只减一半、剩余保留
+    cut = [t for t in s1["trades"] if t["reason"] == "熔断自动减仓"]
+    assert len(cut) == 1 and cut[0]["side"] == "close" and cut[0]["lots"] == expect
+    s2 = b.on_cycle("2026-09-03 10:30:00", hold_row)        # 当日已减、不再减
+    assert s2["n_delever"] == 0 and b.pf.positions["RB"].lots == held - expect
+
+
+def test_observe_and_halt_do_not_auto_cut(loose):
+    for mode in (_cb.OBSERVE, _cb.PAPER_HALT):
+        b, br = _delever_broker(mode)
+        pos = b.pf.open("RB", "螺纹", "黑色", 1, 3000.0, "2026-09-03 09:30:00")
+        held = pos.lots
+        hold_row = [row("RB", "螺纹", "黑色", 3.0, 3000.0)]
+        s0 = b.on_cycle("2026-09-03 09:30:00", hold_row)
+        br.update("2026-09-03 10:00:00", s0["snapshot"]["equity"] * 0.94)
+        s1 = b.on_cycle("2026-09-03 10:01:00", hold_row)
+        assert s1["n_delever"] == 0 and b.pf.positions["RB"].lots == held

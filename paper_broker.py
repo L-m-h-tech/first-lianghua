@@ -191,7 +191,8 @@ class PaperBroker:
         if circuit is not None:
             self.breaker = circuit
         elif getattr(config, "CIRCUIT_ENABLED", False) and \
-                getattr(config, "CIRCUIT_ACTION", circuit_breaker.OBSERVE) == circuit_breaker.PAPER_HALT:
+                getattr(config, "CIRCUIT_ACTION", circuit_breaker.OBSERVE) in \
+                (circuit_breaker.PAPER_HALT, circuit_breaker.PAPER_DELEVER):
             self.breaker = circuit_breaker.CircuitBreaker.from_config()
         else:
             self.breaker = None
@@ -316,12 +317,16 @@ class PaperBroker:
                             reason="已无持仓，撤单")
             return None
         close_leg = self._close_leg(held, ts)
-        rec = pf.close(sym, fill_price, ts,
-                       "信号离场" if action == "close" else "反手平仓", leg=close_leg)
+        reduce_lots = order.get("reduce_lots")     # G5④ delever 部分减仓：None=整仓全平（旧路径）
+        close_reason = order.get("close_reason") or \
+            ("信号离场" if action == "close" else "反手平仓")
+        rec = pf.close(sym, fill_price, ts, close_reason, leg=close_leg,
+                       reduce_lots=reduce_lots)
         if rec is None:
             self._upd_order(order, status="blocked", raw_price=raw_price, reason="平仓失败，顺延")
             return None
-        self.pos_ref.pop(sym, None)
+        if rec.get("remaining", 0) <= 0:
+            self.pos_ref.pop(sym, None)           # 整仓平完才清 pos_ref；部分减仓保留持仓
         lots = rec["lots"]
         mult = held.mult
         notional = fill_price * mult * lots
@@ -453,6 +458,53 @@ class PaperBroker:
             ord_events.append(order)
         return events
 
+    # ---------------- G5④ 阶段A2：paper_delever 自动减仓（只平不反向） ----------------
+
+    def _delever_cut(self, ts, by_sym, by_quote):
+        """断路器处于 delever 档且模式=paper_delever 时，对当前持仓按比例自动减仓。
+        决策来自断路器（其上一轮阶段D更新，本轮价成交=严格晚一轮、无未来）；当日各品种只减一次
+        （breaker 侧 _delever_done，日切清空）；不足1手不减、只减不清、绝不反向；锁板/无价顺延不登记。
+        返回 (trades, orders)；非 paper_delever 模式或未到 delever 档一律 ([],[])，默认路径零影响。"""
+        trades, ord_events = [], []
+        b = self.breaker
+        if b is None or b.action_mode != circuit_breaker.PAPER_DELEVER:
+            return trades, ord_events
+        pf = self.pf
+        brief = [{"sym": s, "direction": p.direction, "lots": p.lots}
+                 for s, p in pf.positions.items()]
+        plan = b.delever_targets(brief)
+        if not plan:
+            return trades, ord_events
+        for item in plan:
+            sym = item["sym"]
+            held = pf.positions.get(sym)
+            if held is None:
+                b.mark_delevered(sym)          # 已无持仓，免下轮重复计算
+                continue
+            row = by_sym.get(sym) or {}
+            raw = float(row.get("price") or 0.0)
+            if raw <= 0:
+                raw = float(pf._last_prices.get(sym, held.entry_price) or 0.0)
+            if raw <= 0:
+                continue                       # 本轮无价：不成交、不登记，下轮重试
+            side = _side_of(held.direction, "close")
+            move = (config.FUTURES_LIMIT_MOVE or {}).get(sym)
+            if locked_at_quote(by_quote.get(sym), move, side == "buy"):
+                continue                       # 锁板封死：顺延、不登记
+            order = self._make_order(
+                ts, {"sym": sym, "name": held.name, "cat": held.sector,
+                     "score": getattr(held, "score", None)},
+                "close", side, held.direction, raw, status="pending")
+            order["reduce_lots"] = item["reduce_lots"]
+            order["close_reason"] = "熔断自动减仓"
+            self._ins_order(order)
+            t = self._fill_leg(ts, order, raw)
+            if t:
+                b.mark_delevered(sym)          # 成交后登记，当日不再减该品种
+                trades.append(t)
+                ord_events.append(order)
+        return trades, ord_events
+
     # ---------------- 权益快照：阶段D ----------------
 
     def _snapshot(self, ts, prices_raw):
@@ -499,6 +551,13 @@ class PaperBroker:
         cycle_orders, cycle_trades = [], []
         # 阶段A：next 档先成交上一轮挂单（先平后开，严格晚于信号）
         cycle_trades += self._process_pending(ts, by_sym, by_quote)
+        # 阶段A2：G5④ paper_delever 自动减仓（断路器决策来自上一轮阶段D，本轮价成交=无未来）
+        n_delever = 0
+        if self.breaker is not None:
+            dv_trades, dv_orders = self._delever_cut(ts, by_sym, by_quote)
+            cycle_trades += dv_trades
+            cycle_orders += dv_orders
+            n_delever = len(dv_trades)
         # 阶段B：本轮信号决策
         for row in fut_rows:
             sym = (row.get("sym") or "").upper()
@@ -558,7 +617,7 @@ class PaperBroker:
         n_pending = sum(len(q) for q in self.pending.values())
         summary = {"ts": ts, "snapshot": snap, "n_orders": len(cycle_orders),
                    "n_trades": len(cycle_trades), "n_pending": n_pending,
-                   "n_positions": len(self.pf.positions),
+                   "n_positions": len(self.pf.positions), "n_delever": n_delever,
                    "n_skipped": len(self.pf.skipped), "circuit": self._last_circuit,
                    "orders": cycle_orders, "trades": cycle_trades}
         self.last_summary = summary
