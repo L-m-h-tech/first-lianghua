@@ -843,7 +843,19 @@ def main():
                         help="（兼容保留）非交易时段分析周期；交易时段轮动节奏自动接管")
     parser.add_argument("--force-review", action="store_true",
                         help="立即生成当日复盘报告（测试用）")
+    parser.add_argument("--version", action="store_true",
+                        help="打印版本号（读 VERSION）后退出，不启动监控（G19）")
     args = parser.parse_args()
+
+    if getattr(args, "version", False):
+        # G19：只读打印版本即退出，不初始化环境/不连库/不启动常驻，默认行为完全不变
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+                      "r", encoding="utf-8-sig") as _vf:
+                print(_vf.read().strip())
+        except OSError:
+            print("unknown")
+        return 0
 
     setup_environment()
     LOG.info(trade_calendar.status_line())

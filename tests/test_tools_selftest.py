@@ -21,6 +21,7 @@ import trade_journal
 import research_review
 import experiment_ledger
 import wf_cost_lab
+import db_backup
 
 
 def test_factor_eval_selftest():
@@ -120,3 +121,8 @@ def test_experiment_ledger_selftest():
 def test_wf_cost_lab_selftest():
     """G27②③（第45轮）WF参数稳定性+成本曲面/换手容量 --selftest：零网络/零DB合成断言。"""
     assert wf_cost_lab.selftest() == 0
+
+
+def test_db_backup_selftest():
+    """G19（第46轮）sqlite在线热备/滚动保留/恢复/任务XML/bat --selftest：tmp造库零网络零生产库。"""
+    assert db_backup.selftest() == 0

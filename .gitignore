@@ -41,3 +41,8 @@ _view*.py
 _t*.py
 _dbg*.py
 reports/*.log
+
+# ===== G19 db_backup online backups (binary snapshots & sidecars ignored; task XML template kept) =====
+backup/*.db
+backup/*.db.json
+backup/*.before_restore_*
