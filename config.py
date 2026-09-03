@@ -365,6 +365,20 @@ PORTFOLIO_RISK_SAFE = 0.80           # 强平到风险度低于该安全线为�
 PORTFOLIO_DEFAULT_MARGIN = 0.12      # 保证金表缺失品种的兜底估算率（显式标注，不允许静默用错）
 PORTFOLIO_MAX_CONCURRENT = 12        # 同时持仓品种数软上限（0=不限制）
 
+# ---- G26（第40轮）组合构建器 portfolio_constructor：横截面目标权重（风险型，不依赖预期收益）----
+PC_METHODS = ("equal", "inv_vol", "erc", "gmv")   # 等权/逆波动/风险平价ERC/最小方差GMV；默认 equal=旧等名义口径
+PC_LOOKBACK = 126                     # 用过去126个交易日日收益估协方差（只用过去、PIT）
+PC_SHRINK = 0.10                      # 协方差向对角收缩强度（保正定/条件数，Ledoit-Wolf 简化版）
+PC_MAX_WEIGHT = 0.20                  # 单品种目标权重上限（GMV/ERC 求解后做 capped-simplex 约束）
+PC_REBAL = 20                         # 组合代理回测再平衡间隔（交易日，呼应第39轮换手结论）
+PC_TARGET_VOL_ANNUAL = 0.15           # 目标年化波动（target_vol 缩放，0=不做波动目标缩放）
+PC_MAX_GROSS = 1.50                   # 目标波动缩放的总敞口（Σ|w|）上限，防低波期过度加杠杆
+PC_PERIODS_PER_YEAR = 243             # 商品期货日频年化交易日
+PC_ERC_TOL = 1e-4                      # ERC 风险贡献均衡相对收敛阈值（全牛顿法，尺度无关）
+PC_ERC_MAX_ITER = 300                  # ERC 最大迭代（全牛顿+回溯通常30次内收敛）
+PC_FILE = os.path.join(BASE_DIR, "reports", "portfolio_lab.txt")
+PC_JSON = os.path.join(BASE_DIR, "reports", "portfolio_lab.json")
+
 # ---------------- 输出 ----------------
 REPORT_FILE = os.path.join(BASE_DIR, "reports", "latest_report.txt")
 SIGNALS_CSV = os.path.join(BASE_DIR, "reports", "signals.csv")

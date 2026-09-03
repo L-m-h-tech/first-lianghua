@@ -15,6 +15,8 @@ import factor_health
 import factor_expr
 import expr_research
 import factor_regime
+import portfolio_constructor
+import portfolio_lab
 
 
 def test_factor_eval_selftest():
@@ -84,3 +86,13 @@ def test_expr_research_selftest():
 def test_factor_regime_selftest():
     """G29续（第39轮）regime分层/换手/衰减形态 --selftest：PIT标签、分层IC、持续性、指数vs幂律择优。"""
     assert factor_regime.selftest() == 0
+
+
+def test_portfolio_constructor_selftest():
+    """G26（第40轮）组合构建器 --selftest：等权/逆波动/ERC/长仓GMV、capped-simplex、目标波动、风险贡献/换手。"""
+    assert portfolio_constructor.selftest() == 0
+
+
+def test_portfolio_lab_selftest():
+    """G26（第40轮）组合实验台 --selftest：稠密面板/固定宇宙/滚动样本外无未来且GMV波动≤等权/快照合法。"""
+    assert portfolio_lab.selftest() == 0
