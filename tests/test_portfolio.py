@@ -283,10 +283,10 @@ def test_trailing_risk_weights_strict_pit_no_future():
 
 
 def test_trailing_risk_weights_properties_sum_gross_and_cap():
-    """inv_vol/erc 权重非负、求和=gross、单票不超 cap；缺历史品种进 excluded。"""
+    """inv_vol/erc/gmv 权重非负、求和=gross、单票不超 cap；缺历史品种进 excluded。"""
     feeds = {s: _synth_feed(s, 90, seed=k * 7 + 1) for k, s in
              enumerate(("RB", "CU", "MA", "SA", "I", "TA"))}
-    for method in ("inv_vol", "erc"):
+    for method in ("inv_vol", "erc", "gmv"):   # 第49轮 G5⑤ 补入第四种 gmv 最小方差
         w, meta = pf_mod.trailing_risk_weights(feeds, feeds["RB"].bars[80]["dt"], method,
                                                window=126, min_hist=30, cap=0.25, gross=1.0)
         assert len(w) == 6 and all(x >= 0 for x in w.values())
@@ -302,6 +302,17 @@ def test_trailing_risk_weights_properties_sum_gross_and_cap():
     feeds["TA"].dts = [b["dt"] for b in feeds["TA"].bars]
     w, meta = pf_mod.trailing_risk_weights(feeds, feeds["RB"].bars[80]["dt"], "inv_vol", min_hist=30)
     assert "TA" not in w and "TA" in meta["excluded"] and len(w) == 5
+
+
+def test_gmv_is_fourth_sizing_method_and_default_still_off():
+    """第49轮 G5⑤：gmv 纳入风险型 sizing 白名单并被 Portfolio 接受；默认仍关闭、非法值安全回退 None。"""
+    assert "gmv" in pf_mod.RISK_SIZING_METHODS
+    p = _pf(risk_sizing="gmv")
+    assert p.risk_sizing == "gmv"
+    p_bad = _pf(risk_sizing="nope")
+    assert p_bad.risk_sizing is None
+    p_off = _pf()
+    assert p_off.risk_sizing is None           # 默认关闭=旧等名义，逐字节等价
 
 
 def test_reset_feeds_enables_deterministic_replay():

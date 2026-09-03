@@ -9,6 +9,7 @@ r"""G26（第40轮）组合构建实验台 tools/portfolio_lab.py：纯标准库
    后续在 paper/backtest 以"默认 equal、缺省等价旧版"方式接入。
 """
 import argparse
+import csv
 import json
 import math
 import os
@@ -85,7 +86,7 @@ def rolling_proxy(mat, methods=None, lookback=None, rebal=None, shrink=None, cap
     shrink = config.PC_SHRINK if shrink is None else shrink
     cap = cap or config.PC_MAX_WEIGHT
     T = len(mat)
-    out = {m: {"daily": [], "turnover": [], "eff_n": [], "ann_vol_at_rebal": []} for m in methods}
+    out = {m: {"daily": [], "idx": [], "turnover": [], "eff_n": [], "ann_vol_at_rebal": []} for m in methods}
     prev_w = {m: None for m in methods}
     t = lookback
     while t < T:
@@ -105,8 +106,40 @@ def rolling_proxy(mat, methods=None, lookback=None, rebal=None, shrink=None, cap
             for m in methods:
                 pr = sum(ws[m][i] * mat[tt][i] for i in range(len(ws[m])))
                 out[m]["daily"].append(pr)
+                out[m]["idx"].append(tt)   # 全局 mat 行号，供与 dates 对齐画组合历史净值
         t = hold_end
     return out
+
+
+def nav_curve(daily, start=1.0):
+    """日收益序列 → 逐日复利净值（初始 start，默认1.0）；空序列返 []。纯函数、不改入参。"""
+    nav, cur = [], float(start)
+    for x in daily:
+        cur *= (1.0 + x)
+        nav.append(cur)
+    return nav
+
+
+def drawdown_window(nav, idxs=None, dates=None):
+    """净值序列 → 最大回撤及其峰值/谷底位置（返回分数与下标/日期）；不足2点返零值。纯函数。"""
+    res = {"maxdd": 0.0, "peak_i": None, "trough_i": None,
+           "peak_date": None, "trough_date": None}
+    if not nav:
+        return res
+    peak = nav[0]
+    peak_k = 0
+    for k, v in enumerate(nav):
+        if v > peak:
+            peak, peak_k = v, k
+        dd = 1.0 - v / peak if peak > 0 else 0.0
+        if dd > res["maxdd"]:
+            res["maxdd"] = dd
+            res["peak_i"], res["trough_i"] = peak_k, k
+    if idxs is not None and res["peak_i"] is not None and dates is not None:
+        pi, ti = idxs[res["peak_i"]], idxs[res["trough_i"]]
+        res["peak_date"] = dates[pi] if 0 <= pi < len(dates) else None
+        res["trough_date"] = dates[ti] if 0 <= ti < len(dates) else None
+    return res
 
 
 def perf_stats(daily, periods_per_year=None):
@@ -160,6 +193,19 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
     dates, syms, mat = dense_matrix(return_map)
     proxy = rolling_proxy(mat)
     stats = {m: perf_stats(proxy[m]["daily"]) for m in config.PC_METHODS}
+    # 第49轮 G5⑤：多品种组合历史净值曲线（四方法逐日对齐，初始净值1.0；严格样本外、无成本）
+    navs = {m: nav_curve(proxy[m]["daily"]) for m in config.PC_METHODS}
+    nav_summary = {}
+    for m in config.PC_METHODS:
+        dw = drawdown_window(navs[m], proxy[m]["idx"], dates)
+        nav_summary[m] = {
+            "n": len(navs[m]),
+            "start_date": dates[proxy[m]["idx"][0]] if proxy[m]["idx"] else None,
+            "end_date": dates[proxy[m]["idx"][-1]] if proxy[m]["idx"] else None,
+            "end_nav": navs[m][-1] if navs[m] else None,
+            "min_nav": min(navs[m]) if navs[m] else None,
+            "max_nav": max(navs[m]) if navs[m] else None,
+            "maxdd_nav": dw["maxdd"], "dd_peak": dw["peak_date"], "dd_trough": dw["trough_date"]}
     for m in config.PC_METHODS:
         tv = proxy[m]["turnover"]
         en = proxy[m]["eff_n"]
@@ -187,6 +233,17 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
                  % (name[m], s["ann_ret"] * 100, s["ann_vol"] * 100, s["sharpe"], s["maxdd"] * 100,
                     s["calmar"], s["avg_eff_n"], s["ann_turnover"],
                     "  ←基线" if m == "equal" else "  波动较等权%+.1f%%" % ((s["ann_vol"] / base_vol - 1) * 100)))
+    nav_line = "  期末净值(初始1.0)：" + "  ".join(
+        "%s=%.4f" % (name[m], nav_summary[m]["end_nav"]) for m in config.PC_METHODS
+        if nav_summary[m]["end_nav"] is not None)
+    L.append(nav_line)
+    dd_line = "  净值最深回撤：" + "  ".join(
+        "%s=%.2f%%(%s→%s)" % (name[m], nav_summary[m]["maxdd_nav"] * 100,
+                              (nav_summary[m]["dd_peak"] or "?")[5:],
+                              (nav_summary[m]["dd_trough"] or "?")[5:])
+        for m in config.PC_METHODS if nav_summary[m]["end_nav"] is not None)
+    L.append(dd_line)
+    L.append("  逐日组合历史净值曲线（四方法对齐）已落 reports/portfolio_nav.csv（date+各法日收益/净值）。")
     L.append("  读法：风险型分配的价值应体现在'波动/回撤更低、夏普不更差'，而非收益更高（它不预测涨跌）；换手越大调仓成本越高。")
     L.append("-" * 104)
     L.append("【二】最新快照（过去%d日协方差；目标年化波动%.0f%%所需杠杆，受总敞口%.1f倍上限）"
@@ -207,8 +264,23 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
     os.makedirs(os.path.dirname(txt_path), exist_ok=True)
     with open(txt_path, "w", encoding="utf-8", newline="\n") as fp:
         fp.write(text + "\n")
+    # 第49轮 G5⑤：逐日组合历史净值曲线 CSV（以 equal 的 idx 为对齐主轴，四方法同一再平衡日历）
+    nav_path = os.path.join(os.path.dirname(txt_path), "portfolio_nav.csv")
+    base_idx = proxy[config.PC_METHODS[0]]["idx"]
+    with open(nav_path, "w", encoding="utf-8", newline="") as fp:
+        wcsv = csv.writer(fp)
+        wcsv.writerow(["date"] + [m + "_ret" for m in config.PC_METHODS]
+                      + [m + "_nav" for m in config.PC_METHODS])
+        for k, gi in enumerate(base_idx):
+            row = [dates[gi]]
+            for m in config.PC_METHODS:
+                row.append(proxy[m]["daily"][k])
+            for m in config.PC_METHODS:
+                row.append(navs[m][k])
+            wcsv.writerow(row)
     payload = {"universe": syms, "n_universe": len(syms), "dates": [dates[0], dates[-1]],
-               "n_days": len(mat), "rolling_stats": stats, "snapshot": snap}
+               "n_days": len(mat), "rolling_stats": stats, "nav_summary": nav_summary,
+               "nav_csv": os.path.basename(nav_path), "snapshot": snap}
     with open(json_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, allow_nan=False, indent=1)
     # G27① 统一实验台账（旁路：登记失败绝不影响本工具产物与返回值）
@@ -226,7 +298,7 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
              "target_vol_annual": config.PC_TARGET_VOL_ANNUAL, "max_gross": config.PC_MAX_GROSS,
              "methods": list(config.PC_METHODS), "panel_db": os.path.basename(db_path)},
             lab_metrics,
-            inputs=[db_path], artifacts=[txt_path, json_path],
+            inputs=[db_path], artifacts=[txt_path, json_path, nav_path],
             conclusion="equal夏普%.2f / erc夏普%.2f / inv_vol夏普%.2f（固定宇宙%d品种 %s~%s）"
                        % (stats["equal"]["sharpe"], stats["erc"]["sharpe"], stats["inv_vol"]["sharpe"],
                           len(syms), dates[0], dates[-1]))
@@ -270,13 +342,26 @@ def selftest():
         assert s["eff_n"] >= 1 and s["top"] and s["ann_vol"] >= 0
     # perf_stats 空/短序列安全
     assert perf_stats([])["n"] == 0 and perf_stats([0.01])["n"] == 1
+    # 第49轮 G5⑤：净值曲线复利正确、四方法等长且与 idx/dates 对齐
+    assert nav_curve([]) == []
+    assert abs(nav_curve([0.1, -0.1, 0.0])[-1] - (1.1 * 0.9)) < 1e-12
+    for m in proxy:
+        assert len(navs_m := nav_curve(proxy[m]["daily"])) == len(proxy[m]["daily"]) == len(proxy[m]["idx"])
+        assert proxy[m]["idx"][0] == 60 and proxy[m]["idx"][-1] == 259   # 首个再平衡在 lookback 之后、无未来
+    # drawdown_window 手算：1.0→1.2(峰)→0.9，回撤=1-0.9/1.2=0.25，峰位1谷位2
+    dw = drawdown_window([1.0, 1.2, 0.9], idxs=[0, 1, 2], dates=["d0", "d1", "d2"])
+    assert abs(dw["maxdd"] - 0.25) < 1e-12 and dw["peak_i"] == 1 and dw["trough_i"] == 2
+    assert dw["peak_date"] == "d1" and dw["trough_date"] == "d2"
+    assert drawdown_window([])["maxdd"] == 0.0 and drawdown_window([1.0])["trough_i"] is None
+    navs_all = {m: nav_curve(proxy[m]["daily"]) for m in proxy}
+    assert len({len(v) for v in navs_all.values()}) == 1   # 四方法净值逐日对齐可同表落 CSV
     # 覆盖率不足的品种被剔除
     rm2 = {k: dict(v) for k, v in rm.items()}
     rm2["S4"] = {"2025-260": 0.01}
     d2, sy2, mat2 = dense_matrix(rm2, analysis_days=260, coverage_min=0.95)
     assert "S4" not in sy2 and len(sy2) == 4
     print("portfolio_lab selftest ALL PASS（稠密面板对齐/固定宇宙覆盖率筛选/滚动样本外无未来且GMV波动≤等权/"
-          "快照四方法合法/短序列安全 共5组）")
+          "快照四方法合法/短序列安全/净值曲线复利与idx日期对齐/回撤窗口手算 共8组）")
     return 0
 
 

@@ -50,7 +50,7 @@ from backtest import load_fee_schedule, side_fee, ratio_adjusted_bars, technical
 _MARGIN_CACHE = {}
 
 # 第41轮 G26续：允许接入共享内核的横截面风险型分配方法（GMV 第40轮已证过集中，不在接入列）
-RISK_SIZING_METHODS = ("inv_vol", "erc")
+RISK_SIZING_METHODS = ("inv_vol", "erc", "gmv")  # 第49轮 G5⑤ 补入第四种 gmv 长仓最小方差（默认仍关闭）
 
 
 def load_margin_schedule(path=None, force=False):
@@ -871,7 +871,7 @@ def build_report(pf, perf, args, feeds, errors, span, compare_block=""):
                    "score": "按综合分档加权"}[args.sizing]
     if getattr(pf, "risk_sizing", None):
         rc = getattr(args, "_risk_cfg", None) or {}
-        rname = {"inv_vol": "逆波动", "erc": "ERC风险平价"}.get(pf.risk_sizing, pf.risk_sizing)
+        rname = {"inv_vol": "逆波动", "erc": "ERC风险平价", "gmv": "最小方差"}.get(pf.risk_sizing, pf.risk_sizing)
         sizing_desc += (" + 横截面%s(过去%d根bar估协方差/每%d根重估/目标总敞口%.2f/单票上限%.0f%%,严格无未来)"
                         % (rname, rc.get("window", 126), rc.get("rebalance", 20),
                            pf.risk_gross, rc.get("cap", 0.2) * 100))
@@ -1065,8 +1065,8 @@ def parse_args(argv=None):
     p.add_argument("--calibrate", action="store_true",
                    help="WP-F2：启用历史同类信号胜率校准乘子作用于手数（默认关闭=影子，逐值与旧版一致）")
     # 第41轮 G26续：横截面风险型 sizing（默认全关=逐字节等价旧等名义）
-    p.add_argument("--risk-sizing", choices=("", "inv_vol", "erc"), default="",
-                   help="横截面风险型目标权重：inv_vol逆波动/erc风险平价；留空=关闭走旧sizing")
+    p.add_argument("--risk-sizing", choices=("", "inv_vol", "erc", "gmv"), default="",
+                   help="横截面风险型目标权重：inv_vol逆波动/erc风险平价/gmv最小方差；留空=关闭走旧sizing")
     p.add_argument("--risk-window", type=int, default=config.PRS_WINDOW,
                    help="估协方差的历史bar数（日线=交易日；分钟=bar根数，只用当前bar之前=PIT）")
     p.add_argument("--risk-rebalance", type=int, default=config.PRS_REBAL, help="权重重估间隔（bar根数）")
@@ -1163,10 +1163,10 @@ def main(argv=None):
     pf, perf = _run_once(primary_method)
     compare_block = ""
     if args.compare_risk:
-        labels = {"": "等名义(基线)", "inv_vol": "逆波动", "erc": "ERC风险平价"}
-        # 对照始终以等名义为基线首行（三种方法同宇宙、同撮合、同成本，仅目标名义不同）
+        labels = {"": "等名义(基线)", "inv_vol": "逆波动", "erc": "ERC风险平价", "gmv": "最小方差"}
+        # 对照始终以等名义为基线首行（四种方法同宇宙、同撮合、同成本，仅目标名义不同）
         compare_runs = []
-        for m in ("", "inv_vol", "erc"):
+        for m in ("", "inv_vol", "erc", "gmv"):
             pfp, pp = _run_once(m)
             compare_runs.append((labels[m], pfp, pp))
             if m == primary_method:
@@ -1181,7 +1181,7 @@ def main(argv=None):
     if args.compare_risk:
         try:
             import experiment_ledger as el
-            method_key = {"等名义(基线)": "equal", "逆波动": "inv_vol", "ERC风险平价": "erc"}
+            method_key = {"等名义(基线)": "equal", "逆波动": "inv_vol", "ERC风险平价": "erc", "最小方差": "gmv"}
             cr_metrics = {}
             for label, _pfp, pp in compare_runs:
                 key = method_key.get(label, label)
