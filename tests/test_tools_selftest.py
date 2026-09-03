@@ -18,6 +18,7 @@ import factor_regime
 import portfolio_constructor
 import portfolio_lab
 import trade_journal
+import research_review
 
 
 def test_factor_eval_selftest():
@@ -102,3 +103,8 @@ def test_portfolio_lab_selftest():
 def test_trade_journal_selftest():
     """G30（第42轮）交易复盘journal --selftest：分桶手算/信号强度绝对值/日周聚合/盘中MFE-MAE多空镜像/空数据安全。"""
     assert trade_journal.selftest() == 0
+
+
+def test_research_review_selftest():
+    """G30③（第43轮）研究侧一键复盘编排器 --selftest：sidecar安全装载/新鲜度/equity-BOM/信号正则/各段提取/规则待办/空目录降级。"""
+    assert research_review.selftest() == 0
