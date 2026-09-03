@@ -689,6 +689,21 @@ ATTR_FILE = os.path.join(BASE_DIR, "reports", "attribution.txt")
 ATTR_JSON = os.path.join(BASE_DIR, "reports", "attribution.json")
 ATTR_CURVE = os.path.join(BASE_DIR, "reports", "attribution_curve.csv")
 
+# ============ G21（第36轮）：标准研究面板 + 特征注册表 + PIT/训练-服务一致性（研究侧地基） ============
+# 面板=品种×交易日×字段的统一离线研究底座，独立 SQLite（cache，gitignore），不碰生产 monitor.db 表结构、不接 main。
+# 逐字段只用 ≤当日 的bar前缀经 futures_data.compute_indicators 计算（与实时同一函数=训练-服务一致），绝不取未来。
+PANEL_DB = os.path.join(BASE_DIR, "cache", "research_panel.db")  # 独立缓存库，删文件即回退现拉
+PANEL_DAYS = 1023               # 默认拉取交易日数（与 xsmom/carry 主样本对齐约4.1年）
+PANEL_WARMUP = 10               # compute_indicators 至少10根，之前的日期不入面板
+# 面板逐日落库的 compute_indicators 扁平标量字段（嵌套 tech/vol_cone 不入库，需要时由注册表回溯）
+PANEL_FEATURE_KEYS = ("day_chg", "hv20", "hv60", "ma5", "ma10", "ma20", "atr",
+                      "ret5", "ret20", "ret63", "ret126", "ret252",
+                      "tsmom63", "tsmom126", "tsmom252", "tsmom_blend", "tsmom_n_valid")
+PANEL_RAW_KEYS = ("o", "h", "l", "c", "v", "oi")   # 原始OHLC+成交量+持仓量(p)
+PANEL_MANIFEST = os.path.join(BASE_DIR, "reports", "research_panel_manifest.txt")
+PANEL_PARITY_SAMPLE = 24        # 训练-服务一致性抽样的每品种时点个数（均匀抽样）
+
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。
