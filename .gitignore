@@ -39,3 +39,4 @@ _fix*.py
 _view*.py
 _t*.py
 _dbg*.py
+reports/*.log

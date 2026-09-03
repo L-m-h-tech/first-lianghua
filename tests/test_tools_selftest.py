@@ -3,6 +3,7 @@
 import factor_eval
 import tsmom_eval
 import xsmom_eval
+import carry_eval
 import build_ml_samples
 import backtest_validation
 import db_archive
@@ -18,6 +19,10 @@ def test_tsmom_eval_selftest():
 
 def test_xsmom_eval_selftest():
     assert xsmom_eval.selftest() == 0
+
+
+def test_carry_eval_selftest():
+    assert carry_eval.selftest() == 0
 
 
 def test_build_ml_samples_selftest():
