@@ -109,6 +109,34 @@ CATALOG = (
 _BY_KEY = None
 _VALID_STATUS = {"live", "shadow", "research", "tracking", "archived"}
 
+# G29（第37轮）因子体检最近一次真实快照（tools/factor_health.py 产出 reports/factor_health.txt/.json；
+# 这里只登记结论、不做计算；重跑后人工/脚本刷新，key 必须是已登记因子，由 validate 钉死）。
+# 主周期=次日1440分钟；verdict：健康 / 健康(反向)=稳定非零但方向为负(反转信号) / 走弱·不稳定 / 失效预警 / 样本不足。
+HEALTH_SNAPSHOT = {
+    "asof": "2026-09-03", "tool": "tools/factor_health.py", "horizon_min": 1440,
+    "method": "信号part×方向 对 方向收益 RankIC；块长20自助500次CI；滚动60/步20、连续3窗失效预警",
+    "cards": {
+        "新闻消息面": {"ic": +0.147, "ci": [-0.135, +0.302], "verdict": "失效预警", "note": "次日点估正但滚动窗连续翻转、CI跨零，不稳"},
+        "原油联动": {"ic": +0.276, "ci": [+0.045, +0.407], "verdict": "健康", "note": "次日CI不跨零、同号率0.98，9.3起样本转正"},
+        "机构动向": {"ic": -0.230, "ci": [-0.341, -0.118], "verdict": "健康(反向)",
+                    "note": "次日稳定显著为负(同号率1.00)，与第35轮t=-2.77互证：当前方向化口径下是反转信号而非确认，多头侧ic=-0.297"},
+        "日线动量": {"ic": +0.043, "ci": [-0.135, +0.273], "verdict": "失效预警", "note": "次日近零且滚动连续翻转"},
+        "技术共振": {"ic": +0.228, "ci": [-0.038, +0.461], "verdict": "走弱/不稳定", "note": "点估正、CI下界微跨零，需更长样本"},
+        "分钟共振": {"ic": +0.017, "ci": [-0.069, +0.259], "verdict": "走弱/不稳定", "note": "次日近零"},
+        "盘中动量": {"ic": 0.0, "ci": None, "verdict": "样本不足", "note": "重启即重置，n=9"},
+        "量仓资金": {"ic": 0.0, "ci": None, "verdict": "样本不足", "note": "n=9"},
+        "基本面": {"ic": +0.109, "ci": [-0.127, +0.226], "verdict": "走弱/不稳定",
+                  "note": "次日跨零；但2小时周期ic=+0.123、CI[+0.045,+0.233]健康，短周期更有效"},
+    },
+    "daily_layer": "G21面板日频因子(ret5..tsmom_blend)对未来1~60交易日的池化RankIC绝对值均<0.10、且多数随H变号不构成单调衰减，"
+                   "说明单独日频回看收益在4年池化样本上无稳定横截面预测力（与tsmom/xsmom双样本证伪一致）",
+}
+
+
+def get_health(key):
+    """取某因子最近体检卡；无快照返回 None。"""
+    return HEALTH_SNAPSHOT["cards"].get(str(key or "").strip())
+
 
 def by_key(key):
     """按 key 取登记记录；动态原油键（含括号权重）先归一。找不到返回 None。"""
@@ -156,6 +184,10 @@ def validate():
             issues.append("综合分part缺登记:%s" % k)
         elif rec["status"] != "live":
             issues.append("综合分part %s 状态应为live" % k)
+    # G29 体检卡只能回写到已登记因子
+    for k in HEALTH_SNAPSHOT["cards"]:
+        if by_key(k) is None:
+            issues.append("体检卡引用了未登记因子:%s" % k)
     return issues
 
 
@@ -186,7 +218,10 @@ def selftest():
     assert by_key("carry_cs")["status"] == "tracking"
     txt = catalog_text()
     assert "新闻消息面" in txt and "archived" in txt
-    print("factors_catalog selftest ALL PASS（%d条登记/9个综合分part齐全/字段·方向·状态合法/动态键归一/现状语义）"
+    # G29 体检快照：9 part 均有卡、机构动向次日反向结论被锁定
+    assert set(HEALTH_SNAPSHOT["cards"]) == set(PART_KEYS)
+    assert get_health("机构动向")["verdict"] == "健康(反向)" and get_health("机构动向")["ic"] < 0
+    print("factors_catalog selftest ALL PASS（%d条登记/9个综合分part齐全/字段·方向·状态合法/动态键归一/现状语义/G29体检卡回写）"
           % len(CATALOG))
     return 0
 

@@ -703,6 +703,24 @@ PANEL_RAW_KEYS = ("o", "h", "l", "c", "v", "oi")   # 原始OHLC+成交量+持仓
 PANEL_MANIFEST = os.path.join(BASE_DIR, "reports", "research_panel_manifest.txt")
 PANEL_PARITY_SAMPLE = 24        # 训练-服务一致性抽样的每品种时点个数（均匀抽样）
 
+# ============ G29（第37轮）：因子体检 factor health（研究/监控记录层，不改交易、不接main） ============
+# 两层：①事件层=信号9part⨝signal_outcomes 的滚动IC/失效预警/block bootstrap/regime；②日频层=读G21面板算IC衰减半衰期。
+HEALTH_HORIZONS = (30, 120, 1440)        # 事件层三周期（同 factor_eval/attribution）
+HEALTH_MAIN_HORIZON = 1440
+HEALTH_ROLL_WINDOW = 60                 # 滚动IC窗口（事件个数）
+HEALTH_ROLL_STEP = 20                   # 滚动步长（事件个数）
+HEALTH_FAIL_WINDOWS = 3                 # 连续多少个弱/翻转窗判"失效预警"
+HEALTH_IC_EPS = 0.03                    # |RankIC| 低于此=弱窗
+HEALTH_DECAY_H = (1, 2, 3, 5, 10, 20, 40, 60)   # 日频层未来收益期限网格（交易日）
+HEALTH_DAILY_FACTORS = ("ret5", "ret20", "ret63", "ret126", "ret252",
+                        "tsmom63", "tsmom126", "tsmom252", "tsmom_blend")
+HEALTH_BOOT_B = 500                     # block bootstrap 次数（确定性种子）
+HEALTH_BLOCK = 20                       # 块长（保留自相关）
+HEALTH_SEED = 20260903
+HEALTH_N_Q = 5                          # Q5-Q1 分档
+HEALTH_FILE = os.path.join(BASE_DIR, "reports", "factor_health.txt")
+HEALTH_JSON = os.path.join(BASE_DIR, "reports", "factor_health.json")
+
 
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；

@@ -11,6 +11,7 @@ import build_ml_samples
 import backtest_validation
 import db_archive
 import factors_catalog
+import factor_health
 
 
 def test_factor_eval_selftest():
@@ -60,3 +61,8 @@ def test_panel_builder_selftest():
 def test_pit_audit_selftest():
     """G21（第36轮）PIT/训练-服务一致性审计 --selftest：泄漏扫描/扰动/parity/结构审计。"""
     assert pit_audit.selftest() == 0
+
+
+def test_factor_health_selftest():
+    """G29（第37轮）因子体检 --selftest：滚动IC/块自助/失效预警/日频IC衰减半衰期合成断言。"""
+    assert factor_health.selftest() == 0
