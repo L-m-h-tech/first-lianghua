@@ -101,6 +101,9 @@ D:\Python\python.exe tools\pit_audit.py --db cache\research_panel.db   # G21：�
 D:\Python\python.exe tools\tsmom_eval.py --panel     # 第37轮G21续：tsmom/xsmom/carry 加 --panel 读已复权面板(缺省仍联网现拉，逐值等价)
 D:\Python\python.exe tools\factor_health.py          # 第37轮G29：因子体检卡(事件层滚动IC/块bootstrapCI/失效预警+日频层IC衰减半衰期)，出 reports/factor_health.txt/.json
 D:\Python\python.exe tools\factor_health.py --selftest   # 零网络/零DB断言(正负IC裁决/噪声不误判/失效预警/半衰期拟合)
+D:\Python\python.exe tools\expr_research.py          # 第38轮G25：表达式因子研究台(纯离线读面板)，实时/离线同表达式parity+前向RankIC
+D:\Python\python.exe tools\expr_research.py --selftest   # 零网络断言(面板/bar parity=0、表达式动量==实时ret5、前向无未来)
+D:\Python\python.exe factor_expr.py --selftest       # G25表达式引擎自测(白名单安全/时序截面算子手算/OLS正交/IC加权)
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
@@ -205,9 +208,11 @@ OpenVlab市场页的隐波排行走内部POST接口暂无法稳定获取，程�
 3. **triple-barrier 监督学习样本（`tools/build_ml_samples.py`，为 WP-F4 备料）**：沿用日内回测同一套信号与撮合口径（信号 i 收盘确认、i+1 开盘入场、入场当根不查、止损优先、跳空开盘成交），打上轨止盈=+1 / 下轨止损=−1 / 最长 `ML_SAMPLE_MAX_BARS` 根超时按到期方向收益定符号（走平=0）的三分类标签；特征严格 PIT（技术特征只用 ≤i、标签路径全 >i，`--audit` 扰动未来价格断言特征不变），并就近匹配同交易时段的九因子/截面稳健z/五维情绪快照；落第 9 张表 `ml_samples`（UNIQUE(sym,period,bar_dt) 可重复跑、长期保留），另提供 purged+embargo 切分函数，标签窗口横跨测试折的训练样本一律剔除。
 4. **因子收益归因 + BHB 板块归因（`tools/attribution.py`，第35轮 G28，研究侧定期人工跑）**：回答复盘核心问题"已实现盈亏该记到哪个因子、哪个板块头上"。样本=信号 parts_json ⨝ signal_outcomes 的有效事件，因子暴露=part×信号方向（同 factor_eval）、y=方向收益；①带截距 OLS 做**加法归因 mean(y)=α+Σβ·mean(x)（严格闭合）**，给每因子边际收益β/t值/贡献占比/IC/支持时胜率与 IS-OOS β方向一致性；②**BHB（Brinson-Hood-Beebower）板块三效应**：相对"全市场品种板块只数占比×板块无方向均涨"基准，把超额拆成配置 AR/选择 SR/交互 IR（AR+SR+IR=组合−基准严格闭合）；③逐事件累计归因曲线落 CSV。**只归因、不自动改任何 analyzer 权重**，输出 `reports/attribution.txt/.json/attribution_curve.csv`。当前真实结论（2026-08 起样本）：短周期盈亏主要由技术共振贡献、次日主要由原油联动贡献，机构动向次日为负贡献（留待 G29 复核），超额以板块内"选择效应"为主、板块"配置效应"≈0。
 
-5. **标准研究面板 + 特征注册表 + PIT/训练-服务一致性（第36轮 G21，研究侧地基）**：`factors_catalog.py` 是全项目因子唯一登记处（20条：综合分9 part/基本面子项/技术指标/影子·归档·待跟踪，含方向·贡献界·现状·实时计算处·公式，测试钉死其 part 顺序与 config 一致）；`tools/panel_builder.py` 把"主连比例复权行情+compute_indicators 技术指标+基本面快照"统一成品种×交易日×30字段标准长表，落**独立** SQLite `cache/research_panel.db`（gitignore、删文件即回退、整品种幂等重建逐值一致），**PIT** 上每行特征只用 ≤当日 bar 前缀、基本面严格取前一交易日 as-of（取不到为 NULL 不编造）；`tools/pit_audit.py` 做时间戳泄漏扫描、扰动法无未来函数（含反向用例）、**实时/离线 parity**（面板行==对同一前缀走实时 compute_indicators）与缓存结构审计。真实已建**全64品种 61353 行**、结构审计与 parity 全过。**第37轮 G21续**：panel_builder 增 `load_adjusted_bars/panel_rows_to_bars` 回读层，tsmom/xsmom/carry 三工具加 `--panel` 直接读已复权面板（**不再二次复权**——已复权序列再跑 MAD 换月检测会把真实大波动误判换月，实测 SC/J 价位偏6%~13%），缺省仍联网现拉、真实重叠点逐值等价(maxAbsDiff=0)。不接 main、不改综合分。
+5. **标准研究面板 + 特征注册表 + PIT/训练-服务一致性（第36轮 G21，研究侧地基）**：`factors_catalog.py` 是全项目因子唯一登记处（25条：综合分9 part/基本面子项/技术指标/影子·归档·待跟踪/第38轮5个表达式研究因子，含方向·贡献界·现状·实时计算处·公式，测试钉死其 part 顺序与 config 一致）；`tools/panel_builder.py` 把"主连比例复权行情+compute_indicators 技术指标+基本面快照"统一成品种×交易日×30字段标准长表，落**独立** SQLite `cache/research_panel.db`（gitignore、删文件即回退、整品种幂等重建逐值一致），**PIT** 上每行特征只用 ≤当日 bar 前缀、基本面严格取前一交易日 as-of（取不到为 NULL 不编造）；`tools/pit_audit.py` 做时间戳泄漏扫描、扰动法无未来函数（含反向用例）、**实时/离线 parity**（面板行==对同一前缀走实时 compute_indicators）与缓存结构审计。真实已建**全64品种 61353 行**、结构审计与 parity 全过。**第37轮 G21续**：panel_builder 增 `load_adjusted_bars/panel_rows_to_bars` 回读层，tsmom/xsmom/carry 三工具加 `--panel` 直接读已复权面板（**不再二次复权**——已复权序列再跑 MAD 换月检测会把真实大波动误判换月，实测 SC/J 价位偏6%~13%），缺省仍联网现拉、真实重叠点逐值等价(maxAbsDiff=0)。不接 main、不改综合分。
 
 6. **因子体检（`tools/factor_health.py`，第37轮 G29，研究侧定期人工跑）**：给每个因子一张"健康卡"，回答现在还有没有力、稳不稳、衰减多快。**事件层**（信号 part×方向 对 方向收益，三周期30/120/1440）：整体 RankIC、滚动IC（窗60/步20，连续≥3弱/翻转窗=失效预警）、**block bootstrap 置信区间**（块长20保留时序自相关、500次确定性重采样，"健康"要求 CI 保守边也越过0.03且同号率≥0.95，纯噪声不会误判）、多/空×轻仓/分批/强信号 regime 代理；**日频层**（读 G21 面板）：ret*/tsmom* 对未来1~60交易日的池化 RankIC、Q5-Q1 价差与**指数 IC 半衰期**。体检结论回写 `factors_catalog.HEALTH_SNAPSHOT`。当前真实结论：**机构动向次日 IC=−0.230、CI[−0.341,−0.118] 稳定显著为负="健康(反向)"（反转信号，与第35轮互证，本轮不改线上权重）**、原油联动次日 +0.276 健康、日频单因子池化 |IC|<0.10 无稳定预测。输出 `reports/factor_health.txt/.json`，只体检不改权重。
+
+7. **表达式因子引擎（`factor_expr.py` + `tools/expr_research.py`，第38轮 G25，G2插件化/G16浅ML 共同前置）**：把因子定义成**表达式字符串+元数据**，一个**白名单、无 eval/exec/属性访问/导入**的递归下降 DSL 统一求值——时序算子 delay/delta/ts_mean/ts_std/ts_rank/ts_minmax/decay_linear/corr（尾窗严格无未来、窗口必须正整数字面量、支持嵌套），截面算子 cross_rank/scale/zscore，同一棵 AST 在离线面板与实时 bar 两种上下文逐值一致（**training-serving parity**）；另含因子治理 pearson/spearman、OLS **正交残差**、等权/IC/ICIR 加权合成。安全边界由21个危险/畸形反向用例钉死（未知算子、dunder、属性点、语句拼接、非常量窗口一律拒绝）。`tools/expr_research.py` 纯离线读 G21 面板：全64品种面板列 vs bar回读同表达式 **30.3万点 maxAbsDiff=0**、表达式动量对齐实时 ret5 仅1.1e-16；5个 research 表达式因子前向 H=1/5/20 |IC| 均<0.06 无稳定预测（负结果诚实，维持 research 不进分）。**默认只承载新研究因子，旧技术/基本面因子保持过程式原实现、综合分逐字节不变，引擎不被 main import**。输出 `reports/expr_research.txt/.json`。
 
 ### 4.7 样本外验证与防过拟合工具箱（`tools/backtest_validation.py`，WP-F4 前置 / AFML ch7、11-12）
 
@@ -293,6 +298,7 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/attribution.txt` / `attribution.json` / `attribution_curve.csv` | 第35轮 G28 由 `tools/attribution.py` 生成的**收益归因复盘**：多因子 OLS 加法归因（每因子 β/t/贡献/IC/胜率，mean(y)=α+Σβ·mean(x) 闭合）、IS-OOS β 一致性、BHB 板块配置/选择/交互三效应（恒等闭合）、逐事件累计归因曲线；只归因不改线上权重 |
 | `cache/research_panel.db` / `reports/research_panel_manifest.txt` | 第36轮 G21 由 `tools/panel_builder.py` 生成的**标准研究面板**（独立 SQLite、gitignore、可幂等重建）：research_panel 品种×交易日×30字段（复权OHLC/量/OI/ret1d/17技术指标/3基本面PIT）、research_runs 构建 manifest；第37轮 G21续补齐全64品种61353行，tsmom/xsmom/carry 可 `--panel` 直读；`tools/pit_audit.py` 对其做结构/PIT/实时-离线 parity 审计 |
 | `reports/factor_health.txt` / `factor_health.json` | 第37轮 G29 由 `tools/factor_health.py` 生成的**因子体检卡**：事件层 RankIC/滚动IC失效预警/块bootstrap CI/多空·档位regime，日频层 IC 期限曲线/指数半衰期/Q5-Q1；结论同步回写 factors_catalog.HEALTH_SNAPSHOT，只体检不改线上权重 |
+| `reports/expr_research.txt` / `expr_research.json` | 第38轮 G25 由 `tools/expr_research.py` 生成的**表达式因子研究台**结果：面板列 vs bar回读同表达式全64品种 parity（maxAbsDiff=0）、表达式动量对齐实时 ret5、5个表达式因子对未来1/5/20日的逐品种/池化 RankIC 与截面 cross_rank 演示；research 因子不进综合分 |
 | `reports/backtest_validation.txt` | 由 `tools/backtest_validation.py` 生成的防过拟合报告：组合 DSR、逐品种参数网格 CSCV-PBO、Walk-forward 衰减、参数高原/孤峰与全市场结论（只评估不改参） |
 | `data/futures_fees.csv` | 由用户券商手续费表通过`tools/build_fee_table.py`转换的64品种真实费率：投机账户、按金额费率、按手数固定金额、合约乘数；回测运行时只用标准库csv读取，原始xlsx归档在同目录 |
 | `data/futures_margins.csv` | 由`tools/build_margin_table.py`从银河期货保证金比例页解析的64品种**公司保证金率（投机档）+基础板幅+每手报价单位乘数**，组合账户`portfolio.py`运行时只用标准库csv读取；交易所基准档无干净免费源故`exchange_margin`列留空不编造，临近交割/长假公司会上浮、以公司通知为准 |
@@ -395,7 +401,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：29 个测试文件、397 个用例，约 4.7 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、组合账户强平、存储去重、图表数据层及研究工具自测。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：30 个测试文件、438 个用例，约 6.7 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行

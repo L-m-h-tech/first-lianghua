@@ -3,6 +3,20 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.38.0] — 2026-09-03 · 第38轮 G25 落地：纯标准库表达式因子引擎（白名单DSL+时序/截面同引擎坐实training-serving parity）+ 因子正交/IC·ICIR加权治理（研究侧，不接main不改综合分，旧因子保持过程式原实现）
+- **任务与定位**：G21（标准面板+注册表）、G21续（研究工具读面板）、G29（因子体检）三地基就位后，落地第37轮排定的第38轮首选 **G25**。此前每加一个因子都要写一段过程式代码、实时 analyzer 与离线 panel 各接一次，口径只靠"调用同一函数"口头保证，是 G2 插件化与 G16 浅 ML 的共同前置。本轮对标 Qlib Alpha158 表达式引擎、gplearn/AlphaGen 算子体系（**只借算子思想、不引依赖、不让自动挖掘直接上线**），落地一个**白名单、无 eval/exec、无属性访问、无导入**的表达式 DSL，因子=表达式字符串+元数据，实时与离线调同一引擎。守三铁律与 G25 回退条款：**引擎先只承载新研究因子，旧技术/基本面因子保持原过程式实现、综合分逐字节不变，factor_expr 不被 main 实时链路 import**。
+- **① 新增根模块 `factor_expr.py`（约480行，9组零网络自测）**：
+  - **安全解析器（递归下降）**：词法只认数字/标识符/四则/括号/逗号；全局禁 `__`(dunder)、`;`(语句拼接)，非数字一部分的属性点 `.` 由分词器按非法字符拒绝，`import/eval/exec/lambda/globals/getattr` 等即便写成名字也只是"输入字段名"绝不执行、作为函数调用则过不了白名单。函数调用**必须命中算子白名单**，未知算子/错误元数/非常量窗口/括号不匹配一律 ExprError（21 个危险/畸形反向用例钉死）。窗口参数强制为**正整数字面量**（静态、杜绝数据相关的未来函数）。
+  - **时序算子（尾窗、严格无未来）**：delay/delta/ts_sum/ts_mean/ts_std(样本标准差)/ts_min/ts_max/ts_rank(窗内平均秩→0..1)/ts_minmax/decay_linear(线性衰减加权 Qlib 同式)/corr(滚动Pearson，≥3对)，支持任意嵌套（delta(delta(...))）；单一递归求值器 `_eval_ts`，暖机/除零/零方差/非正log 一律 None 不崩。
+  - **截面算子（同一时点跨品种）**：cross_rank(平均秩→0..1)/scale(Σ|w|=1)/zscore；时序算子在截面上下文、截面算子在时序上下文均显式报错，两套上下文共用同一棵 AST。
+  - **因子治理（纯标准库自含、不 import tools）**：pearson/spearman(并列平均秩)、高斯消元 solve、**orthogonalize 正交残差**（target 对多基 OLS 估 β、返回残差与 β，共线/样本不足安全降级）、equal/ic(|IC|归一保留方向)/icir(滚动IC均值/标准差)三套权重与逐点加权 combine。
+  - **表达式因子库 LIBRARY**：5 个 research 因子（expr_ma_bias5=等价ret5作parity基准、expr_ma_ratio短长均线比、expr_trend_per_vol单位波动趋势、expr_price_accel二阶加速度、expr_illiq非流动性代理），同步登记进 factors_catalog（20→25条，layer=表达式研究、status=research、不进综合分），validate 仍零问题。
+- **② 新增研究工具 `tools/expr_research.py`（约290行，5组零网络/零DB自测）**：纯离线只读 G21 面板，证明三件事并出 reports/expr_research.txt/.json（allow_nan=False）：
+  - **training-serving parity**：(a) 面板列直读（离线）vs `panel_rows_to_bars` 回读成 bar 再取 c/v（实时链路拿到的形状）喂**同一条表达式**；(b) 表达式版5日动量 `delta(close,5)/delay(close,5)` 对齐面板里实时管线 compute_indicators 落库的 ret5 列（真正把引擎接到线上指标口径）。
+  - **前向 RankIC 体检（G29式、严格只向未来取收益）**：每个表达式因子算对未来 H=1/5/20 交易日收益的逐品种均值 IC 与全样本池化 IC；截面 cross_rank 跨品种排序演示。
+- **真实数据诚实结论（全64品种面板61353行）**：①**parity 完美**——面板列 vs bar回读同表达式 **303309 个有限点 maxAbsDiff=0.000e+00、零不一致**；表达式动量 vs 实时 ret5 **61033 比对点 maxAbsDiff=1.11e-16（纯浮点ε）**，training-serving parity 在全市场坐实；②**5个表达式因子前向 |IC| 全部<0.06、无稳定预测力**（最强 expr_ma_ratio 的 H=5 逐品种均值+0.056 但池化仅+0.029，其余在0附近且 H=20 多转负），与 tsmom/xsmom 双样本证伪、G29日频九因子|IC|<0.10 完全一致——简单价量表达式在4年池化样本上同样不构成边际，**全部维持 research、不挂影子不进分**（负结果诚实）。
+- **验证**：新增 tests/test_factor_expr.py（37个零网络用例：21安全反向参数化+逐算子手算+无未来扰动+截面+OLS恢复β+加权合成+结构性parity+因子库必登记），test_tools_selftest 纳 factor_expr/expr_research（+2），test_compileall 随2个新生产py自动+2；全量 **pytest 397→438 全绿（约6.7s、30个测试文件）0失败0错误0跳过**；factor_expr/expr_research/factors_catalog 的 --selftest 全过、compileall 通过；确认仅 expr_research 引用 factor_expr、main/analyzer 实时主链零 import；真实 main --once 一轮冲烟证明主链与综合分零改动。规模：生产 py 54→**56（根42+tools14）、23178→24226 行**；测试 29→30 文件；运行依赖仍仅 requests/uiautomation/websocket-client。总纲 G25 标注本轮落地、6.3 排期补第38轮。tag v0.38.0。
+
 ## [0.37.0] — 2026-09-03 · 第37轮 G21续（研究工具统一读标准面板）+ G29 因子体检（滚动IC/块自助/失效预警/IC衰减半衰期，研究侧纯标准库，不接main不改综合分）
 - **任务与定位**：分两段。**G21续**补齐第36轮 G21 刻意留下的最后一条验收——把 tsmom/xsmom/carry 三个真正消费日K的研究工具从"各自联网现拉→内部复权"改为可选读 G21 标准面板，并以"改前改后逐值一致"回归钉死；**G29** 承接第35轮归因发现的"机构动向次日负贡献(t−2.77/IC−0.203)"，给每个因子一张可复算的"体检卡"（现在还有没有力、稳不稳、衰减多快）。两段均守三铁律：纯标准库零新增依赖、研究/监控记录层、**不接 main、不改交易、不改综合分**；新能力默认开关、缺省等价旧版。
 - **G21续① 面板回读/统一装载层（`tools/panel_builder.py`）**：新增 `panel_rows_to_bars(rows)`（面板行→bar-dict：d/o/h/l/c/v、p=oi）与 `load_adjusted_bars(code,days,prefer_panel=False)`（prefer_panel 且库内有→回读**已复权**bar、source="panel"；否则走旧网络路径 fetch[-days:]→ratio_adjusted_bars、source="network"）。**实证踩坑并定解法**：面板存的是**已复权**OHLC，若回读后再喂一次 `backtest.ratio_adjusted_bars` 会因"首次复权把真换月跳空置0→全序列MAD变小→换月阈值降低"把真实大波动**二次误判为换月**（联网实测 SC 价位偏6.31%、J 偏12.7%，换月计数31→3/12→2）；故面板路径**禁止二次复权**，直接返回已复权bar。selftest 7→8 组（新增"回读==建面板时已复权c / 回读再复权 roll=0 且价位不变 / 临时库面板路径==网络复权末值"）。
