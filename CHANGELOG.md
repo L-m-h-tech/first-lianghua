@@ -3,6 +3,19 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.41.0] — 2026-09-03 · 第41轮 G26续 风险型横截面sizing接入组合共享内核（inv_vol/ERC可选，默认逐字节等价旧等名义 + 同宇宙影子对照）
+- **任务与定位**：承接第40轮 G26（离线组合构建器+portfolio_lab 证明 ERC/逆波动降险价值），本轮按总纲 G26「实施顺序②」把**逆波动/ERC 风险型目标权重接入 `portfolio.py` 共享账户内核**（组合回测与 paper_broker 都走它）。守三铁律：纯标准库零新依赖、**默认 risk_sizing=None 时手数决策逐字节等价旧等名义（CSV 哈希级回归）**、不碰 main/analyzer/综合分；GMV 第40轮已证过集中（有效N仅11）故**不接入**；实时/paper 的协方差权重源本轮**不接线**（先在回测影子对照达标后再议，未注入权重时内核自动回退等名义）。
+- **`portfolio.py` 共享内核增量（1018→1191行）**：
+  - `Portfolio` 新增 `risk_sizing(None/inv_vol/erc)`、`risk_gross` 参数与 `risk_weights/risk_meta/risk_meta_log` 状态、`set_risk_weights()` 注入与 `avg_risk_eff_n()`；`decide_lots` 在三种旧 sizing 分支之后插入**横截面权重覆盖**：宇宙内品种目标名义=权益×权重（×gross），**宇宙外/未估出安全回退等名义 per_symbol**；下游单品种/板块/现金/持仓数上限链与校准乘子原样复用。`risk_sizing=None` 时整段不进入。
+  - 新增纯函数 `trailing_risk_weights(feeds,t,method,...)`：在时刻 t 用**严格早于 t** 的收盘价（bisect_left−1，t 当根及以后一律不看=严格 PIT），各品种按公共时间戳稠密对齐收益、≥min_hist 才纳入协方差宇宙，调 `portfolio_constructor.construct` 出 inv_vol/erc 权重并×gross；可估品种<2/历史不足返回 `({},meta带reason)` 绝不抛错；缺历史品种进 `excluded`。
+  - `run_portfolio` 增 `risk_cfg`：按 rebalance 间隔重估并注入权重（默认 None=零行为变化）；新增 `_reset_feeds()` 清引擎层持仓/挂单/锁板计数，使同一批 feeds 可确定性重复回放。
+  - CLI 增 `--risk-sizing/--risk-window/--risk-rebalance/--risk-min-hist/--risk-gross/--risk-cap/--compare-risk`；`--compare-risk` 同宇宙把 等名义/逆波动/ERC **各确定性回放一次**出对照表（期末权益/收益/年化/夏普/回撤/平均风险度/最大持仓/平仓笔数/平均有效N），**基线 CSV 仍写等名义、逐字节不变**；报告头部标注风险型口径。
+- **`paper_broker.py`（830→840行）**：`PaperBroker` 增 `risk_sizing/risk_gross` 能力位透传给内核 + `set_risk_weights()` 透传；默认 None 逐字节等价旧版，实时权重源未接线（注释明示）。**`config.py`** 增 PRS_* 常量簇（默认全关、PRS_METHOD=erc、窗口126/重估20/最少40/gross1.0/单票上限20%）。
+- **真实数据影子证据（本地分钟库、30m、严格无未来，仅目标名义不同）**：
+  - 8品种小样本：三法平仓同为995笔（证明只改手数不改信号路径）；等名义 −3.91%/回撤5.91%/平均风险度6.7%，逆波动 −6.00%/回撤7.30%，ERC −6.45%/回撤7.90%（gross1.0在小宇宙敞口偏保守、有效N仅6.5）。
+  - **16品种宽样本（RB/HC/I/JM/CU/AL/MA/TA/SA/FG/AU/AG/M/Y/SR/CF）**：等名义 −7.91%/回撤10.50%/平均风险度15.2%/2563笔；**逆波动 −2.55%/回撤3.37%/风险度5.0%/1791笔/有效N13.2；ERC −2.67%/回撤3.29%/风险度5.0%/1828笔/有效N12.8**——宽宇宙下风险型显著降回撤/降风险度（其设计目标），笔数减少是"低权重高价品种目标不足1手不开仓"的约束链一致结果（已在对照表说明，非未来函数）。结论方向与第40轮日级 portfolio_lab 一致：**ERC/逆波动的价值在降险而非增收益，值得继续在 paper 影子；是否默认启用仍须更长样本与换手成本评估，本轮不默认开**。
+- **验证**：tests/test_portfolio.py +6 组零网络断言（默认关注入权重也逐值不变、权重定手数+宇宙外回退手算、**严格PIT篡改未来bar权重不变**、权重和=gross/非负/上限/excluded、_reset_feeds 重复回放逐值一致、引擎 risk_cfg=None 与不传逐值一致+重估留痕）；全量 **pytest 444→450 全绿（0失败0错误0跳过）**、compileall 全过；**默认组合回测 equity/trades CSV 与改动前基线哈希逐字节一致**（报告仅标题行变化）；真实 main --once 48s exit0 证明主链/综合分零改动。规模：生产 py 仍59（根43/tools16）、25341→**25534 行**；测试仍30文件、→4580行；运行依赖仍仅 requests/uiautomation/websocket-client。总纲 G26 段补第41轮进展、6.3 排期补第41轮。tag v0.41.0。
+
 ## [0.40.0] — 2026-09-03 · 第40轮 G26 组合构建器（纯标准库风险型横截面权重：等权/逆波动/ERC风险平价/长仓GMV + 目标波动，默认equal等价旧口径，研究侧不接main不改综合分/sizing）
 - **任务与定位**：G1 纸面账户/G4 回测严谨性/G21-G25-G29 研究链就位后，补"模拟整合"环节的资本分配层——现有 `portfolio.decide_lots` 是**逐品种独立**按名义/ATR/分档定手数，缺一个**横截面一次性**回答"同一篮子谁分多少"的组合构建器。守三铁律：纯标准库零新依赖、**默认 equal 等价旧等名义口径、不接 main、不改综合分与既有 sizing**；风险型方法（只用协方差、不预测预期收益，契合项目"不轻信 ER/ML"立场）。
 - **新增根模块 `portfolio_constructor.py`（约430行，10组零网络手算自测，不 import tools/不被 main import）**：

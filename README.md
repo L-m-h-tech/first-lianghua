@@ -84,6 +84,10 @@ D:\Python\python.exe portfolio.py --all --period 30 --risk-liquidate 1.0 --risk-
 # 输出 reports/portfolio_report.txt + portfolio_equity.csv(逐bar权益/风险度) + portfolio_trades.csv(含手数/强平)
 # 保证金表缺失品种回退默认率并在报告抬头显式列出；高价品种15%名义买不起1手时如实计入"未开仓原因分布"
 D:\Python\python.exe portfolio.py --all --period 30 --calibrate   # WP-F2：按历史同类信号胜率给手数乘子(默认关闭)
+# 第41轮 G26续：横截面风险型目标权重（默认关闭=逐字节等价旧等名义；只用当前bar之前收益估协方差=严格无未来）
+D:\Python\python.exe portfolio.py --all --period 30 --risk-sizing erc          # ERC风险平价定目标名义(另可选 inv_vol)
+D:\Python\python.exe portfolio.py --all --period 30 --compare-risk            # 同宇宙 等名义/逆波动/ERC 各回放一次出对照表(基线CSV不变)
+D:\Python\python.exe portfolio.py --all --period 30 --risk-sizing erc --risk-gross 1.5 --risk-window 126 --risk-rebalance 20  # 总敞口/协方差窗/重估间隔可调
 ```
 
 WP-F2 研究侧工具（离线、读自有DB、零网络、不进常驻链路）：
@@ -220,7 +224,7 @@ OpenVlab市场页的隐波排行走内部POST接口暂无法稳定获取，程�
 
 8. **因子 regime 分层/换手/衰减形态（`tools/factor_regime.py`，第39轮 G29续，研究侧定期人工跑）**：在因子体检之上回答三个更细的问题——①**regime 条件有效性**：用面板 PIT 的 ret126 分牛/熊/震荡、hv60 过去120日分位（G25 ts_rank、无未来）分高/中/低波，桶内算前向 RankIC；②**持续性与隐含换手**：因子滚动分位在 1/5/20 日再平衡间隔的秩自相关与平均|分位变动|；③**衰减形态**：同一 IC(H) 曲线分别拟合指数/幂律、按 R² 择优，不硬套半衰期。真实结论：**长周期动量 ret252/tsmom252 只在低波 regime 有效（H20 低波 IC≈+0.10）、高波 regime 转负（动量高波崩溃）**，短周期各 regime 均≈0；信号 lag1 自相关约0.83、月度隐含换手约0.39；近零 IC 无干净衰减形态。输出 `reports/factor_regime.txt/.json`，只研究、不改权重不进分。
 
-9. **组合构建器（`portfolio_constructor.py` + `tools/portfolio_lab.py`，第40轮 G26，研究侧）**：补"同一篮子谁分多少资本"的横截面权重层（区别于 portfolio.py 逐品种独立定手数），纯标准库、只用协方差不预测收益：等权（基线，等价旧等名义口径）/逆波动/ERC 风险平价（全 Newton 解 ½w'Σw−Σlnw，各品种风险贡献相等）/长仓最小方差 GMV（投影梯度+capped-simplex 单票上限），另含对角收缩保正定、目标波动缩放与杠杆上限、风险贡献/分散化度/有效N/换手诊断。portfolio_lab 读 G21 面板做最新快照与每20日滚动样本外代理回测（严格无未来）。真实61商品近2年：**ERC 降波动25%/降回撤32%、夏普0.42→0.53且风险最均衡，逆波动最省换手，GMV 降波动48%但集中到有效N仅11、高换手、夏普反降**；默认仍 equal、不改线上 sizing，ERC/逆波动是否接入 paper/backtest 留后续影子对照。输出 `reports/portfolio_lab.txt/.json`。
+9. **组合构建器（`portfolio_constructor.py` + `tools/portfolio_lab.py`，第40轮 G26，研究侧）**：补"同一篮子谁分多少资本"的横截面权重层（区别于 portfolio.py 逐品种独立定手数），纯标准库、只用协方差不预测收益：等权（基线，等价旧等名义口径）/逆波动/ERC 风险平价（全 Newton 解 ½w'Σw−Σlnw，各品种风险贡献相等）/长仓最小方差 GMV（投影梯度+capped-simplex 单票上限），另含对角收缩保正定、目标波动缩放与杠杆上限、风险贡献/分散化度/有效N/换手诊断。portfolio_lab 读 G21 面板做最新快照与每20日滚动样本外代理回测（严格无未来）。真实61商品近2年：**ERC 降波动25%/降回撤32%、夏普0.42→0.53且风险最均衡，逆波动最省换手，GMV 降波动48%但集中到有效N仅11、高换手、夏普反降**。**第41轮 G26续**：逆波动/ERC 已以**可选 sizing 模式接入 `portfolio.py` 共享内核**（`--risk-sizing inv_vol|erc`，默认关闭、缺省逐字节等价旧等名义；`trailing_risk_weights` 只用当前bar之前收益估协方差=严格PIT，宇宙外品种安全回退等名义；`--compare-risk` 同宇宙三法影子对照），paper_broker 预留能力位但实时权重源未接线；16品种30m宽样本影子显示风险型回撤10.5%→3.3%、平均风险度15.2%→5.0%（价值在降险非增收益，是否默认启用待更长样本）。离线实验台输出 `reports/portfolio_lab.txt/.json`。
 
 ### 4.7 样本外验证与防过拟合工具箱（`tools/backtest_validation.py`，WP-F4 前置 / AFML ch7、11-12）
 
