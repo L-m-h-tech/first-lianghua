@@ -93,6 +93,8 @@ D:\Python\python.exe tools\factor_eval.py --days 9999        # 九因子 IC/Rank
 D:\Python\python.exe tools\build_ml_samples.py --all --period 30   # triple-barrier三分类标签+PIT特征快照落第9表 ml_samples
 D:\Python\python.exe tools\build_ml_samples.py --codes RB --no-db --audit  # 单品种试跑/不写库/PIT无穿越审计
 D:\Python\python.exe tools\factor_eval.py --selftest         # 零网络合成断言(单调RankIC≈1/无关≈0)
+D:\Python\python.exe tools\attribution.py               # 第35轮G28：因子收益归因+BHB板块归因，出 reports/attribution.txt/.json/_curve.csv
+D:\Python\python.exe tools\attribution.py --selftest     # 零网络/零DB断言(加法归因闭合/BHB三效应恒等式)
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
@@ -195,6 +197,7 @@ OpenVlab市场页的隐波排行走内部POST接口暂无法稳定获取，程�
    - 只有 `portfolio.py --calibrate` 才把乘子真正乘到手数上（回测无九因子时自动回退到方向×分档层），成交记录带 `calib_mult`、报告抬头统计实际调整次数与平均乘子；`CALIBRATOR_ENABLED=False` 整体关闭。
 2. **因子 IC 评估（`tools/factor_eval.py`，研究侧定期人工跑）**：把信号发出时的九因子拆分与 30m/2h/次日结果配对，主口径 meta RankIC=Spearman(因子值×信号方向, 方向收益)，另给 Pearson IC、月度 ICIR、5 档单调性与多空价差、30m→次日衰减、逐月 walk-forward 的 IS/OOS 同号率，最后只给**建议权重区间（相对当前权重的乘数），绝不自动改 analyzer 权重**，输出 `reports/factor_eval.txt`。
 3. **triple-barrier 监督学习样本（`tools/build_ml_samples.py`，为 WP-F4 备料）**：沿用日内回测同一套信号与撮合口径（信号 i 收盘确认、i+1 开盘入场、入场当根不查、止损优先、跳空开盘成交），打上轨止盈=+1 / 下轨止损=−1 / 最长 `ML_SAMPLE_MAX_BARS` 根超时按到期方向收益定符号（走平=0）的三分类标签；特征严格 PIT（技术特征只用 ≤i、标签路径全 >i，`--audit` 扰动未来价格断言特征不变），并就近匹配同交易时段的九因子/截面稳健z/五维情绪快照；落第 9 张表 `ml_samples`（UNIQUE(sym,period,bar_dt) 可重复跑、长期保留），另提供 purged+embargo 切分函数，标签窗口横跨测试折的训练样本一律剔除。
+4. **因子收益归因 + BHB 板块归因（`tools/attribution.py`，第35轮 G28，研究侧定期人工跑）**：回答复盘核心问题"已实现盈亏该记到哪个因子、哪个板块头上"。样本=信号 parts_json ⨝ signal_outcomes 的有效事件，因子暴露=part×信号方向（同 factor_eval）、y=方向收益；①带截距 OLS 做**加法归因 mean(y)=α+Σβ·mean(x)（严格闭合）**，给每因子边际收益β/t值/贡献占比/IC/支持时胜率与 IS-OOS β方向一致性；②**BHB（Brinson-Hood-Beebower）板块三效应**：相对"全市场品种板块只数占比×板块无方向均涨"基准，把超额拆成配置 AR/选择 SR/交互 IR（AR+SR+IR=组合−基准严格闭合）；③逐事件累计归因曲线落 CSV。**只归因、不自动改任何 analyzer 权重**，输出 `reports/attribution.txt/.json/attribution_curve.csv`。当前真实结论（2026-08 起样本）：短周期盈亏主要由技术共振贡献、次日主要由原油联动贡献，机构动向次日为负贡献（留待 G29 复核），超额以板块内"选择效应"为主、板块"配置效应"≈0。
 
 ### 4.7 样本外验证与防过拟合工具箱（`tools/backtest_validation.py`，WP-F4 前置 / AFML ch7、11-12）
 
@@ -277,6 +280,7 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/intraday_backtest_report.txt` / `intraday_backtest_trades.csv` | 手动运行 `intraday_backtest.py` 生成的日内/平今回测报告与逐笔交易（进出场时间、交易所交易日归属、平今/平昨leg、持仓分钟、毛/净收益、开平仓每手人民币费用、平今vs平昨对照、离场原因、锁板顺延）；看板含“日内/平今回测”和“日内回测交易CSV”页签 |
 | `reports/portfolio_report.txt` / `portfolio_equity.csv` / `portfolio_trades.csv` | 手动运行 `portfolio.py` 生成的组合资金账户回测：组合级净值/年化/回撤/夏普/风险度序列报告、逐bar权益曲线（静态权益/浮盈/动态权益/占用/可用/风险度/回撤/持仓数）、含实际手数与风控强平标记的逐笔成交（`--calibrate` 时每笔带历史胜率乘子 calib_mult）；看板含“组合账户回测”和“组合交易CSV”页签 |
 | `reports/factor_eval.txt` / `factor_eval.json` | 由 `tools/factor_eval.py` 生成的九因子预测力评估：分周期 IC/RankIC/ICIR、分档单调性与多空价差、walk-forward 同号率、建议权重区间（仅建议不自动改）；**.json 为第22轮新增结构化 sidecar（同一次计算，供图表看板消费）** |
+| `reports/attribution.txt` / `attribution.json` / `attribution_curve.csv` | 第35轮 G28 由 `tools/attribution.py` 生成的**收益归因复盘**：多因子 OLS 加法归因（每因子 β/t/贡献/IC/胜率，mean(y)=α+Σβ·mean(x) 闭合）、IS-OOS β 一致性、BHB 板块配置/选择/交互三效应（恒等闭合）、逐事件累计归因曲线；只归因不改线上权重 |
 | `reports/backtest_validation.txt` | 由 `tools/backtest_validation.py` 生成的防过拟合报告：组合 DSR、逐品种参数网格 CSCV-PBO、Walk-forward 衰减、参数高原/孤峰与全市场结论（只评估不改参） |
 | `data/futures_fees.csv` | 由用户券商手续费表通过`tools/build_fee_table.py`转换的64品种真实费率：投机账户、按金额费率、按手数固定金额、合约乘数；回测运行时只用标准库csv读取，原始xlsx归档在同目录 |
 | `data/futures_margins.csv` | 由`tools/build_margin_table.py`从银河期货保证金比例页解析的64品种**公司保证金率（投机档）+基础板幅+每手报价单位乘数**，组合账户`portfolio.py`运行时只用标准库csv读取；交易所基准档无干净免费源故`exchange_margin`列留空不编造，临近交割/长假公司会上浮、以公司通知为准 |
@@ -379,7 +383,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：22 个测试文件、274 个用例，约 3 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、组合账户强平、存储去重、图表数据层及研究工具自测。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：28 个测试文件、371 个用例，约 4.6 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、组合账户强平、存储去重、图表数据层及研究工具自测。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行

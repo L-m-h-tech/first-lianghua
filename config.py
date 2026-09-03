@@ -673,6 +673,22 @@ XSMOM_COND_CANDIDATES = (
     ("全市场·纯多头(含beta)", None, "long"),
 )
 
+# ============ G28（第35轮）：因子收益归因 + BHB 板块归因（研究/复盘侧，只读DB，不改综合分） ============
+# 样本=signals.parts_json ⨝ signal_outcomes 的方向化事件；因子暴露=part×信号方向（meta-labeling，同 factor_eval）。
+# 加法归因 mean(y)=α+Σβ·mean(x) 严格闭合；BHB 三效应 AR+SR+IR=组合−基准 严格闭合。仅 tools/attribution.py 使用。
+ATTR_HORIZONS = (30, 120, 1440)       # 三个评估周期（30分钟/2小时/次日）
+ATTR_MAIN_HORIZON = 1440             # 主周期=次日（最接近日级因子收益，累计曲线按它出）
+ATTR_MIN_SAMPLE = 40                 # 单周期最小有效事件数，不足只计数不下结论
+ATTR_OOS_RATIO = 0.30                # IS/OOS β方向一致性检验的后30%占比（防过拟合）
+ATTR_X_EPS = 0.05                    # |方向化暴露|超过它才算因子"支持/反对"这条信号
+ATTR_FACTOR_ORDER = (                # 综合分9个part的规范顺序与中文名（动态"原油联动(w=..)"归一到原油联动）
+    "新闻消息面", "原油联动", "机构动向", "日线动量", "技术共振",
+    "分钟共振", "盘中动量", "量仓资金", "基本面",
+)
+ATTR_FILE = os.path.join(BASE_DIR, "reports", "attribution.txt")
+ATTR_JSON = os.path.join(BASE_DIR, "reports", "attribution.json")
+ATTR_CURVE = os.path.join(BASE_DIR, "reports", "attribution_curve.csv")
+
 # ---------------- G10 配置外置：config.json 深合并覆盖（缺文件=与历史逐字节一致） ----------------
 # 只覆盖本文件已定义的全大写可调常量（阈值/开关/账户/自选等），路径类与未知项受保护跳过；
 # 类型不符的项保留内置默认并记入报告，绝不抛异常中断启动。可用 FUTURES_MONITOR_CONFIG 指定其它文件。

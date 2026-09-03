@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""把研究侧工具自带的零网络合成断言纳入 pytest（factor_eval/tsmom_eval/xsmom_eval/build_ml_samples/backtest_validation/db_archive）。"""
+"""把研究侧工具自带的零网络合成断言纳入 pytest（factor_eval/tsmom_eval/xsmom_eval/carry_eval/attribution/build_ml_samples/backtest_validation/db_archive）。"""
 import factor_eval
 import tsmom_eval
 import xsmom_eval
 import carry_eval
+import attribution
 import build_ml_samples
 import backtest_validation
 import db_archive
@@ -36,3 +37,8 @@ def test_backtest_validation_selftest():
 
 def test_db_archive_selftest():
     db_archive._selftest()
+
+
+def test_attribution_selftest():
+    """G28（第35轮）因子收益归因+BHB板块归因 --selftest：零网络/零DB合成断言。"""
+    assert attribution.selftest() == 0

@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：22 个 `test_*.py` + `conftest.py`，共 **274** 个用例，全绿约 3 秒。
+当前规模：28 个 `test_*.py` + `conftest.py`，共 **371** 个用例，全绿约 4.6 秒。
 
 ## 设计纪律（必须保持）
 
@@ -44,5 +44,6 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_data_router.py | 熔断CLOSED/OPEN/HALF_OPEN状态机、有序主备降级、残缺即弃、全失败、健康总账（第25轮 G11） |
 | test_data_health.py | 缺数/陈旧/跳变体检、跨轮连续缺数与连续全失败、增量折算、报告块（第25轮 G6） |
 | test_paper_broker.py | 三阈值迟滞、close/next两档成交时点（next严格晚于信号）、实时锁板顺延、滑点与双边费、反手先平后开、离场撤单、临时约束排队不膨胀、强平、资金不足拒单、三表落库与持仓中/平仓后重启恢复、默认休眠（第27轮 G1） |
-| test_tools_selftest.py | factor_eval/build_ml_samples/backtest_validation/db_archive 研究工具自带合成断言 |
+| test_attribution.py | 方向化暴露/动态键归一、OLS恢复与奇异、加法归因闭合/零方差剔除/空样本、BHB手算+随机fuzz恒等、板块统计rb无方向、累计曲线闭合、IS-OOS、端到端报告（第35轮 G28） |
+| test_tools_selftest.py | factor_eval/carry_eval/attribution/build_ml_samples/backtest_validation/db_archive 研究工具自带合成断言 |
 | test_compileall.py | 参数化编译全部生产 .py，语法损坏即变红（防“假全绿”） |
