@@ -17,6 +17,7 @@ import expr_research
 import factor_regime
 import portfolio_constructor
 import portfolio_lab
+import trade_journal
 
 
 def test_factor_eval_selftest():
@@ -96,3 +97,8 @@ def test_portfolio_constructor_selftest():
 def test_portfolio_lab_selftest():
     """G26（第40轮）组合实验台 --selftest：稠密面板/固定宇宙/滚动样本外无未来且GMV波动≤等权/快照合法。"""
     assert portfolio_lab.selftest() == 0
+
+
+def test_trade_journal_selftest():
+    """G30（第42轮）交易复盘journal --selftest：分桶手算/信号强度绝对值/日周聚合/盘中MFE-MAE多空镜像/空数据安全。"""
+    assert trade_journal.selftest() == 0
