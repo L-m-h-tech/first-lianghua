@@ -104,7 +104,7 @@ def test_microstructure_lab_selftest():
 
 
 def test_spread_lab_selftest():
-    """G12（第55轮）产业链/跨期价差监控 --selftest：尾窗z/分位、近-次价差形态、公共日对齐比价、产业链z 共8组。"""
+    """G12（第55/56轮）产业链/跨期价差+盘面利润 --selftest：尾窗z/分位、近-次价差形态、对齐比价、产业链z、盘面利润额系数 共10组。"""
     assert spread_lab.selftest() == 0
 
 

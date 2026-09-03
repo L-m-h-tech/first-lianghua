@@ -448,6 +448,87 @@ def attribution_payload(path=None):
         return None
 
 
+def spread_payload(path=None):
+    """读 reports/spread_lab.json（G12）：backwardation 广度 + 跨期价差z极端 + 产业链比价/盘面利润z。缺/坏返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "spread_lab.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        bw = (data.get("meta") or {}).get("backwardation") or {}
+        n = bw.get("n") or 0
+        back = bw.get("back") or 0
+        term_ext = []
+        for r in (data.get("term") or []):
+            z = r.get("spread_z")
+            if isinstance(z, (int, float)) and abs(z) >= 1.0:
+                term_ext.append({"name": r.get("sym"), "z": z,
+                                 "carry": r.get("carry_ann"), "curve": r.get("curve")})
+        term_ext.sort(key=lambda x: x["z"])                 # 升序：横向轴最大值落顶
+        term_ext = term_ext[:16]
+        chains = []
+        for c in (data.get("chains") or []):
+            st = c.get("stat")
+            if isinstance(st, dict):
+                chains.append({"name": c.get("name"), "z": st.get("z"),
+                               "ratio": st.get("ratio"), "chg60": st.get("chg60")})
+        margins = []
+        for m in (data.get("margins") or []):
+            st = m.get("stat")
+            if isinstance(st, dict):
+                margins.append({"name": m.get("name"), "z": st.get("z"),
+                                "value": st.get("value"), "chg60": st.get("chg60")})
+        if not (bw or term_ext or chains or margins):
+            return None
+        return {"breadth": {"back": back, "n": n,
+                            "pct": (back / n) if n else None},
+                "term_ext": term_ext, "chains": chains, "margins": margins}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+def journal_payload(path=None):
+    """读 reports/trade_journal.json（G30①复盘）：总览 + 持仓时长档/信号强度档/平仓原因分桶 + 日度净盈亏节奏。缺/坏返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "trade_journal.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        ov = data.get("overall")
+        if not isinstance(ov, dict):
+            return None
+
+        def _bucket(rows):
+            out = []
+            for r in (rows or []):
+                out.append({"key": r.get("key"), "n": r.get("n"),
+                            "win_rate": r.get("win_rate"), "net": r.get("net"),
+                            "pf": r.get("pf")})
+            return out
+        hold = _bucket(data.get("by_hold_band"))
+        hold.sort(key=lambda x: str(x.get("key") or "z"))          # 键以 1/2/3/4 起头，天然按时长升序
+        score_rank = {"弱": 0, "轻": 1, "分": 2}
+        score = _bucket(data.get("by_score_band"))
+        score.sort(key=lambda x: score_rank.get(str(x.get("key") or "")[:1], 9))
+        reason = _bucket(data.get("by_reason"))
+        dates, nets, cum = [], [], 0.0
+        for d in (data.get("daily") or []):
+            dates.append(d.get("key"))
+            v = d.get("net")
+            nets.append(v)
+            if isinstance(v, (int, float)):
+                cum += v
+        return {"overall": {"n": ov.get("n"), "win_rate": ov.get("win_rate"),
+                            "expectancy": ov.get("expectancy"), "pf": ov.get("profit_factor"),
+                            "payoff": ov.get("payoff_ratio"), "fee_over_gross": None},
+                "hold": hold, "score": score, "reason": reason,
+                "daily": {"dates": dates, "net": nets, "cum": cum}}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
 # ---------------- 汇总与落盘 ----------------
 
 def _tear_from_series(dts, equity, source, max_points=1200):
@@ -579,6 +660,16 @@ def build_payload(state=None):
         payload["attribution"] = attribution_payload()
     except Exception:
         payload["attribution"] = None
+    # ⑩ G12续 产业链/跨期价差监控（spread_lab 离线 JSON；缺文件自动 None 显空态）
+    try:
+        payload["spread"] = spread_payload()
+    except Exception:
+        payload["spread"] = None
+    # ⑪ G30续 交易复盘（trade_journal 离线 JSON；缺文件自动 None 显空态）
+    try:
+        payload["journal"] = journal_payload()
+    except Exception:
+        payload["journal"] = None
     return payload
 
 
@@ -767,6 +858,32 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>BHB 板块归因·配置/选择/交互效应 <span class="sub">组合相对等权基准的超额来源分解（%/日：配置=板块权重差、选择=板块内选品、交互=两者交叉）</span></h3>
     <div id="c-attr-bhb" class="chart" style="height:300px"></div>
   </div>
+  <div class="card full">
+    <h3>⑩ 跨期价差·期限结构极端 <span class="sub">spread_lab.json：当前近-次价差 z（相对过去120日，|z|≥1，红=异常拉伸/back、绿=异常压缩）；先跑 tools/spread_lab.py</span></h3>
+    <div class="chips" id="spread-chips"></div>
+    <div id="c-spread-term" class="chart" style="height:340px"></div>
+  </div>
+  <div class="card">
+    <h3>产业链比价·尾窗 z <span class="sub">无量纲 A/B 相对120日偏离（悬停看最新比价/近60日变化）</span></h3>
+    <div id="c-spread-chain" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card">
+    <h3>盘面虚拟利润·尾窗 z <span class="sub">投料/出成系数算的元/吨利润相对120日偏离（悬停看最新利润额/近60日变化）</span></h3>
+    <div id="c-spread-margin" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card">
+    <h3>⑪ 复盘·持仓时长档 <span class="sub">trade_journal.json：柱=档净盈亏（红正绿负）、折线=胜率（%），悬停看笔数/PF</span></h3>
+    <div id="c-jr-hold" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>复盘·平仓原因 <span class="sub">柱=原因净盈亏、折线=胜率（%），定位盈亏来自止盈/止损/反向/强平</span></h3>
+    <div id="c-jr-reason" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card full">
+    <h3>复盘·日度净盈亏节奏 <span class="sub">柱=当日净盈亏（红正绿负）、金线=累计净盈亏；先跑 tools/trade_journal.py</span></h3>
+    <div class="chips" id="jr-chips"></div>
+    <div id="c-jr-daily" class="chart" style="height:300px"></div>
+  </div>
 </div>
 """
 
@@ -779,7 +896,9 @@ var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-paper", "c-paper-dd", "c-paper-risk",
                  "c-tear-uw", "c-tear-rs", "c-tear-m",
                  "c-pnav", "c-creview-sweep", "c-creview-fwd",
-                 "c-attr-factor", "c-attr-bhb"];
+                 "c-attr-factor", "c-attr-bhb",
+                 "c-spread-term", "c-spread-chain", "c-spread-margin",
+                 "c-jr-hold", "c-jr-reason", "c-jr-daily"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -1270,6 +1389,143 @@ function renderAttr(d) {
       {name: "交互效应", type: "bar", data: sarr("inter"), itemStyle: {color: NEUT}}]
   });
 }
+function _hzZBar(id, items, tipFn) {
+  // 通用横向 z 条：items 已按 z 升序（最大值落顶），红正绿负，右标 z 值
+  var names = items.map(function (x) { return x.name; });
+  var zv = items.map(function (x) { return x.z == null ? null : +(+x.z).toFixed(2); });
+  mk(id).setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "item", formatter: function (p) { return tipFn(items[p.dataIndex]); }},
+    grid: baseGrid({left: 150, right: 54, top: 10, bottom: 26}),
+    xAxis: {type: "value", splitNumber: 4, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}},
+            splitLine: {lineStyle: {color: SPLIT}}},
+    yAxis: {type: "category", data: names, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    series: [{type: "bar", barWidth: "60%",
+      data: zv.map(function (v) { return {value: v, itemStyle: {color: signedColor(v == null ? 0 : v)}}; }),
+      label: {show: true, position: "right", color: AXIS,
+              formatter: function (p) { return p.value == null ? "" : (+p.value).toFixed(2); }}}]
+  });
+}
+function renderSpread(d) {
+  if (!d) {
+    empty("c-spread-term", "暂无跨期价差：先运行 python tools/spread_lab.py 生成 reports/spread_lab.json。");
+    empty("c-spread-chain", "暂无产业链比价数据。");
+    empty("c-spread-margin", "暂无盘面虚拟利润数据。");
+    return;
+  }
+  var chipEl = document.getElementById("spread-chips");
+  var bw = d.breadth || {};
+  if (chipEl) {
+    chipEl.textContent = "全市场 backwardation（近高远低）" + (bw.back == null ? "—" : bw.back)
+      + "/" + (bw.n == null ? "—" : bw.n)
+      + (bw.pct == null ? "" : "（" + pct(bw.pct, 0) + "）") + "；条=当前价差/比价/利润相对过去120日的 z";
+  }
+  var te = d.term_ext || [];
+  if (!te.length) { empty("c-spread-term", "暂无 |z|≥1 的跨期价差极端品种。"); }
+  else {
+    _hzZBar("c-spread-term", te, function (x) {
+      return x.name + "（" + (x.curve || "—") + "）<br/>价差 z=" + (x.z == null ? "—" : (+x.z).toFixed(2))
+        + "<br/>年化 carry=" + (x.carry == null ? "—" : pct(x.carry, 1)); });
+  }
+  var ch = d.chains || [];
+  if (!ch.length) { empty("c-spread-chain", "暂无产业链比价。"); }
+  else {
+    ch.sort(function (a, b) { return (a.z || 0) - (b.z || 0); });
+    _hzZBar("c-spread-chain", ch, function (x) {
+      return x.name + "<br/>z=" + (x.z == null ? "—" : (+x.z).toFixed(2))
+        + "<br/>最新比价=" + (x.ratio == null ? "—" : (+x.ratio).toFixed(4))
+        + "<br/>近60日=" + (x.chg60 == null ? "—" : pct(x.chg60, 2)); });
+  }
+  var mg = d.margins || [];
+  if (!mg.length) { empty("c-spread-margin", "暂无盘面虚拟利润。"); }
+  else {
+    mg.sort(function (a, b) { return (a.z || 0) - (b.z || 0); });
+    _hzZBar("c-spread-margin", mg, function (x) {
+      return x.name + "<br/>z=" + (x.z == null ? "—" : (+x.z).toFixed(2))
+        + "<br/>最新利润=" + (x.value == null ? "—" : Math.round(x.value) + " 元/吨")
+        + "<br/>近60日=" + (x.chg60 == null ? "—" : Math.round(x.chg60) + " 元/吨"); });
+  }
+}
+function _bucketDual(id, rows, netName) {
+  // 分桶双轴：柱=净盈亏(红正绿负,左轴元)、折线=胜率%(右轴)
+  var keys = rows.map(function (r) { return r.key; });
+  mk(id).setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"}, formatter: function (ps) {
+      var i = ps[0].dataIndex, r = rows[i];
+      return r.key + "<br/>笔数=" + (r.n == null ? "—" : r.n)
+        + "<br/>净盈亏=" + (r.net == null ? "—" : Math.round(r.net))
+        + "<br/>胜率=" + (r.win_rate == null ? "—" : pct(r.win_rate, 1))
+        + "<br/>PF=" + (r.pf == null ? "—" : (+r.pf).toFixed(2)); }},
+    legend: {data: [netName, "胜率"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 36, right: 52}),
+    xAxis: {type: "category", data: keys, axisLabel: {color: AXIS, interval: 0, fontSize: 9, rotate: 18},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: [
+      {type: "value", name: "净盈亏", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+       axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+      {type: "value", name: "胜率%", min: 0, max: 100, nameTextStyle: {color: AXIS},
+       axisLabel: {color: AXIS, formatter: "{value}%"}, splitLine: {show: false}}],
+    series: [
+      {name: netName, type: "bar", barWidth: "46%",
+       data: rows.map(function (r) { return {value: r.net == null ? null : Math.round(r.net),
+         itemStyle: {color: signedColor(r.net == null ? 0 : r.net)}}; })},
+      {name: "胜率", type: "line", yAxisIndex: 1, smooth: false, symbol: "circle", symbolSize: 6,
+       itemStyle: {color: GOLD}, lineStyle: {color: GOLD},
+       data: rows.map(function (r) { return r.win_rate == null ? null : +(r.win_rate * 100).toFixed(1); })}]
+  });
+}
+function renderJournal(d) {
+  if (!d || !d.overall) {
+    empty("c-jr-hold", "暂无交易复盘：先运行 python tools/trade_journal.py 生成 reports/trade_journal.json。");
+    empty("c-jr-reason", "暂无平仓原因分桶。");
+    empty("c-jr-daily", "暂无日度盈亏节奏。");
+    return;
+  }
+  var ov = d.overall, chipEl = document.getElementById("jr-chips");
+  if (chipEl) {
+    chipEl.textContent = "成交 " + (ov.n == null ? "—" : ov.n) + " 笔 / 胜率 "
+      + (ov.win_rate == null ? "—" : pct(ov.win_rate, 1)) + " / PF "
+      + (ov.pf == null ? "—" : (+ov.pf).toFixed(2)) + " / 单笔期望 "
+      + (ov.expectancy == null ? "—" : Math.round(ov.expectancy)) + " 元 / 盈亏比 "
+      + (ov.payoff == null ? "—" : (+ov.payoff).toFixed(2));
+  }
+  var hold = d.hold || [];
+  if (hold.length) { _bucketDual("c-jr-hold", hold, "净盈亏"); }
+  else { empty("c-jr-hold", "暂无持仓时长分桶。"); }
+  var reason = d.reason || [];
+  if (reason.length) { _bucketDual("c-jr-reason", reason, "净盈亏"); }
+  else { empty("c-jr-reason", "暂无平仓原因分桶。"); }
+  var dy = d.daily || {}, dts = dy.dates || [], nets = dy.net || [];
+  if (!dts.length) { empty("c-jr-daily", "暂无日度盈亏。"); return; }
+  var cum = 0, cumArr = [];
+  for (var i = 0; i < nets.length; i++) {
+    if (nets[i] != null) { cum += nets[i]; }
+    cumArr.push(+cum.toFixed(0));
+  }
+  mk("c-jr-daily").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"}, formatter: function (ps) {
+      var i = ps[0].dataIndex;
+      return dts[i] + "<br/>当日净盈亏=" + (nets[i] == null ? "—" : Math.round(nets[i]))
+        + "<br/>累计=" + cumArr[i]; }},
+    legend: {data: ["当日净盈亏", "累计净盈亏"], textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 36, right: 60}),
+    xAxis: {type: "category", data: dts, axisLabel: {color: AXIS, interval: Math.floor(dts.length / 8)},
+            axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: [
+      {type: "value", name: "当日", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+       axisLine: {lineStyle: {color: "#444"}}, splitLine: {lineStyle: {color: SPLIT}}},
+      {type: "value", name: "累计", nameTextStyle: {color: AXIS}, axisLabel: {color: AXIS},
+       splitLine: {show: false}}],
+    series: [
+      {name: "当日净盈亏", type: "bar", barWidth: "62%",
+       data: nets.map(function (v) { return {value: v == null ? null : Math.round(v),
+         itemStyle: {color: signedColor(v == null ? 0 : v)}}; })},
+      {name: "累计净盈亏", type: "line", yAxisIndex: 1, smooth: true, symbol: "none",
+       itemStyle: {color: GOLD}, lineStyle: {color: GOLD, width: 2}, data: cumArr}]
+  });
+}
 function loadAndRender() {
   if (typeof echarts === "undefined") {
     setGen("本地 ECharts 资源缺失（assets/echarts.min.js）：运行 python charts.py --rebuild 或等下一轮监控自动同步。");
@@ -1292,11 +1548,14 @@ function loadAndRender() {
     renderPnav(D.portfolio_nav);
     renderCreview(D.circuit_review);
     renderAttr(D.attribution);
+    renderSpread(D.spread);
+    renderJournal(D.journal);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
-    renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null); };
+    renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
+    renderSpread(null); renderJournal(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }

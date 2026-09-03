@@ -354,7 +354,9 @@ CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
              "c-paper", "c-paper-dd", "c-paper-risk",
              "c-tear-uw", "c-tear-rs", "c-tear-m",
              "c-pnav", "c-creview-sweep", "c-creview-fwd",
-             "c-attr-factor", "c-attr-bhb")
+             "c-attr-factor", "c-attr-bhb",
+             "c-spread-term", "c-spread-chain", "c-spread-margin",
+             "c-jr-hold", "c-jr-reason", "c-jr-daily")
 
 
 def test_dashboard_embed_parts_are_fragments():
@@ -583,3 +585,59 @@ def test_attribution_payload(tmp_path):
     assert charts.attribution_payload(str(tmp_path / "a3.json")) is None
     bad = tmp_path / "bad.json"; bad.write_text("{bad", encoding="utf-8")
     assert charts.attribution_payload(str(bad)) is None
+
+
+def test_spread_payload(tmp_path):
+    p = tmp_path / "spread_lab.json"
+    assert charts.spread_payload(str(p)) is None            # 缺文件 None
+    payload = {
+        "meta": {"backwardation": {"back": 2, "n": 5}},
+        "term": [
+            {"sym": "AA", "spread_z": 2.1, "carry_ann": 0.05, "curve": "back"},
+            {"sym": "BB", "spread_z": -2.3, "carry_ann": -0.04, "curve": "contango"},
+            {"sym": "CC", "spread_z": 0.2, "carry_ann": 0.0, "curve": "contango"}],   # |z|<1 被滤
+        "chains": [{"name": "比价X", "stat": {"ratio": 1.2, "z": -1.7, "chg60": 0.02}}],
+        "margins": [{"name": "利润Y", "stat": {"value": 500.0, "z": 1.9, "chg60": 30.0}}]}
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.spread_payload(str(p))
+    assert d is not None
+    assert d["breadth"] == {"back": 2, "n": 5, "pct": 0.4}
+    # 只留 |z|>=1 且按 z 升序（横向最大值落顶）：BB(-2.3) 在前、AA(2.1) 在末
+    assert [t["name"] for t in d["term_ext"]] == ["BB", "AA"]
+    assert len(d["chains"]) == 1 and d["chains"][0]["z"] == -1.7
+    assert d["margins"][0]["value"] == 500.0
+    # 全空 -> None；坏 JSON -> None
+    (tmp_path / "s2.json").write_text(json.dumps({"meta": {}}), encoding="utf-8")
+    assert charts.spread_payload(str(tmp_path / "s2.json")) is None
+    (tmp_path / "sbad.json").write_text("x{", encoding="utf-8")
+    assert charts.spread_payload(str(tmp_path / "sbad.json")) is None
+
+
+def test_journal_payload(tmp_path):
+    p = tmp_path / "trade_journal.json"
+    assert charts.journal_payload(str(p)) is None
+    payload = {
+        "overall": {"n": 100, "win_rate": 0.4, "expectancy": -5.0, "profit_factor": 0.9,
+                    "payoff_ratio": 1.3},
+        "by_hold_band": [
+            {"key": "2短(3-6)", "n": 30, "win_rate": 0.45, "net": 1000.0, "pf": 1.2},
+            {"key": "1极短(1-2)", "n": 70, "win_rate": 0.3, "net": -2000.0, "pf": 0.6}],
+        "by_score_band": [
+            {"key": "分批[4,6)", "n": 10, "win_rate": 0.5, "net": 0.0, "pf": 1.0},
+            {"key": "弱(|分|<2)", "n": 40, "win_rate": 0.34, "net": -500.0, "pf": 0.8}],
+        "by_reason": [{"key": "止盈", "n": 20, "win_rate": 1.0, "net": 3000.0, "pf": None}],
+        "daily": [{"key": "d1", "net": 100.0}, {"key": "d2", "net": -40.0}]}
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.journal_payload(str(p))
+    assert d is not None and d["overall"]["n"] == 100
+    # 时长档按键首数字升序：1极短 -> 2短
+    assert [h["key"] for h in d["hold"]] == ["1极短(1-2)", "2短(3-6)"]
+    # 信号强度档：弱 -> 分批
+    assert [s["key"][:1] for s in d["score"]] == ["弱", "分"]
+    assert len(d["reason"]) == 1 and d["reason"][0]["pf"] is None
+    assert d["daily"]["dates"] == ["d1", "d2"] and abs(d["daily"]["cum"] - 60.0) < 1e-9
+    # overall 缺失 -> None；坏 JSON -> None
+    (tmp_path / "j2.json").write_text(json.dumps({"overall": None}), encoding="utf-8")
+    assert charts.journal_payload(str(tmp_path / "j2.json")) is None
+    (tmp_path / "jbad.json").write_text("{xx", encoding="utf-8")
+    assert charts.journal_payload(str(tmp_path / "jbad.json")) is None

@@ -73,6 +73,32 @@ def test_chain_stat():
     assert cs2["z"] is None and cs2["ratio"] == pytest.approx(1.1)
 
 
+def test_aligned_margin_formula():
+    # 手算压榨利润 0.785*M + 0.185*Y - A - fee
+    cm = {"M": {"d1": 3000.0, "d2": 3100.0},
+          "Y": {"d1": 9000.0, "d2": 9100.0},
+          "A": {"d1": 5000.0, "d2": 5050.0}}
+    w = (("M", 0.785), ("Y", 0.185), ("A", -1.0))
+    od, v = sl.aligned_margin(cm, w, 110.0)
+    assert od == ["d1", "d2"]
+    assert v[0] == pytest.approx(0.785 * 3000 + 0.185 * 9000 - 5000 - 110)
+    # 缺一条腿 -> 空
+    cm.pop("A")
+    assert sl.aligned_margin(cm, w, 110.0) == ([], [])
+    # 非正价跳过
+    cm2 = {"M": {"d1": 0.0}, "Y": {"d1": 9000.0}, "A": {"d1": 5000.0}}
+    assert sl.aligned_margin(cm2, w) == ([], [])
+
+
+def test_margin_stat():
+    vals = [100.0 + i for i in range(80)] + [300.0]
+    ms = sl.margin_stat(["d%d" % i for i in range(81)], vals, chg_win=60)
+    assert ms["z"] > 1.0 and ms["chg60"] == pytest.approx(180.0) and ms["n"] == 81
+    assert sl.margin_stat([], []) is None
+    ms2 = sl.margin_stat(["d1"], [5.0], win=120, min_n=40)
+    assert ms2["z"] is None and ms2["value"] == pytest.approx(5.0)
+
+
 def test_last_valid():
     assert sl._last_valid([1.0, None, 2.0, None]) == (2, 2.0)
     assert sl._last_valid([None]) == (None, None)
@@ -81,7 +107,7 @@ def test_last_valid():
 def test_render_sections_and_breadth():
     meta = {"term_symbols": 1, "term_stats_n": 1, "d0": "2025-01-01", "d1": "2025-08-01",
             "panel_d0": "2025-01-01", "panel_d1": "2025-08-01", "z_win": 120, "chg_win": 60,
-            "backwardation": {"back": 0, "n": 1}}
+            "chain_n": 1, "margin_n": 1, "backwardation": {"back": 0, "n": 1}}
     one = [{"sym": "X", "date": "2025-08-01", "near": "X2510", "next": "X2511",
             "near_s": 100.0, "next_s": 101.0, "spread_pct": -0.0099, "carry_ann": -0.04,
             "slope": -0.01, "curve": "contango", "spread_z": -1.8, "spread_pctile": 0.1,
@@ -89,6 +115,9 @@ def test_render_sections_and_breadth():
     cc = [{"sector": "贵金属", "name": "金银比价(金/银)", "a": "AU", "b": "AG",
            "stat": {"date": "2025-08-01", "ratio": 80.0, "z": 1.7, "pctile": 0.9,
                     "chg60": 0.05, "n": 80}}]
-    txt = sl.render(meta, one, cc, {"back": 0, "n": 1})
-    for marker in ("【一】", "【二】", "【三】", "backwardation 广度", "金银比价"):
+    mg = [{"sector": "黑色", "name": "卷螺差(元/吨)", "note": "HC-RB",
+           "stat": {"date": "2025-08-01", "value": 12.0, "z": 0.3, "pctile": 0.6,
+                    "chg60": 5.0, "n": 80}}]
+    txt = sl.render(meta, one, cc, mg, {"back": 0, "n": 1})
+    for marker in ("【一】", "【二】", "【三】", "【四】", "backwardation 广度", "金银比价", "卷螺差"):
         assert marker in txt
