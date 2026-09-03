@@ -145,7 +145,8 @@ class PaperBroker:
 
     def __init__(self, *, db=None, equity0=None, fill_mode=None, entry_score=None,
                  exit_score=None, sizing=None, margin_table=None, fee_table=None,
-                 sector_of=None, slip_rate=None, restore=True, clock=None, owner_fn=None):
+                 sector_of=None, slip_rate=None, restore=True, clock=None, owner_fn=None,
+                 risk_sizing=None, risk_gross=None):
         self.db = db
         self.fill_mode = fill_mode or getattr(config, "PAPER_FILL_MODE", "next")
         if self.fill_mode not in ("close", "next"):
@@ -174,7 +175,11 @@ class PaperBroker:
             default_margin=config.PAPER_DEFAULT_MARGIN,
             max_concurrent=config.PAPER_MAX_CONCURRENT,
             fee_rate=config.PAPER_FEE_RATE, slip_rate=self.slip_rate,
-            use_real_fees=config.PAPER_USE_REAL_FEES, sector_of=self._sector_of)
+            use_real_fees=config.PAPER_USE_REAL_FEES, sector_of=self._sector_of,
+            # 第41轮 G26续：风险型横截面sizing能力位（默认None=逐字节等价旧版）；实时权重源（K线历史
+            # 协方差）尚未接线，须先在组合回测影子对照达标后再议，未注入权重时内核自动回退等名义。
+            risk_sizing=risk_sizing,
+            risk_gross=config.PRS_GROSS if risk_gross is None else risk_gross)
         self.pending = {}          # sym -> [order, ...] next 档待成交队列（先平后开）
         self._open_seq = {}        # sym -> 开仓序号（生成 pos_ref）
         self.pos_ref = {}          # sym -> 当前持仓 pos_ref
@@ -591,6 +596,12 @@ class PaperBroker:
             pass
         self.restored = True
         return True
+
+    # ---------------- 第41轮 G26续：风险型目标权重透传（实时协方差源接线前为空操作安全回退） ----------------
+
+    def set_risk_weights(self, wmap, meta=None):
+        """向账户内核注入横截面目标权重 {sym: 目标名义占比}；未注入/未开启 risk_sizing 时等价旧版。"""
+        self.pf.set_risk_weights(wmap, meta)
 
     # ---------------- 账户摘要/视图（第28轮报告+看板用） ----------------
 

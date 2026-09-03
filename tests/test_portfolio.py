@@ -221,3 +221,123 @@ def test_curve_record_and_performance():
     assert len(pf.curve) == 3
     perf = pf.performance()
     assert perf["n_trades"] == 1 and perf["win_rate"] == 1.0
+
+# ================= 第41轮 G26续：横截面风险型 sizing（默认等价旧版/权重定手数/PIT无未来/确定性回放） =================
+
+def _synth_feed(sym, n, seed, base=3000.0):
+    """构造 n 根同步时间戳的合成bar（确定性几何随机游走），供 trailing_risk_weights/引擎测试。"""
+    import random
+    from datetime import datetime, timedelta
+    rng = random.Random(seed)
+    t0 = datetime(2026, 1, 5, 9, 0)
+    bars, px = [], base
+    for i in range(n):
+        px *= (1.0 + rng.uniform(-0.004, 0.004))
+        bars.append({"dt": t0 + timedelta(minutes=30 * i), "o": px, "h": px * 1.002,
+                     "l": px * 0.998, "c": px, "v": 10000, "m": sym})
+    # 全0综合分（不触发入场，entry_th=4）、1.0 ATR；引擎确定性/权重注入测试不需要真实信号
+    return SymbolFeed(sym, "测试", "黑色", bars, [0.0] * n, [1.0] * n, None, None, None, 0.0)
+
+
+def test_risk_sizing_off_ignores_injected_weights():
+    """默认 risk_sizing=None：即便注入权重，手数决策也逐字节等价旧等名义（铁律：缺省不变）。"""
+    pf = _pf()
+    lots0, why0 = pf.decide_lots("RB", 1, 3000.0)     # 单手名义3万，等名义15%=5手
+    pf.set_risk_weights({"RB": 0.30}, {"n": 1})
+    lots1, why1 = pf.decide_lots("RB", 1, 3000.0)
+    assert pf.risk_sizing is None and pf._last_target_weight is None
+    assert lots0 == lots1 == 5 and why0 == why1
+
+
+def test_risk_weight_drives_target_lots_and_missing_falls_back():
+    """开启 inv_vol：宇宙内品种按注入权重定目标名义；宇宙外品种安全回退等名义 per_symbol。"""
+    pf = _pf(risk_sizing="inv_vol", risk_gross=1.0)
+    pf.set_risk_weights({"RB": 0.30})
+    # RB 权重0.30 -> 目标名义30万，单手3万 -> 10手（等名义15%只有5手）
+    lots_w, _ = pf.decide_lots("RB", 1, 3000.0)
+    assert lots_w == 10 and pf._last_target_weight == 0.30
+    # CU 不在权重宇宙 -> 回退等名义15%：单手名义3000*5=1.5万 -> 10手
+    lots_fb, _ = pf.decide_lots("CU", 1, 3000.0)
+    assert lots_fb == 10 and pf._last_target_weight is None
+
+
+def test_trailing_risk_weights_strict_pit_no_future():
+    """权重只用 t 之前的bar：改动 t 当根及以后的收盘价不影响结果；样本不足返回空map安全回退。"""
+    feeds = {s: _synth_feed(s, 80, seed=k) for k, s in enumerate(("RB", "CU", "MA", "SA"))}
+    t = feeds["RB"].bars[60]["dt"]
+    w1, meta1 = pf_mod.trailing_risk_weights(feeds, t, "inv_vol", window=126, min_hist=20)
+    assert set(w1) == set(feeds) and meta1["n"] == 4 and meta1["T"] >= 20
+    # 篡改 t 当根(索引60)及以后的全部收盘价 -> 权重必须不变（严格无未来）
+    feeds2 = {s: _synth_feed(s, 80, seed=k) for k, s in enumerate(("RB", "CU", "MA", "SA"))}
+    for f in feeds2.values():
+        for b in f.bars[60:]:
+            b["c"] *= 1.5
+    w2, _ = pf_mod.trailing_risk_weights(feeds2, t, "inv_vol", window=126, min_hist=20)
+    assert w1.keys() == w2.keys()
+    for s in w1:
+        assert abs(w1[s] - w2[s]) < 1e-12
+    # 过早的 t（可估历史<min_hist+1）-> 空 map + reason，绝不抛错
+    t_early = feeds["RB"].bars[5]["dt"]
+    w3, meta3 = pf_mod.trailing_risk_weights(feeds, t_early, "inv_vol", min_hist=40)
+    assert w3 == {} and "reason" in meta3
+
+
+def test_trailing_risk_weights_properties_sum_gross_and_cap():
+    """inv_vol/erc 权重非负、求和=gross、单票不超 cap；缺历史品种进 excluded。"""
+    feeds = {s: _synth_feed(s, 90, seed=k * 7 + 1) for k, s in
+             enumerate(("RB", "CU", "MA", "SA", "I", "TA"))}
+    for method in ("inv_vol", "erc"):
+        w, meta = pf_mod.trailing_risk_weights(feeds, feeds["RB"].bars[80]["dt"], method,
+                                               window=126, min_hist=30, cap=0.25, gross=1.0)
+        assert len(w) == 6 and all(x >= 0 for x in w.values())
+        assert abs(sum(w.values()) - 1.0) < 1e-9
+        assert max(w.values()) <= 0.25 + 1e-9
+        assert meta["eff_n"] >= 1
+    # gross 缩放：gross=1.5 时权重和=1.5
+    w, _ = pf_mod.trailing_risk_weights(feeds, feeds["RB"].bars[80]["dt"], "erc",
+                                        min_hist=30, gross=1.5)
+    assert abs(sum(w.values()) - 1.5) < 1e-9
+    # 一个品种历史被人为截短 -> 不纳入宇宙、进 excluded，其余仍出权重
+    feeds["TA"].bars = feeds["TA"].bars[:10]
+    feeds["TA"].dts = [b["dt"] for b in feeds["TA"].bars]
+    w, meta = pf_mod.trailing_risk_weights(feeds, feeds["RB"].bars[80]["dt"], "inv_vol", min_hist=30)
+    assert "TA" not in w and "TA" in meta["excluded"] and len(w) == 5
+
+
+def test_reset_feeds_enables_deterministic_replay():
+    """同一批 feeds 经 _reset_feeds 后重复回放，曲线/成交逐值一致（影子对照的前提）。"""
+    feeds = {s: _synth_feed(s, 70, seed=k) for k, s in enumerate(("RB", "CU", "MA"))}
+    kw = dict(entry_th=4.0, stop_atr=1.2, target_atr=2.0, flat_eod=True, max_bars=48,
+              use_limit=False, limit_eps=0.0008, minute_mode=True, hold_days=10)
+    pf1 = _pf()
+    pf_mod.run_portfolio(feeds, pf1, **kw)
+    curve1 = [(pf_mod._dt(p["dt"]), p["equity"], p["npos"]) for p in pf1.curve]
+    closed1 = [(t["sym"], t["lots"], round(t["net_yuan"], 6)) for t in pf1.closed]
+    pf_mod._reset_feeds(feeds)
+    pf2 = _pf()
+    pf_mod.run_portfolio(feeds, pf2, **kw)
+    curve2 = [(pf_mod._dt(p["dt"]), p["equity"], p["npos"]) for p in pf2.curve]
+    closed2 = [(t["sym"], t["lots"], round(t["net_yuan"], 6)) for t in pf2.closed]
+    assert curve1 == curve2 and closed1 == closed2
+
+
+def test_engine_risk_cfg_injects_weights_and_none_equals_absent():
+    """risk_cfg=None 与不传逐值一致；risk_cfg 开启后引擎按 rebalance 注入权重且留痕。"""
+    feeds = {s: _synth_feed(s, 70, seed=k + 3) for k, s in enumerate(("RB", "CU", "MA", "SA"))}
+    base = dict(entry_th=4.0, stop_atr=1.2, target_atr=2.0, flat_eod=True, max_bars=48,
+                use_limit=False, limit_eps=0.0008, minute_mode=True, hold_days=10)
+    pf_a = _pf()
+    pf_mod.run_portfolio(feeds, pf_a, risk_cfg=None, **base)
+    pf_mod._reset_feeds(feeds)
+    pf_b = _pf()
+    pf_mod.run_portfolio(feeds, pf_b, **base)          # 完全不传 risk_cfg
+    assert [p["equity"] for p in pf_a.curve] == [p["equity"] for p in pf_b.curve]
+    # 开启风险型：重估留痕，且首个重估点后权重宇宙非空
+    pf_mod._reset_feeds(feeds)
+    pf_c = _pf(risk_sizing="erc")
+    rcfg = {"method": "erc", "window": 60, "rebalance": 10, "min_hist": 20,
+            "shrink": 0.1, "cap": 0.25, "gross": 1.0}
+    pf_mod.run_portfolio(feeds, pf_c, risk_cfg=rcfg, **base)
+    assert len(pf_c.risk_meta_log) >= 1
+    assert any(m.get("n", 0) >= 2 for m in pf_c.risk_meta_log)
+    assert abs(sum(pf_c.risk_weights.values()) - 1.0) < 1e-9

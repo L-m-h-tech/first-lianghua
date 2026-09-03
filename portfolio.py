@@ -44,9 +44,13 @@ from datetime import datetime
 
 import config
 import metrics
+import portfolio_constructor as pc
 from backtest import load_fee_schedule, side_fee, ratio_adjusted_bars, technical_score, score_band
 
 _MARGIN_CACHE = {}
+
+# 第41轮 G26续：允许接入共享内核的横截面风险型分配方法（GMV 第40轮已证过集中，不在接入列）
+RISK_SIZING_METHODS = ("inv_vol", "erc")
 
 
 def load_margin_schedule(path=None, force=False):
@@ -93,11 +97,19 @@ class Portfolio:
                  max_symbol_weight=0.30, max_sector_weight=0.60, risk_liquidate=1.0,
                  risk_safe=0.80, default_margin=0.12, max_concurrent=12,
                  fee_rate=0.00005, slip_rate=0.0001, use_real_fees=True, sector_of=None,
-                 calibrator=None):
+                 calibrator=None, risk_sizing=None, risk_gross=1.0):
         self.equity0 = float(equity0)
         self.margin_table = margin_table or {}
         self.fee_table = fee_table or {}
         self.sizing = sizing
+        # 第41轮 G26续：横截面风险型目标权重（inv_vol/erc）。None=关闭、手数决策逐字节等价旧版；
+        # 开启后由引擎在每个重估点用"仅当前bar之前"的收益序列算 {sym:目标名义权重} 经 set_risk_weights 注入，
+        # 该宇宙内品种按权重定目标名义、宇宙外/未算出的品种安全回退等名义 per_symbol。
+        self.risk_sizing = risk_sizing if risk_sizing in RISK_SIZING_METHODS else None
+        self.risk_gross = float(risk_gross)
+        self.risk_weights = {}        # sym -> 目标名义占权益比例（已按 risk_gross 缩放）
+        self.risk_meta = None         # 最近一次重估的诊断（有效N/年化波动/样本数/asof）
+        self.risk_meta_log = []       # 每次重估诊断留痕（影子对照报告用）
         self.per_symbol = per_symbol
         self.risk_per_trade = risk_per_trade
         self.stop_atr = stop_atr
@@ -126,6 +138,19 @@ class Portfolio:
         self.curve = []               # 权益/风险度曲线
         self.peak_equity = self.equity0
         self._last_prices = {}        # 最近成交价（无新bar时沿用盯市）
+
+    # ---------- 第41轮 G26续：横截面风险型目标权重注入 ----------
+    def set_risk_weights(self, wmap, meta=None):
+        """由回放引擎在重估点注入 {sym: 目标名义权重}（只用当前时刻之前的数据，PIT）。"""
+        self.risk_weights = {s: float(w) for s, w in (wmap or {}).items() if w and w > 0}
+        self.risk_meta = meta or None
+        if meta is not None:
+            self.risk_meta_log.append(meta)
+
+    def avg_risk_eff_n(self):
+        """历次重估的平均有效持仓数（无则 None，影子对照报告用）。"""
+        vals = [m.get("eff_n") for m in self.risk_meta_log if m.get("eff_n")]
+        return sum(vals) / len(vals) if vals else None
 
     # ---------- 静态参数查询 ----------
     def margin_rate_of(self, sym):
@@ -219,6 +244,14 @@ class Portfolio:
             raw = eq * w / per_lot_notional
         else:  # equal_notional（也是其余模式数据不足时的回退）
             raw = eq * self.per_symbol / per_lot_notional
+        # 第41轮 G26续：横截面风险型权重覆盖目标名义（仅 risk_sizing 开启且该品种在最新权重宇宙内）；
+        # 宇宙外/尚未估出 -> 保留上面的等名义 raw（安全回退，缺省 risk_sizing=None 时整段不进入、逐字节等价旧版）
+        self._last_target_weight = None
+        if self.risk_sizing is not None:
+            rw = self.risk_weights.get(sym)
+            if rw is not None and rw > 0:
+                self._last_target_weight = rw
+                raw = eq * rw / per_lot_notional
         # WP-F2 A3：历史同类信号胜率校准乘子。仅当显式传入 calibrator 才生效（默认 None=逐值不变）；
         # 回测无九因子拆分时 parts=None，校准器自动回退到「方向×分档」层。
         self._last_calib_mult = 1.0
@@ -484,11 +517,82 @@ class SymbolFeed:
         return self.owners[k] if k >= 0 else None
 
 
+def trailing_risk_weights(feeds, t, method, *, window=126, min_hist=40, shrink=0.10,
+                          cap=0.20, gross=1.0):
+    """第41轮 G26续：在时刻 t 用【严格早于 t】的各品种收盘价构造收益矩阵，调 portfolio_constructor
+    出横截面风险型目标权重（inv_vol/erc）。严格 PIT：t 当根及其后一律不看（入场发生在 t 开盘）。
+
+    feeds: {sym: SymbolFeed}；返回 (wmap {sym: 权重×gross}, meta)。
+    可估品种<2 或公共历史不足 min_hist 时返回 ({}, meta)，调用方安全回退等名义，绝不抛错。"""
+    own_close = {}
+    for sym, f in feeds.items():
+        k = bisect.bisect_left(f.dts, t) - 1      # 最后一根 dt < t 的 bar（t 当根排除=无未来）
+        if k < 1:
+            continue
+        lo = max(0, k - window + 1)
+        m = {}
+        for b in f.bars[lo:k + 1]:
+            c = b.get("c")
+            if c is not None and c > 0:
+                m[b["dt"]] = float(c)
+        if len(m) >= min_hist + 1:
+            own_close[sym] = m
+    if len(own_close) < 2:
+        return {}, {"method": method, "n": len(own_close), "asof": str(t),
+                    "reason": "满足最小历史的可估品种<2，全部回退等名义"}
+    # 公共时间戳稠密对齐（与 portfolio_lab 同原则：协方差必须同一时刻配对）
+    common = None
+    for m in own_close.values():
+        ks = set(m)
+        common = ks if common is None else (common & ks)
+    common = sorted(common)
+    syms, rets_map = sorted(own_close), {}
+    for s in syms:
+        m = own_close[s]
+        closes = [m[d] for d in common]
+        r = [closes[i + 1] / closes[i] - 1.0 for i in range(len(closes) - 1) if closes[i] > 0]
+        if len(r) >= min_hist:
+            rets_map[s] = r
+    if len(rets_map) < 2:
+        return {}, {"method": method, "n": len(rets_map), "asof": str(t),
+                    "reason": "公共对齐后收益历史不足min_hist，全部回退等名义"}
+    T = min(len(r) for r in rets_map.values())
+    syms = sorted(rets_map)
+    R = [rets_map[s][-T:] for s in syms]
+    out = pc.construct(R, method, shrink=shrink, cap=cap, target_annual=0.0)
+    w = out["weights"]
+    wmap = {s: w[i] * gross for i, s in enumerate(syms)}
+    meta = {"method": method, "n": len(syms), "T": T, "asof": str(t),
+            "eff_n": out["eff_n"], "ann_vol": out["ann_vol"], "div_ratio": out["div_ratio"],
+            "gross_base": sum(w), "gross": gross,
+            "excluded": sorted(set(feeds) - set(syms))}
+    return wmap, meta
+
+
+def _reset_feeds(feeds):
+    """清空引擎层可变状态（持仓/挂单/锁板计数），使同一批 feeds 可被确定性地重复回放（影子对照用）。"""
+    for f in feeds.values():
+        f.pos = None
+        f.pending = None
+        f.blocked_entry = 0
+        f.blocked_exit = 0
+
+
 def run_portfolio(feeds, pf, *, entry_th, stop_atr, target_atr, flat_eod, max_bars,
-                  use_limit, limit_eps, minute_mode, hold_days=10):
-    """统一时间轴逐bar驱动共享账户。feeds: {sym: SymbolFeed}；pf: Portfolio。"""
+                  use_limit, limit_eps, minute_mode, hold_days=10, risk_cfg=None):
+    """统一时间轴逐bar驱动共享账户。feeds: {sym: SymbolFeed}；pf: Portfolio。
+    risk_cfg 非空时（第41轮 G26续）按 rebalance 间隔用仅过去数据重估横截面风险权重并注入 pf。"""
     timeline = sorted({b["dt"] for f in feeds.values() for b in f.bars})
+    risk_step = 0
     for t in timeline:
+        if risk_cfg is not None:
+            risk_step += 1
+            if risk_step == 1 or (risk_step - 1) % int(risk_cfg.get("rebalance", 20)) == 0:
+                wmap, rmeta = trailing_risk_weights(
+                    feeds, t, risk_cfg["method"], window=risk_cfg.get("window", 126),
+                    min_hist=risk_cfg.get("min_hist", 40), shrink=risk_cfg.get("shrink", 0.10),
+                    cap=risk_cfg.get("cap", 0.20), gross=risk_cfg.get("gross", 1.0))
+                pf.set_risk_weights(wmap, rmeta)
         for sym in sorted(feeds):                      # 同时间戳按代码字母序，确定性
             f = feeds[sym]
             i = f.by_dt.get(t)
@@ -756,15 +860,21 @@ def _pct(x, d=2):
     return "--" if x is None else f"{x * 100:.{d}f}%"
 
 
-def build_report(pf, perf, args, feeds, errors, span):
+def build_report(pf, perf, args, feeds, errors, span, compare_block=""):
     L = ["=" * 108,
-         f" 组合资金账户回测（第16轮 WP-E）  生成于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+         f" 组合资金账户回测（第16轮 WP-E；第41轮 G26续 风险型sizing）  生成于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
          "=" * 108]
     mode = ("分钟%dm·%s" % (args.period, "日内(当日强平/平今)" if not args.swing else "摆动(跨日)")) \
         if not args.daily else "日线"
     sizing_desc = {"equal_notional": f"等名义(单品种目标名义{_pct(args.per_symbol, 0)})",
                    "equal_risk": f"等风险(单笔风险预算{_pct(args.risk_per_trade, 1)},止损{args.stop_atr}×ATR)",
                    "score": "按综合分档加权"}[args.sizing]
+    if getattr(pf, "risk_sizing", None):
+        rc = getattr(args, "_risk_cfg", None) or {}
+        rname = {"inv_vol": "逆波动", "erc": "ERC风险平价"}.get(pf.risk_sizing, pf.risk_sizing)
+        sizing_desc += (" + 横截面%s(过去%d根bar估协方差/每%d根重估/目标总敞口%.2f/单票上限%.0f%%,严格无未来)"
+                        % (rname, rc.get("window", 126), rc.get("rebalance", 20),
+                           pf.risk_gross, rc.get("cap", 0.2) * 100))
     L.append(f" 模式: {mode}  |  初始权益: {_money(args.equity)}元  |  手数分配: {sizing_desc}")
     L.append(f" 单品种名义上限{_pct(args.max_symbol, 0)} / 板块上限{_pct(args.max_sector, 0)} / "
              f"同时持仓≤{args.max_concurrent}  |  强平线风险度{_pct(args.risk_liquidate, 0)}→安全线{_pct(args.risk_safe, 0)}")
@@ -853,11 +963,34 @@ def build_report(pf, perf, args, feeds, errors, span):
     if errors:
         L.append("数据失败品种：" + "；".join(f"{s}({e})" for s, e in errors[:20]))
         L.append("")
+    if compare_block:
+        L.append(compare_block.rstrip("\n"))
+        L.append("")
     L.append("-" * 108)
     L.append(" 口径：保证金率为期货公司常态收取档【估算】（临近交割/长假会上浮、公司可临时调整），"
              "非交易所/期货公司实时精确值；bar内成交按保守假设、非逐笔L2回放；不构成投资建议。")
     L.append("=" * 108)
     return "\n".join(L) + "\n"
+
+
+def build_compare_block(runs):
+    """第41轮 G26续：同宇宙 equal 基线 vs inv_vol/erc 影子对照（同一批 feeds 重置后确定性回放）。"""
+    L = ["【附、同宇宙影子对照：横截面风险型 sizing（严格无未来；仅目标名义不同，约束链/撮合/成本完全一致）】"]
+    L.append("  %-14s%12s%9s%8s%7s%9s%9s%8s%7s%9s" %
+             ("方法", "期末权益", "总收益", "年化", "夏普", "最大回撤", "平均风险度", "最大持仓", "平仓", "平均有效N"))
+    for label, pf, perf in runs:
+        if perf is None:
+            L.append(f"  {label:<14} 无有效成交")
+            continue
+        eff_n = pf.avg_risk_eff_n()
+        L.append("  %-14s%12s%9s%8s%7.2f%9s%9s%8d%7d%9s" %
+                 (label, _money(perf["end_equity"]), _pct(perf["total_ret"]),
+                  _pct(perf["ann_ret"]), perf["sharpe"], _pct(perf["max_dd"]),
+                  _pct(perf["avg_risk"], 1), perf["max_npos"], perf["n_trades"],
+                  "--" if eff_n is None else f"{eff_n:.1f}"))
+    L.append(" 说明：风险型只按协方差分配目标名义、不预测涨跌；低权重高价品种可能目标不足1手而不开仓（故笔数可不同，约束链一致）；")
+    L.append("       未另计权重调仓换手成本；信号驱动持仓、实际为部分敞口；平均有效N越大越分散。")
+    return "\n".join(L)
 
 
 def _dt(x):
@@ -931,6 +1064,17 @@ def parse_args(argv=None):
     p.add_argument("--no-limit-filter", action="store_true")
     p.add_argument("--calibrate", action="store_true",
                    help="WP-F2：启用历史同类信号胜率校准乘子作用于手数（默认关闭=影子，逐值与旧版一致）")
+    # 第41轮 G26续：横截面风险型 sizing（默认全关=逐字节等价旧等名义）
+    p.add_argument("--risk-sizing", choices=("", "inv_vol", "erc"), default="",
+                   help="横截面风险型目标权重：inv_vol逆波动/erc风险平价；留空=关闭走旧sizing")
+    p.add_argument("--risk-window", type=int, default=config.PRS_WINDOW,
+                   help="估协方差的历史bar数（日线=交易日；分钟=bar根数，只用当前bar之前=PIT）")
+    p.add_argument("--risk-rebalance", type=int, default=config.PRS_REBAL, help="权重重估间隔（bar根数）")
+    p.add_argument("--risk-min-hist", type=int, default=config.PRS_MIN_HIST, help="纳入宇宙的最少收益根数")
+    p.add_argument("--risk-gross", type=float, default=config.PRS_GROSS, help="权重和=1后的目标总敞口")
+    p.add_argument("--risk-cap", type=float, default=config.PRS_CAP, help="单品种目标权重上限")
+    p.add_argument("--compare-risk", action="store_true",
+                   help="同宇宙影子对照：等名义基线+inv_vol+erc 各回放一次并出对照表（基线CSV不变）")
     p.add_argument("--workers", type=int, default=6)
     args = p.parse_args(argv)
     args.flat_eod = not args.swing
@@ -986,27 +1130,56 @@ def main(argv=None):
         print("已启用历史胜率校准：%d分钟周期、分组样本≥%d，内存统计分组%d个（样本不足自动回退层级）"
               % (calib.horizon, calib.min_n, len(calib.groups)))
 
-    pf = Portfolio(args.equity, margin_table, fee_table, sizing=args.sizing,
-                   calibrator=calib,
-                   per_symbol=args.per_symbol, risk_per_trade=args.risk_per_trade,
-                   stop_atr=args.stop_atr, score_weights=config.PORTFOLIO_SCORE_WEIGHTS,
-                   max_symbol_weight=args.max_symbol, max_sector_weight=args.max_sector,
-                   risk_liquidate=args.risk_liquidate, risk_safe=args.risk_safe,
-                   default_margin=config.PORTFOLIO_DEFAULT_MARGIN,
-                   max_concurrent=args.max_concurrent, fee_rate=args.fee_rate,
-                   slip_rate=args.slip_rate, use_real_fees=args.use_real_fees,
-                   sector_of=sector_of)
-    run_portfolio(feeds, pf, entry_th=args.entry, stop_atr=args.stop_atr,
-                  target_atr=args.target_atr, flat_eod=args.flat_eod, max_bars=args.max_bars,
-                  use_limit=args.use_limit, limit_eps=config.INTRADAY_BT_LIMIT_TICK_EPS,
-                  minute_mode=not args.daily, hold_days=args.hold)
-    perf = pf.performance()
+    def _risk_cfg(method):
+        return None if not method else {
+            "method": method, "window": args.risk_window, "rebalance": args.risk_rebalance,
+            "min_hist": args.risk_min_hist, "shrink": config.PC_SHRINK,
+            "cap": args.risk_cap, "gross": args.risk_gross}
+
+    def _run_once(method):
+        """同一批 feeds 重置后确定性回放一次；method 为空=旧等名义基线（risk_cfg=None）。"""
+        _reset_feeds(feeds)
+        rcfg = _risk_cfg(method)
+        pf = Portfolio(args.equity, margin_table, fee_table, sizing=args.sizing,
+                       calibrator=calib,
+                       per_symbol=args.per_symbol, risk_per_trade=args.risk_per_trade,
+                       stop_atr=args.stop_atr, score_weights=config.PORTFOLIO_SCORE_WEIGHTS,
+                       max_symbol_weight=args.max_symbol, max_sector_weight=args.max_sector,
+                       risk_liquidate=args.risk_liquidate, risk_safe=args.risk_safe,
+                       default_margin=config.PORTFOLIO_DEFAULT_MARGIN,
+                       max_concurrent=args.max_concurrent, fee_rate=args.fee_rate,
+                       slip_rate=args.slip_rate, use_real_fees=args.use_real_fees,
+                       sector_of=sector_of, risk_sizing=method or None,
+                       risk_gross=args.risk_gross)
+        args._risk_cfg = rcfg
+        run_portfolio(feeds, pf, entry_th=args.entry, stop_atr=args.stop_atr,
+                      target_atr=args.target_atr, flat_eod=args.flat_eod, max_bars=args.max_bars,
+                      use_limit=args.use_limit, limit_eps=config.INTRADAY_BT_LIMIT_TICK_EPS,
+                      minute_mode=not args.daily, hold_days=args.hold, risk_cfg=rcfg)
+        return pf, pf.performance()
+
+    # 基线（旧等名义；--risk-sizing 指定时基线改为该风险型单次运行）
+    primary_method = args.risk_sizing
+    pf, perf = _run_once(primary_method)
+    compare_block = ""
+    if args.compare_risk:
+        labels = {"": "等名义(基线)", "inv_vol": "逆波动", "erc": "ERC风险平价"}
+        # 对照始终以等名义为基线首行（三种方法同宇宙、同撮合、同成本，仅目标名义不同）
+        compare_runs = []
+        for m in ("", "inv_vol", "erc"):
+            pfp, pp = _run_once(m)
+            compare_runs.append((labels[m], pfp, pp))
+            if m == primary_method:
+                pf, perf = pfp, pp
+        compare_block = build_compare_block(compare_runs)
     firsts = sorted(f.bars[0]["dt"] for f in feeds.values())
     lasts = sorted(f.bars[-1]["dt"] for f in feeds.values())
     span = f"{_dt(firsts[0])} ~ {_dt(lasts[-1])}"
-    report = build_report(pf, perf, args, feeds, errors, span)
+    report = build_report(pf, perf, args, feeds, errors, span, compare_block=compare_block)
     write_outputs(pf, report)
     print("\n" + report[:3500])
+    if compare_block and compare_block not in report[:3500]:
+        print("\n" + compare_block)   # 报告头被截断时补打对照表；未截断则不重复
     print(f"\n报告: {config.PORTFOLIO_REPORT_FILE}\n权益曲线: {config.PORTFOLIO_EQUITY_FILE}"
           f"\n组合成交: {config.PORTFOLIO_TRADES_FILE}")
     if _cdb is not None:

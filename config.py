@@ -379,6 +379,15 @@ PC_ERC_MAX_ITER = 300                  # ERC 最大迭代（全牛顿+回溯通�
 PC_FILE = os.path.join(BASE_DIR, "reports", "portfolio_lab.txt")
 PC_JSON = os.path.join(BASE_DIR, "reports", "portfolio_lab.json")
 
+# ---- G26续（第41轮）风险型横截面 sizing 接入 portfolio 共享内核/paper（默认全关，缺省逐字节等价旧等名义）----
+PRS_ENABLED = False          # 总开关（预留：实时/paper 侧须显式开启；组合回测由 CLI --risk-sizing/--compare-risk 显式驱动）
+PRS_METHOD = "erc"           # 接入方法：inv_vol 逆波动 / erc 风险平价（GMV 第40轮实证过集中、有效N仅11，不接入）
+PRS_WINDOW = PC_LOOKBACK     # 估协方差的历史bar数（日线=交易日；分钟=bar根数；只用当前bar之前=严格PIT）
+PRS_REBAL = PC_REBAL         # 权重重估间隔（timeline bar 根数）
+PRS_MIN_HIST = 40            # 单品种收益历史少于该值不纳入协方差宇宙（该品种本次回退等名义）
+PRS_GROSS = 1.00             # 权重和=1后的目标总敞口（旧等名义12仓×15%≈1.8；风险型默认满敞口1.0更稳，可调）
+PRS_CAP = PC_MAX_WEIGHT      # 单品种目标权重上限（复用 portfolio_constructor capped-simplex）
+
 # ---------------- 输出 ----------------
 REPORT_FILE = os.path.join(BASE_DIR, "reports", "latest_report.txt")
 SIGNALS_CSV = os.path.join(BASE_DIR, "reports", "signals.csv")
