@@ -12,6 +12,8 @@ import backtest_validation
 import db_archive
 import factors_catalog
 import factor_health
+import factor_expr
+import expr_research
 
 
 def test_factor_eval_selftest():
@@ -66,3 +68,13 @@ def test_pit_audit_selftest():
 def test_factor_health_selftest():
     """G29（第37轮）因子体检 --selftest：滚动IC/块自助/失效预警/日频IC衰减半衰期合成断言。"""
     assert factor_health.selftest() == 0
+
+
+def test_factor_expr_selftest():
+    """G25（第38轮）表达式引擎 --selftest：白名单安全解析/时序截面算子手算/正交加权/parity。"""
+    assert factor_expr.selftest() == 0
+
+
+def test_expr_research_selftest():
+    """G25（第38轮）表达式研究台 --selftest：面板/bar parity、表达式==实时ret5、前向无未来。"""
+    assert expr_research.selftest() == 0

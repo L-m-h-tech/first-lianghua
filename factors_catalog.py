@@ -104,6 +104,27 @@ CATALOG = (
      "bound": None, "status": "tracking", "introduced": 34,
      "live_at": "无(仅carry_eval/term_history)", "archive": "carry_eval(长9.9年t2.55成立/近4.1年t1.39边缘)",
      "formula": "近月连续含roll净值的截面分档多空；赚展期roll的钱非价格方向，近窗达标前不进分"},
+    # ===== G25（第38轮）表达式引擎承载的新研究因子：同一条表达式实时/离线同引擎求值，默认 research 不进综合分 =====
+    {"key": "expr_ma_bias5", "name": "5日价格动量(表达式版)", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 38,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "expr_research",
+     "formula": "delta(close,5)/delay(close,5)；等价ret5，作实时/离线parity基准"},
+    {"key": "expr_ma_ratio", "name": "短长均线比", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 38,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "expr_research",
+     "formula": "ts_mean(close,5)/ts_mean(close,20)-1"},
+    {"key": "expr_trend_per_vol", "name": "单位波动趋势", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 38,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "expr_research",
+     "formula": "(close/ts_mean(close,20)-1)/(ts_std(close,20)+1e-6)，风险调整动量"},
+    {"key": "expr_price_accel", "name": "价格二阶加速度", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 38,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "expr_research",
+     "formula": "delta(delta(close,5),5)/delay(close,10)，嵌套时序算子"},
+    {"key": "expr_illiq", "name": "非流动性代理", "layer": "表达式研究", "direction": -1,
+     "bound": None, "status": "research", "introduced": 38,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "expr_research",
+     "formula": "abs(delta(close,1)/delay(close,1))/(volume+1)，Amihud|收益|/量的无量纲代理"},
 )
 
 _BY_KEY = None
