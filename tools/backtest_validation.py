@@ -242,19 +242,28 @@ def purged_kfold_splits(n, t1=None, n_splits=5, embargo=0):
 # ============================================================
 # 5. Walk-forward 滚动选参/验证
 # ============================================================
-def walk_forward(matrix, train_size, test_size, step=None):
+def walk_forward(matrix, train_size, test_size, step=None, purge=0, embargo=0):
     """
     滚动：每个时点用前 train_size 行按 Sharpe 选最优候选，在后 test_size 行样本外评估它。
     返回每段明细与汇总（OOS 选中候选均值、事后最优均值、衰减、跑赢中位数比例、选参切换次数）。
+
+    第52轮 G27续：AFML ch7 防前视隔离带（默认都为 0，逐段结果与旧版完全一致）：
+    - purge   : 从 IS 窗尾部剔除多少行（这些样本的持有期标签会向前延伸进 OOS，形成泄漏）；
+    - embargo : IS 与 OOS 之间额外留多少行禁运带（OOS 起点整体后移），吸收标签重叠与序列相关。
+    加隔离带后 IS 有效长度=train_size-purge、OOS=[train+embargo, train+embargo+test)。
     """
     t = len(matrix)
     n = len(matrix[0]) if t else 0
     step = test_size if step is None else step
+    purge = max(0, int(purge)); embargo = max(0, int(embargo))
+    if train_size - purge < 2:
+        return {"segments": [], "n_segments": 0, "purge": purge, "embargo": embargo}
     segs = []
     start = 0
-    while start + train_size + test_size <= t:
-        is_rows = list(range(start, start + train_size))
-        oos_rows = list(range(start + train_size, start + train_size + test_size))
+    while start + train_size + embargo + test_size <= t:
+        is_rows = list(range(start, start + train_size - purge))
+        oos_rows = list(range(start + train_size + embargo,
+                             start + train_size + embargo + test_size))
         is_perf = [per_period_sharpe(_col_series(matrix, j, is_rows)) for j in range(n)]
         oos_perf = [per_period_sharpe(_col_series(matrix, j, oos_rows)) for j in range(n)]
         chosen = max(range(n), key=lambda j: is_perf[j])
@@ -278,7 +287,7 @@ def walk_forward(matrix, train_size, test_size, step=None):
     return {"segments": segs, "n_segments": len(segs),
             "mean_is_sharpe": mean_is, "mean_oos_sharpe": mean_oos,
             "mean_oos_best": statistics.fmean(best_vals),
-            "is_oos_decay": decay,
+            "is_oos_decay": decay, "purge": purge, "embargo": embargo,
             "oos_beat_median_rate": sum(g["beat_median"] for g in segs) / len(segs),
             "param_switch_rate": switches / max(1, len(segs) - 1)}
 
@@ -665,6 +674,12 @@ def _selftest():
     assert all(seg["chosen"] == 2 for seg in wf["segments"])
     assert wf["param_switch_rate"] == 0.0
     assert wf["oos_beat_median_rate"] > 0.9
+    # 第52轮：purge/embargo 默认0与旧版一致；加隔离带后持续占优列仍被选中、段数不增、字段回传
+    wf_iso = walk_forward(wf_mat, 40, 20, purge=5, embargo=3)
+    assert wf_iso["purge"] == 5 and wf_iso["embargo"] == 3
+    assert wf_iso["n_segments"] <= wf["n_segments"]
+    assert all(seg["chosen"] == 2 for seg in wf_iso["segments"])
+    assert walk_forward(wf_mat, 6, 20, purge=5)["n_segments"] == 0   # IS-purge<2 安全返空
 
     # 7) 参数高原 vs 孤峰：构造规整 3x3，中心孤峰
     grid_peak = {(x, y): (1.0 if (x, y) == (1, 1) else 0.05)

@@ -49,10 +49,17 @@ def load_return_map(db_path=DEFAULT_DB):
     return rets, sectors, syms
 
 
-def dense_matrix(return_map, analysis_days=ANALYSIS_DAYS, coverage_min=COVERAGE_MIN):
-    """选固定宇宙（分析窗内覆盖率达标）并对齐成 dates×symbols 稠密矩阵，返回 (dates, syms, matrix[t][i])。"""
+def dense_matrix(return_map, analysis_days=ANALYSIS_DAYS, coverage_min=COVERAGE_MIN, fill_missing=False):
+    """选固定宇宙（分析窗内覆盖率达标）并对齐成 dates×symbols 稠密矩阵，返回 (dates, syms, matrix[t][i])。
+    fill_missing=False（默认）：覆盖率不足的品种剔除、任一品种缺值的整日剔除（稠密，旧行为逐字节一致）。
+    fill_missing=True：保留全部品种（"全64"口径），不剔除缺值日，缺失 ret1d 按 0.0 补（=当日该品种无敞口、
+    无收益贡献，会略低估其波动，仅用于覆盖率稳健性对照，主结论仍以稠密固定宇宙为准）。"""
     all_dates = sorted(set().union(*[set(d.keys()) for d in return_map.values()]))[-analysis_days:]
     dset = set(all_dates)
+    if fill_missing:
+        syms = sorted(return_map)
+        mat = [[(return_map[s].get(dt) or 0.0) for s in syms] for dt in all_dates]
+        return list(all_dates), syms, mat
     syms = [s for s in sorted(return_map)
             if len(dset & set(return_map[s].keys())) >= coverage_min * len(all_dates)]
     mat = []
@@ -86,22 +93,28 @@ def rolling_proxy(mat, methods=None, lookback=None, rebal=None, shrink=None, cap
     shrink = config.PC_SHRINK if shrink is None else shrink
     cap = cap or config.PC_MAX_WEIGHT
     T = len(mat)
-    out = {m: {"daily": [], "idx": [], "turnover": [], "eff_n": [], "ann_vol_at_rebal": []} for m in methods}
+    out = {m: {"daily": [], "idx": [], "turnover": [], "eff_n": [], "ann_vol_at_rebal": [],
+               "seg_bounds": []} for m in methods}
     prev_w = {m: None for m in methods}
     t = lookback
     while t < T:
         train = _series_by_asset(mat, t - lookback, t)
         hold_end = min(t + rebal, T)
-        ws = {}
+        ws, seg_tv = {}, {}
         for m in methods:
             r = pc.construct(train, m, shrink=shrink, cap=cap)
             w = r["weights"]
             ws[m] = w
-            if prev_w[m] is not None:
-                out[m]["turnover"].append(pc.turnover(w, prev_w[m]))
+            tv = pc.turnover(w, prev_w[m]) if prev_w[m] is not None else None
+            if tv is not None:
+                out[m]["turnover"].append(tv)
+            seg_tv[m] = tv
             out[m]["eff_n"].append(r["eff_n"])
             out[m]["ann_vol_at_rebal"].append(r["ann_vol"])
             prev_w[m] = w
+        for m in methods:
+            out[m]["seg_bounds"].append({"start": t, "length": hold_end - t,
+                                         "entry_turnover": seg_tv[m]})
         for tt in range(t, hold_end):
             for m in methods:
                 pr = sum(ws[m][i] * mat[tt][i] for i in range(len(ws[m])))
@@ -109,6 +122,59 @@ def rolling_proxy(mat, methods=None, lookback=None, rebal=None, shrink=None, cap
                 out[m]["idx"].append(tt)   # 全局 mat 行号，供与 dates 对齐画组合历史净值
         t = hold_end
     return out
+
+
+# 第52轮 G26续二：总敞口 gross 网格 × 换手成本（线性多头杠杆；默认 gross=1/零成本与原日收益逐点一致）
+DEFAULT_GROSS_GRID = (1.0, 1.2, 1.5)
+DEFAULT_ONEWAY_COST = 1.5e-4     # 单边调仓成本率（费5bp+滑点10bp 的数量级，与 wf_cost_lab 基准同档，可参数化）
+
+
+def gross_net_daily(daily, seg_bounds, gross=1.0, one_way_cost=0.0):
+    """把一段组合日收益按总敞口 gross 线性放大，并在每个再平衡段首日扣换手成本。
+    成本=段首日单边换手 × gross × one_way_cost（杠杆下成交名义同步放大）。
+    返回 (net_daily, charge_daily)，与 daily 等长；gross=1 且 cost=0 时 net 与入参逐点相同。纯函数不改入参。"""
+    gross = float(gross)
+    # daily 按再平衡段顺序拼接：先整体按 gross 线性放大，再把每段首日换手成本落到该段在 daily 内的首点
+    net = [gross * r for r in daily]
+    charges = [0.0] * len(daily)
+    pos = 0
+    for seg in seg_bounds:
+        tv = seg.get("entry_turnover")
+        if tv is not None and pos < len(net):
+            c = gross * float(tv) * float(one_way_cost)   # 杠杆下成交名义同步放大
+            charges[pos] = c
+            net[pos] -= c
+        pos += seg["length"]
+    return net, charges
+
+
+def gross_cost_grid(proxy, gross_list=DEFAULT_GROSS_GRID, one_way_cost=DEFAULT_ONEWAY_COST,
+                    methods=None, periods_per_year=None):
+    """对每方法×总敞口 gross 计算毛/净绩效与换手成本拖累。返回 {method: [按 gross 的结果 dict]}。
+    净=毛日收益按 gross 放大后、在再平衡段首日扣换手成本；同时给零成本毛口径做对照。"""
+    methods = methods or config.PC_METHODS
+    ppy = periods_per_year or config.PC_PERIODS_PER_YEAR
+    grid = {}
+    for m in methods:
+        daily = proxy[m]["daily"]; bounds = proxy[m]["seg_bounds"]
+        rows = []
+        for g in gross_list:
+            gross_net, charges = gross_net_daily(daily, bounds, gross=g, one_way_cost=one_way_cost)
+            gross_only, _ = gross_net_daily(daily, bounds, gross=g, one_way_cost=0.0)
+            st_net = perf_stats(gross_net, periods_per_year=ppy)
+            st_gross = perf_stats(gross_only, periods_per_year=ppy)
+            total_charge = sum(charges)
+            n = len(gross_net)
+            ann_charge = (total_charge / n * ppy) if n else 0.0
+            nav = nav_curve(gross_net)
+            rows.append({"gross": float(g), "one_way_cost": float(one_way_cost),
+                         "ann_ret_net": st_net.get("ann_ret"), "ann_vol_net": st_net.get("ann_vol"),
+                         "sharpe_net": st_net.get("sharpe"), "maxdd_net": st_net.get("maxdd"),
+                         "ann_ret_gross": st_gross.get("ann_ret"), "sharpe_gross": st_gross.get("sharpe"),
+                         "maxdd_gross": st_gross.get("maxdd"), "ann_cost_drag": ann_charge,
+                         "end_nav_net": nav[-1] if nav else None})
+        grid[m] = rows
+    return grid
 
 
 def nav_curve(daily, start=1.0):
@@ -213,6 +279,13 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
         stats[m]["ann_turnover"] = (sum(tv) / len(tv) * config.PC_PERIODS_PER_YEAR / config.PC_REBAL) if tv else None
         stats[m]["avg_eff_n"] = sum(en) / len(en) if en else None
     snap = latest_snapshot(mat, syms, sectors)
+    # 第52轮 G26续二：总敞口 gross(1.0/1.2/1.5) × 换手成本网格（固定宇宙，复用上面同一权重轨迹 proxy）
+    gross_list = list(DEFAULT_GROSS_GRID)
+    gross_grid = gross_cost_grid(proxy, gross_list, DEFAULT_ONEWAY_COST)
+    # 全64口径（缺失日补0）对照：只跑 gross=1，看放宽覆盖率后四方法结论是否稳健
+    dates_all, syms_all, mat_all = dense_matrix(return_map, fill_missing=True)
+    proxy_all = rolling_proxy(mat_all)
+    gross_grid_all = gross_cost_grid(proxy_all, (1.0,), DEFAULT_ONEWAY_COST)
 
     L = []
     L.append("=" * 104)
@@ -256,8 +329,28 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
                     s["target_vol_leverage"]))
         L.append("      主要权重：" + tops)
     L.append("-" * 104)
+    # 【三】第52轮 G26续二：总敞口 gross 网格 × 换手成本
+    L.append("【三】总敞口 gross 网格 × 换手成本影子（固定宇宙%d品种；同一权重轨迹按总敞口线性放大，"
+             "再平衡段首日扣单边换手成本，单边费率%.1fbp；多头线性、不预测收益）"
+             % (len(syms), DEFAULT_ONEWAY_COST * 1e4))
+    L.append("  %-8s %5s %9s %9s %8s %9s %9s %9s %10s" %
+             ("方法", "gross", "年化净", "年化毛", "波动净", "夏普净", "夏普毛", "回撤净", "年成本拖累"))
+    for m in config.PC_METHODS:
+        for cell in gross_grid[m]:
+            L.append("  %-8s %4.1fx %+8.2f%% %+8.2f%% %7.2f%% %8.2f %8.2f %8.2f%% %9.2f%%"
+                     % (name[m], cell["gross"], (cell["ann_ret_net"] or 0) * 100,
+                        (cell["ann_ret_gross"] or 0) * 100, (cell["ann_vol_net"] or 0) * 100,
+                        cell["sharpe_net"] or 0, cell["sharpe_gross"] or 0,
+                        (cell["maxdd_net"] or 0) * 100, cell["ann_cost_drag"] * 100))
+    L.append("  全%d品种口径（缺失日收益按0=当日无敞口，仅作覆盖率稳健性对照）gross=1.0 净夏普：" % len(syms_all)
+             + "  ".join("%s=%.2f" % (name[m], (gross_grid_all[m][0]["sharpe_net"] or 0))
+                         for m in config.PC_METHODS))
+    L.append("  逐日组合净值已含四方法 gross=1 口径（reports/portfolio_nav.csv）；本网格明细落 reports/portfolio_gross_grid.csv。")
+    L.append("  读法：gross 等比放大收益与波动，夏普(毛)理论上不变、净夏普随换手成本上升而下降；回撤随 gross 线性放大，杠杆只改风险预算不产生 alpha。")
+    L.append("-" * 104)
     L.append("诚实边界：日收益来自已比例复权主连面板、固定宇宙有幸存者偏差、代理未计手续费/滑点/保证金与换月、"
-             "协方差用历史窗不代表未来；本结果仅决定'风险型分配是否值得后续以默认equal接入paper/backtest对照'，不直接上线。")
+             "协方差用历史窗不代表未来；本结果仅决定'风险型分配是否值得后续以默认equal接入paper/backtest对照'，不直接上线。"
+             "gross 网格为线性多头杠杆近似（收益/波动/回撤等比放大），未计保证金占用/强平线/融资成本与杠杆下的换手冲击，仅作风险预算影子对照。")
     text = "\n".join(L)
     if verbose:
         print(text)
@@ -278,9 +371,25 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
             for m in config.PC_METHODS:
                 row.append(navs[m][k])
             wcsv.writerow(row)
+    # 第52轮 G26续二：gross×换手成本网格 CSV（长表 method,gross,...）
+    gross_path = os.path.join(os.path.dirname(txt_path), "portfolio_gross_grid.csv")
+    with open(gross_path, "w", encoding="utf-8", newline="") as fp:
+        wg = csv.writer(fp)
+        wg.writerow(["method", "gross", "one_way_cost", "ann_ret_net", "ann_ret_gross",
+                     "ann_vol_net", "sharpe_net", "sharpe_gross", "maxdd_net", "maxdd_gross",
+                     "ann_cost_drag", "end_nav_net"])
+        for m in config.PC_METHODS:
+            for c in gross_grid[m]:
+                wg.writerow([m, c["gross"], c["one_way_cost"], c["ann_ret_net"], c["ann_ret_gross"],
+                            c["ann_vol_net"], c["sharpe_net"], c["sharpe_gross"], c["maxdd_net"],
+                            c["maxdd_gross"], c["ann_cost_drag"], c["end_nav_net"]])
     payload = {"universe": syms, "n_universe": len(syms), "dates": [dates[0], dates[-1]],
                "n_days": len(mat), "rolling_stats": stats, "nav_summary": nav_summary,
-               "nav_csv": os.path.basename(nav_path), "snapshot": snap}
+               "nav_csv": os.path.basename(nav_path), "snapshot": snap,
+               "gross_grid": gross_grid, "gross_one_way_cost": DEFAULT_ONEWAY_COST,
+               "gross_grid_csv": os.path.basename(gross_path),
+               "all_universe": {"n": len(syms_all), "dates": [dates_all[0], dates_all[-1]],
+                                "gross1": {m: gross_grid_all[m][0] for m in config.PC_METHODS}}}
     with open(json_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, allow_nan=False, indent=1)
     # G27① 统一实验台账（旁路：登记失败绝不影响本工具产物与返回值）
@@ -298,7 +407,7 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
              "target_vol_annual": config.PC_TARGET_VOL_ANNUAL, "max_gross": config.PC_MAX_GROSS,
              "methods": list(config.PC_METHODS), "panel_db": os.path.basename(db_path)},
             lab_metrics,
-            inputs=[db_path], artifacts=[txt_path, json_path, nav_path],
+            inputs=[db_path], artifacts=[txt_path, json_path, nav_path, gross_path],
             conclusion="equal夏普%.2f / erc夏普%.2f / inv_vol夏普%.2f（固定宇宙%d品种 %s~%s）"
                        % (stats["equal"]["sharpe"], stats["erc"]["sharpe"], stats["inv_vol"]["sharpe"],
                           len(syms), dates[0], dates[-1]))
@@ -360,8 +469,34 @@ def selftest():
     rm2["S4"] = {"2025-260": 0.01}
     d2, sy2, mat2 = dense_matrix(rm2, analysis_days=260, coverage_min=0.95)
     assert "S4" not in sy2 and len(sy2) == 4
+    # 第52轮 G26续二：fill_missing=True 保留全部品种（含稀疏 S4）、缺失补0、日期不剔除
+    d3, sy3, mat3 = dense_matrix(rm2, analysis_days=260, fill_missing=True)
+    assert "S4" in sy3 and len(sy3) == 5 and len(mat3) == 260 and len(mat3[0]) == 5
+    # gross_net_daily 手算：成本只落在每段首日；gross=1零成本逐点恒等
+    daily = [0.01, -0.02, 0.0, 0.03]
+    bounds = [{"start": 60, "length": 2, "entry_turnover": 0.5},
+              {"start": 62, "length": 2, "entry_turnover": 0.2}]
+    n0, c0 = gross_net_daily(daily, bounds, gross=1.0, one_way_cost=0.0)
+    assert all(abs(a - b) < 1e-15 for a, b in zip(n0, daily)) and sum(c0) == 0
+    n2, c2 = gross_net_daily(daily, bounds, gross=2.0, one_way_cost=1e-3)
+    assert abs(c2[0] - 1e-3) < 1e-15 and c2[1] == 0.0 and abs(c2[2] - 4e-4) < 1e-15 and c2[3] == 0.0
+    assert abs(n2[0] - (0.02 - 1e-3)) < 1e-15 and abs(n2[1] + 0.04) < 1e-15
+    assert abs(n2[2] - (0.0 - 4e-4)) < 1e-15 and abs(n2[3] - 0.06) < 1e-15
+    # 首段无 prev（entry_turnover=None）不收成本
+    b_first = [{"start": 60, "length": 2, "entry_turnover": None}] + bounds
+    nf, cf = gross_net_daily([0.01, 0.01], b_first[:1], 1.0, 1e-3)
+    assert sum(cf) == 0
+    # gross_cost_grid：每方法三档 gross、gross 越大波动越大、净夏普≤毛夏普（成本只减不增）、结构键齐
+    grid = gross_cost_grid(proxy, (1.0, 1.2, 1.5), 1.5e-4)
+    for m in proxy:
+        rows = grid[m]
+        assert [r["gross"] for r in rows] == [1.0, 1.2, 1.5]
+        assert rows[2]["ann_vol_net"] >= rows[0]["ann_vol_net"]
+        for r in rows:
+            assert r["sharpe_net"] <= r["sharpe_gross"] + 1e-9 and r["ann_cost_drag"] >= 0
     print("portfolio_lab selftest ALL PASS（稠密面板对齐/固定宇宙覆盖率筛选/滚动样本外无未来且GMV波动≤等权/"
-          "快照四方法合法/短序列安全/净值曲线复利与idx日期对齐/回撤窗口手算 共8组）")
+          "快照四方法合法/短序列安全/净值曲线复利与idx日期对齐/回撤窗口手算/fill_missing全品种/"
+          "gross放大与段首日换手成本手算/gross网格单调 共11组）")
     return 0
 
 

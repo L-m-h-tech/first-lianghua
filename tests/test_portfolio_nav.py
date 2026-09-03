@@ -69,3 +69,42 @@ def test_gmv_lower_vol_but_aligned_on_toy():
     assert sg["ann_vol"] <= se["ann_vol"] + 1e-9
     for v in pl.nav_curve(proxy["gmv"]["daily"]):
         assert math.isfinite(v) and v > 0
+
+
+# ==================== 第52轮 G26续二 gross 网格×换手成本 / 全品种口径 ====================
+def test_gross_net_daily_charge_only_at_segment_start():
+    daily = [0.01, -0.02, 0.0, 0.03]
+    bounds = [{"start": 60, "length": 2, "entry_turnover": 0.5},
+              {"start": 62, "length": 2, "entry_turnover": 0.2}]
+    n0, c0 = pl.gross_net_daily(daily, bounds, 1.0, 0.0)
+    assert all(abs(a - b) < 1e-15 for a, b in zip(n0, daily)) and sum(c0) == 0
+    n2, c2 = pl.gross_net_daily(daily, bounds, 2.0, 1e-3)
+    assert abs(c2[0] - 1e-3) < 1e-15 and c2[1] == 0.0 and abs(c2[2] - 4e-4) < 1e-15 and c2[3] == 0.0
+    assert abs(n2[0] - 0.019) < 1e-15 and abs(n2[1] + 0.04) < 1e-15
+    assert abs(n2[2] + 4e-4) < 1e-15 and abs(n2[3] - 0.06) < 1e-15
+    # 首段无 prev（entry_turnover=None）不收成本
+    nf, cf = pl.gross_net_daily([0.01, 0.01], [{"start": 0, "length": 2, "entry_turnover": None}], 1.0, 1e-3)
+    assert sum(cf) == 0 and nf == [0.01, 0.01]
+
+
+def test_gross_grid_monotone_and_cost_drag():
+    rm, _ = pl._toy_panel()
+    _, _, mat = pl.dense_matrix(rm, analysis_days=260, coverage_min=1.0)
+    proxy = pl.rolling_proxy(mat, methods=("equal", "gmv"), lookback=60, rebal=20)
+    grid = pl.gross_cost_grid(proxy, (1.0, 1.2, 1.5), 1.5e-4, methods=("equal", "gmv"))
+    for m, rows in grid.items():
+        assert [r["gross"] for r in rows] == [1.0, 1.2, 1.5]
+        assert rows[2]["ann_vol_net"] >= rows[0]["ann_vol_net"]      # 杠杆放大波动
+        for r in rows:
+            assert r["sharpe_net"] <= r["sharpe_gross"] + 1e-9       # 成本只减不增
+            assert r["ann_cost_drag"] >= 0
+
+
+def test_dense_matrix_fill_missing_keeps_all():
+    rm = {"A": {"d1": 0.01, "d2": 0.0, "d3": -0.01},
+          "B": {"d1": 0.02, "d3": 0.01}}                            # B 缺 d2
+    d_dense, sy_dense, m_dense = pl.dense_matrix(rm, analysis_days=3, coverage_min=0.95)
+    assert sy_dense == ["A"] and len(m_dense) == 3                  # 默认稠密：稀疏品种剔除
+    d_all, sy_all, m_all = pl.dense_matrix(rm, analysis_days=3, fill_missing=True)
+    assert sy_all == ["A", "B"] and len(m_all) == 3                 # 全品种：缺失补0、日期不剔
+    assert m_all[1][1] == 0.0 and m_all[0][1] == 0.02

@@ -490,3 +490,55 @@ def test_build_payload_contains_tear_block(tmp_path, monkeypatch):
     assert "tear" in p and p["tear"] is None       # 无数据安全降级为 None
     decoded = json.loads(charts.payload_to_js(p)[len("window.CHART_DATA = "):-2])
     assert decoded["tear"] is None
+
+
+# ==================== 第52轮 组合净值/熔断校准看板取数（零网络、tmp_path） ====================
+def test_portfolio_nav_payload(tmp_path):
+    p = tmp_path / "portfolio_nav.csv"
+    assert charts.portfolio_nav_payload(str(p)) is None        # 缺文件 None
+    with open(p, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["date", "equal_ret", "inv_vol_ret", "erc_ret", "gmv_ret",
+                    "equal_nav", "inv_vol_nav", "erc_nav", "gmv_nav"])
+        w.writerow(["2025-01-02", 0.01, 0.01, 0.01, 0.01, 1.01, 1.01, 1.01, 1.01])
+        w.writerow(["2025-01-03", -0.01, 0.0, 0.0, 0.0, 0.9999, 1.01, 1.01, 1.01])
+    d = charts.portfolio_nav_payload(str(p))
+    assert d is not None and d["points"] == 2
+    assert [s["method"] for s in d["series"]] == ["equal", "inv_vol", "erc", "gmv"]
+    assert abs(d["summary"]["equal"]["end_nav"] - 0.9999) < 1e-12
+    assert d["dt"] == ["01-02", "01-03"]
+    # 坏表头 None
+    bad = tmp_path / "bad.csv"
+    bad.write_text("date,foo\n2025-01-02,1\n", encoding="utf-8")
+    assert charts.portfolio_nav_payload(str(bad)) is None
+
+
+def test_circuit_review_payload(tmp_path):
+    p = tmp_path / "circuit_review.json"
+    assert charts.circuit_review_payload(str(p)) is None
+    cond = {"1": {"mean": -0.0016}, "3": {"mean": 0.0022}}
+    base = {"1": {"mean": 0.0001}, "3": {"mean": 0.0004}}
+    equal_block = {
+        "counts": {"normal": 377, "warn": 1, "halt": 0, "delever": 0},
+        "sweep": [{"threshold": 0.01, "n_trigger": 18}, {"threshold": 0.03, "n_trigger": 0}],
+        "calib_n": 18,
+        "calib_forward": {"conditional": cond, "baseline": base},
+    }
+    payload = {
+        "meta": {"sweep_grid": [0.01, 0.03], "horizons": [1, 3],
+                 "warn": 0.02, "halt": 0.03, "delever": 0.05, "calib_threshold": 0.01,
+                 "n_proxy": 378, "n_universe": 61},
+        "per_method": {"equal": equal_block},
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    d = charts.circuit_review_payload(str(p))
+    assert d is not None and d["sweep"]["labels"] == ["1.00%", "3.00%"]
+    eq = d["sweep"]["methods"][0]
+    assert eq["method"] == "equal" and eq["n_trigger"] == [18, 0]
+    fwd = d["forward"]["methods"][0]
+    assert d["forward"]["horizons"] == ["T+1", "T+3"]
+    assert abs(fwd["cond"][0] + 0.0016) < 1e-12 and abs(fwd["base"][1] - 0.0004) < 1e-12
+    assert d["thresholds"]["halt"] == 0.03
+    # 坏 JSON None
+    bad = tmp_path / "bad.json"; bad.write_text("{not json", encoding="utf-8")
+    assert charts.circuit_review_payload(str(bad)) is None

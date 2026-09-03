@@ -328,6 +328,87 @@ def factor_payload(path=None):
         return None
 
 
+# ---------------- ⑦ 组合构建四方法历史净值（portfolio_lab 离线产物 portfolio_nav.csv） ----------------
+PORTFOLIO_NAV_NAME = {"equal": "等权", "inv_vol": "逆波动", "erc": "风险平价", "gmv": "最小方差"}
+
+
+def portfolio_nav_payload(path=None, max_points=1200):
+    """读 reports/portfolio_nav.csv（date+四法 ret/nav），抽稀成多方法净值曲线结构；缺文件/坏表返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "portfolio_nav.csv")
+    if not path or not os.path.exists(path):
+        return None
+    methods = ("equal", "inv_vol", "erc", "gmv")
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames or not all(m + "_nav" in reader.fieldnames for m in methods):
+                return None
+            dts, navs = [], {m: [] for m in methods}
+            for row in reader:
+                vals = [_f(row.get(m + "_nav")) for m in methods]
+                if any(v is None for v in vals):
+                    continue
+                dts.append((row.get("date") or "")[5:10])      # MM-DD
+                for k, m in enumerate(methods):
+                    navs[m].append(vals[k])
+        if len(dts) < 2:
+            return None
+        arrs = downsample(dts, *[navs[m] for m in methods], max_points=max_points)
+        dts = arrs[0]
+        series, summary = [], {}
+        for k, m in enumerate(methods):
+            seq = arrs[k + 1]
+            series.append({"method": m, "name": PORTFOLIO_NAV_NAME.get(m, m), "nav": seq})
+            peak, maxdd = seq[0], 0.0
+            for v in seq:
+                peak = max(peak, v)
+                maxdd = max(maxdd, 1 - v / peak if peak > 0 else 0)
+            summary[m] = {"name": PORTFOLIO_NAV_NAME.get(m, m),
+                          "end_nav": seq[-1], "maxdd": maxdd}
+        return {"dt": dts, "series": series, "summary": summary, "points": len(dts)}
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return None
+
+
+# ---------------- ⑧ 熔断阈值历史校准（circuit_review.json） ----------------
+def circuit_review_payload(path=None):
+    """读 reports/circuit_review.json：抽阈值网格触发数（四方法）与校准档 T+h 条件远期 vs 基准。缺文件返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "circuit_review.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        pm = data.get("per_method")
+        meta = data.get("meta", {})
+        if not isinstance(pm, dict) or not pm:
+            return None
+        methods = [m for m in ("equal", "inv_vol", "erc", "gmv") if m in pm]
+        grid = meta.get("sweep_grid") or (pm[methods[0]].get("sweep") and
+                                          [g["threshold"] for g in pm[methods[0]]["sweep"]])
+        sweep = {"labels": [("%.2f%%" % (g * 100)) for g in grid], "methods": []}
+        for m in methods:
+            rows = pm[m].get("sweep", [])
+            sweep["methods"].append({"method": m, "name": PORTFOLIO_NAV_NAME.get(m, m),
+                                     "n_trigger": [int(g.get("n_trigger", 0)) for g in rows]})
+        horizons = meta.get("horizons", [1, 3, 5, 10])
+        forward = {"horizons": ["T+%d" % h for h in horizons], "methods": []}
+        for m in methods:
+            cf = pm[m].get("calib_forward", {})
+            cond, base = cf.get("conditional", {}), cf.get("baseline", {})
+            cm = [(cond.get(str(h)) or {}).get("mean") for h in horizons]
+            bm = [(base.get(str(h)) or {}).get("mean") for h in horizons]
+            forward["methods"].append({"method": m, "name": PORTFOLIO_NAV_NAME.get(m, m),
+                                       "cond": cm, "base": bm, "calib_n": pm[m].get("calib_n")})
+        counts = {m: pm[m].get("counts") for m in methods}
+        return {"sweep": sweep, "forward": forward, "counts": counts,
+                "thresholds": {"warn": meta.get("warn"), "halt": meta.get("halt"),
+                               "delever": meta.get("delever"), "calib": meta.get("calib_threshold")},
+                "n_proxy": meta.get("n_proxy"), "n_universe": meta.get("n_universe")}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
 # ---------------- 汇总与落盘 ----------------
 
 def _tear_from_series(dts, equity, source, max_points=1200):
@@ -444,6 +525,16 @@ def build_payload(state=None):
         payload["tear"] = tear_payload(state)
     except Exception:
         payload["tear"] = None
+    # ⑦ 组合构建四方法历史净值（portfolio_lab 离线 CSV；缺文件自动 None 显空态）
+    try:
+        payload["portfolio_nav"] = portfolio_nav_payload()
+    except Exception:
+        payload["portfolio_nav"] = None
+    # ⑧ 熔断阈值历史校准（circuit_review 离线 JSON；缺文件自动 None）
+    try:
+        payload["circuit_review"] = circuit_review_payload()
+    except Exception:
+        payload["circuit_review"] = None
     return payload
 
 
@@ -610,6 +701,19 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>月度收益热力图 <span class="sub">自然月复利收益（%），红涨绿跌（空白=该月无交易日；悬停看精确值）</span></h3>
     <div id="c-tear-m" class="chart" style="height:240px"></div>
   </div>
+  <div class="card full">
+    <h3>⑦ 组合构建·四方法历史净值 <span class="sub">portfolio_nav.csv（portfolio_lab 滚动样本外，初始净值1.0，满仓多头无成本；先跑 tools/portfolio_lab.py）</span></h3>
+    <div class="chips" id="pnav-chips"></div>
+    <div id="c-pnav" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card">
+    <h3>⑧ 熔断阈值网格·触发次数 <span class="sub">circuit_review.json：各单日损失阈值下四方法触发数（默认3% halt 日频0触发）</span></h3>
+    <div id="c-creview-sweep" class="chart" style="height:280px"></div>
+  </div>
+  <div class="card">
+    <h3>1%校准档·触发后条件远期 vs 基准 <span class="sub">T+1/3/5/10 平均收益（柱=触发后条件、点线=全样本基准）</span></h3>
+    <div id="c-creview-fwd" class="chart" style="height:280px"></div>
+  </div>
 </div>
 """
 
@@ -620,7 +724,8 @@ var AXIS = "#9a9a9a", SPLIT = "#2c2c2c", BG = "#1c1c1c";
 var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-ic", "c-mono", "c-cal", "c-out",
                  "c-paper", "c-paper-dd", "c-paper-risk",
-                 "c-tear-uw", "c-tear-rs", "c-tear-m"];
+                 "c-tear-uw", "c-tear-rs", "c-tear-m",
+                 "c-pnav", "c-creview-sweep", "c-creview-fwd"];
 var inst = {};
 function mk(id) {
   var el = document.getElementById(id);
@@ -989,6 +1094,67 @@ function renderCalib(rows, outs) {
   });
 }
 
+function renderPnav(d) {
+  if (!d || !d.series || !d.series.length) {
+    empty("c-pnav", "暂无组合构建净值：先运行 python tools/portfolio_lab.py 生成 reports/portfolio_nav.csv。");
+    return;
+  }
+  var palette = {"equal": BLUE, "inv_vol": GOLD, "erc": UP, "gmv": "#c79bff"};
+  var chips = d.series.map(function (s) {
+    var sm = d.summary[s.method] || {};
+    var dd = sm.maxdd == null ? "" : " 回撤" + pct(sm.maxdd, 1);
+    return '<span class="chip">' + s.name + ' 净值<b>' + (+s.nav[s.nav.length - 1].toFixed(4)) + '</b>' + dd + '</span>';
+  });
+  document.getElementById("pnav-chips").innerHTML = chips.join("");
+  mk("c-pnav").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis"},
+    legend: {data: d.series.map(function (s) { return s.name; }), textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({right: 30, top: 36}),
+    xAxis: Object.assign({type: "category", data: d.dt, boundaryGap: false}, axisStyle()),
+    yAxis: Object.assign({type: "value", scale: true}, axisStyle("净值(初始1.0)"),
+                         {splitLine: {lineStyle: {color: SPLIT}}}),
+    series: d.series.map(function (s) {
+      return {name: s.name, type: "line", showSymbol: false, smooth: false,
+              lineStyle: {width: 1.6, color: palette[s.method] || NEUT},
+              itemStyle: {color: palette[s.method] || NEUT}, data: s.nav};
+    })
+  });
+}
+function renderCreview(d) {
+  if (!d || !d.sweep) {
+    empty("c-creview-sweep", "暂无熔断校准：先运行 python tools/circuit_review.py 生成 reports/circuit_review.json。");
+    empty("c-creview-fwd", "暂无熔断校准数据。");
+    return;
+  }
+  var palette = {"equal": BLUE, "inv_vol": GOLD, "erc": UP, "gmv": "#c79bff"};
+  var sw = d.sweep;
+  mk("c-creview-sweep").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis", axisPointer: {type: "shadow"}},
+    legend: {data: sw.methods.map(function (m) { return m.name; }), textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 38}),
+    xAxis: {type: "category", data: sw.labels, axisLabel: {color: AXIS},
+            name: "单日损失阈值", nameTextStyle: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: Object.assign({type: "value", minInterval: 1}, axisStyle("触发次数"),
+                         {splitLine: {lineStyle: {color: SPLIT}}}),
+    series: sw.methods.map(function (m) {
+      return {name: m.name, type: "bar", itemStyle: {color: palette[m.method] || NEUT}, data: m.n_trigger};
+    })
+  });
+  var fw = d.forward;
+  mk("c-creview-fwd").setOption({
+    backgroundColor: BG, tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+      valueFormatter: function (v) { return v == null ? "—" : (v * 100).toFixed(3) + "%"; }},
+    legend: {data: fw.methods.map(function (m) { return m.name; }), textStyle: {color: AXIS}, top: 2},
+    grid: baseGrid({top: 38}),
+    xAxis: {type: "category", data: fw.horizons, axisLabel: {color: AXIS}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: Object.assign({type: "value", axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(1) + "%"; }}},
+                         {splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}}),
+    series: fw.methods.map(function (m) {
+      return {name: m.name, type: "bar", barGap: "10%", itemStyle: {color: palette[m.method] || NEUT},
+              data: m.cond.map(function (v) { return v == null ? null : +v.toFixed(6); })};
+    })
+  });
+}
 function setGen(text) {
   var el = document.getElementById("cp-gen");
   if (el) el.textContent = text;
@@ -1012,11 +1178,13 @@ function loadAndRender() {
     renderCalib(D.calibration, D.outcomes);
     renderPaper(D.paper);
     renderTear(D.tear);
+    renderPnav(D.portfolio_nav);
+    renderCreview(D.circuit_review);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
-    renderPaper(null); renderTear(null); };
+    renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }

@@ -253,8 +253,13 @@ def _parse_combo_name(name):
 
 def run_symbol(sym, period=30, wf_train=20, wf_test=10,
                fee_grid=DEFAULT_FEE_GRID, slip_grid=DEFAULT_SLIP_GRID,
-               participation_cap=DEFAULT_PARTICIPATION_CAP, verbose=False):
-    """单品种：参数网格 WF 稳定性 + 最优参数成本曲面 + 换手容量。真实读分钟库（只读）。"""
+               participation_cap=DEFAULT_PARTICIPATION_CAP, verbose=False,
+               purge=0, embargo=0, wf_presets=None):
+    """单品种：参数网格 WF 稳定性 + 最优参数成本曲面 + 换手容量。真实读分钟库（只读）。
+
+    第52轮 G27续：purge/embargo=AFML 防前视隔离带（透传 bv.walk_forward，默认0等价旧版）；
+    wf_presets=多周期 [(train,test),...]，对每个窗口规格各跑一次 WF 稳定性做对照，
+    缺省 None=仅 (wf_train,wf_test) 单规格（旧行为），其结果仍填 stability/wf_summary。"""
     import config
     import backtest_validation as bv
     import intraday_backtest as ib
@@ -262,9 +267,21 @@ def run_symbol(sym, period=30, wf_train=20, wf_test=10,
     # ② 参数网格 + walk-forward（复用既有引擎）
     grid = bv.build_param_grid_matrix(sym, period=period)
     names = grid["names"]; matrix = grid["matrix"]
-    wf = bv.walk_forward(matrix, wf_train, wf_test) if len(matrix) >= wf_train + wf_test else {
-        "segments": [], "n_segments": 0}
-    stab = wf_stability(wf.get("segments", []), names)
+    presets = wf_presets or [(wf_train, wf_test)]
+    wf_multi = []
+    for (tr, te) in presets:
+        wf_x = bv.walk_forward(matrix, tr, te, purge=purge, embargo=embargo) \
+            if len(matrix) >= tr + embargo + te else {"segments": [], "n_segments": 0}
+        stab_x = wf_stability(wf_x.get("segments", []), names)
+        wf_multi.append({"train": tr, "test": te, "purge": purge, "embargo": embargo,
+                         "n_segments": wf_x.get("n_segments", 0),
+                         "stability": stab_x,
+                         "wf_summary": {k: wf_x.get(k) for k in
+                                        ("mean_is_sharpe", "mean_oos_sharpe", "mean_oos_best",
+                                         "is_oos_decay", "oos_beat_median_rate", "param_switch_rate")}})
+    # 默认组=第一个 preset，向后兼容字段
+    wf = {"segments": [], "n_segments": wf_multi[0]["n_segments"]}
+    stab = wf_multi[0]["stability"]
 
     # 选全样本笔夏普最高参数做成本曲面（若 WF 段不足，仍可做成本曲面）
     total_perf = grid.get("total_perf", {})
@@ -309,10 +326,8 @@ def run_symbol(sym, period=30, wf_train=20, wf_test=10,
 
     return {"sym": sym_code, "name": cname, "period": period, "bars": grid["bars"],
             "n_days": len(grid["days"]), "n_combos": len(names),
-            "wf_train": wf_train, "wf_test": wf_test,
-            "wf_summary": {k: wf.get(k) for k in
-                           ("mean_is_sharpe", "mean_oos_sharpe", "mean_oos_best",
-                            "is_oos_decay", "oos_beat_median_rate", "param_switch_rate")},
+            "wf_train": wf_train, "wf_test": wf_test, "purge": purge, "embargo": embargo,
+            "wf_summary": wf_multi[0]["wf_summary"], "wf_multi": wf_multi,
             "stability": stab, "best_param": best_name,
             "surface": surface, "breakeven": be, "base_cell": base_cell,
             "capacity": capacity, "src": grid.get("src")}
@@ -358,6 +373,18 @@ def render_symbol(res):
     L.append("     样本内夏普均值 %s → 样本外 %s（衰减 %s）；OOS为正段占比%s、跑赢OOS中位数%s、选参遗憾%s" %
              (_r(st["mean_is_sharpe"], 3), _r(st["mean_oos_sharpe"], 3), _r(st["is_oos_decay"], 3),
               _pct(st["oos_positive_rate"]), _pct(st["beat_median_rate"]), _r(st["selection_regret"], 3)))
+    # 第52轮：多周期窗口 + purge/embargo 隔离带对照（默认单规格且无隔离带时不重复输出）
+    multi = res.get("wf_multi") or []
+    iso = res.get("purge", 0) or res.get("embargo", 0)
+    if len(multi) > 1 or iso:
+        L.append("     多周期/防前视对照（purge=%s、embargo=%s；隔离带越严OOS越可信，评级应不随窗口跳变才算稳）："
+                 % (res.get("purge", 0), res.get("embargo", 0)))
+        for mm in multi:
+            sx = mm["stability"]
+            L.append("       窗%2d训/%2d测：%d段 评级%-4s 最常选%-12s 锚定%s 切换%s OOS夏普%s（IS%s 衰减%s）"
+                     % (mm["train"], mm["test"], mm["n_segments"], sx["grade"], sx["top_param"],
+                        _pct(sx["top_share"]), sx["switches"], _r(sx["mean_oos_sharpe"], 3),
+                        _r(sx["mean_is_sharpe"], 3), _r(sx["is_oos_decay"], 3)))
     # ③ 成本曲面（固定最优参数）
     L.append("  ③ 成本敏感性曲面（固定全样本最优参数 %s；行=每腿费率，列=单边滑点；值=逐笔复利净收益）" % res["best_param"])
     surf = res["surface"]
@@ -403,12 +430,20 @@ def _r(x, nd=3):
 
 
 def build_report(results, args_codes, period):
+    iso_txt = ""
+    if results:
+        r0 = results[0]
+        multi = r0.get("wf_multi") or []
+        if len(multi) > 1:
+            iso_txt += " ｜ WF窗口 " + "/".join("%d训%d测" % (m["train"], m["test"]) for m in multi)
+        if r0.get("purge", 0) or r0.get("embargo", 0):
+            iso_txt += " ｜ purge=%d embargo=%d（AFML防前视隔离带）" % (r0.get("purge", 0), r0.get("embargo", 0))
     L = [SEP,
          "G27②③ walk-forward 参数稳定性 + 成本敏感性曲面/换手容量（wf_cost_lab，研究侧只读、纯标准库）",
-         "品种 %s ｜ 周期 %dm ｜ 成本网格 fee=%s × slip=%s（bp）｜ 生成 %s" %
+         "品种 %s ｜ 周期 %dm ｜ 成本网格 fee=%s × slip=%s（bp）%s ｜ 生成 %s" %
          (",".join(args_codes), period,
           "/".join(_bp(x, 1) for x in DEFAULT_FEE_GRID),
-          "/".join(_bp(x, 1) for x in DEFAULT_SLIP_GRID),
+          "/".join(_bp(x, 1) for x in DEFAULT_SLIP_GRID), iso_txt,
           __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
          SEP]
     if not results:
@@ -455,19 +490,28 @@ def run(argv=None):
     ap.add_argument("--codes", default=",".join(DEFAULT_CODES), help="逗号分隔品种，默认 RB,MA,I,TA")
     ap.add_argument("--all", action="store_true", help="用 config 回测宇宙全品种")
     ap.add_argument("--period", type=int, default=30, choices=(1, 5, 15, 30, 60))
-    ap.add_argument("--wf-train", type=int, default=20)
-    ap.add_argument("--wf-test", type=int, default=10)
+    ap.add_argument("--wf-train", default="20", help="IS 窗，可逗号多值做多周期对照，如 20,40")
+    ap.add_argument("--wf-test", default="10", help="OOS 窗，与 --wf-train 配对，如 10,20")
+    ap.add_argument("--purge", type=int, default=0, help="IS 尾部 purge 行数（剔除标签跨入OOS的样本）")
+    ap.add_argument("--embargo", type=int, default=0, help="IS/OOS 间 embargo 禁送行数")
     ap.add_argument("--participation", type=float, default=DEFAULT_PARTICIPATION_CAP)
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--json-out", default=DEFAULT_JSON, dest="json_out")
     args = ap.parse_args(argv)
 
     codes = _all_codes() if args.all else [c.strip().upper() for c in args.codes.split(",") if c.strip()]
+    # 多周期：--wf-train/--wf-test 逗号列表按位置配对；长度不齐时短的循环取最后一个
+    tr_list = [int(x) for x in str(args.wf_train).split(",") if x.strip()]
+    te_list = [int(x) for x in str(args.wf_test).split(",") if x.strip()]
+    n_pre = max(len(tr_list), len(te_list), 1)
+    presets = [(tr_list[min(k, len(tr_list) - 1)], te_list[min(k, len(te_list) - 1)]) for k in range(n_pre)]
+    primary_train, primary_test = presets[0]
     results, errors = [], []
     for sym in codes:
         try:
-            res = run_symbol(sym, period=args.period, wf_train=args.wf_train,
-                             wf_test=args.wf_test, participation_cap=args.participation)
+            res = run_symbol(sym, period=args.period, wf_train=primary_train, wf_test=primary_test,
+                             participation_cap=args.participation, purge=args.purge, embargo=args.embargo,
+                             wf_presets=presets)
             results.append(res)
             print("  %s 完成：评级%s 最优%s" % (sym, res["stability"]["grade"], res["best_param"]))
         except Exception as e:
@@ -495,8 +539,8 @@ def run(argv=None):
                "slip_safety_x": r["breakeven"]["slip"]["safety_x"]} for r in results]
         el.safe_record(
             "wf_cost_lab",
-            {"codes": codes, "period": args.period, "wf_train": args.wf_train,
-             "wf_test": args.wf_test, "participation": args.participation,
+            {"codes": codes, "period": args.period, "wf_presets": presets,
+             "purge": args.purge, "embargo": args.embargo, "participation": args.participation,
              "fee_grid": list(DEFAULT_FEE_GRID), "slip_grid": list(DEFAULT_SLIP_GRID)},
             {"n_ok": len(results), "n_skip": len(errors), "symbols": ov},
             inputs=[], artifacts=[p for p in (args.out, args.json_out) if p],
@@ -591,7 +635,24 @@ def selftest():
     # json payload allow_nan
     pay = build_json_payload([fake_res]); assert pay["n_symbols"] == 1
     json.dumps(pay, allow_nan=False)
-    print("wf_cost_lab selftest OK（8 组）")
+    # 9) 第52轮 G27续：walk_forward purge/embargo 隔离带（惰性 import 真实引擎）+ 多周期 preset 组织
+    import backtest_validation as bv
+    mat = [[0.01 * (j + 1) + 0.001 * (t % 5) for j in range(3)] for t in range(60)]
+    wf0 = bv.walk_forward(mat, 20, 10)                 # 默认无隔离带
+    assert wf0["purge"] == 0 and wf0["embargo"] == 0 and wf0["n_segments"] >= 1
+    wf_emb = bv.walk_forward(mat, 20, 10, embargo=4)   # OOS 后移4，总样本需求增加，段数不增
+    assert wf_emb["embargo"] == 4 and wf_emb["n_segments"] <= wf0["n_segments"]
+    wf_purge = bv.walk_forward(mat, 20, 10, purge=4)   # IS 尾部剔4行仍可跑
+    assert wf_purge["purge"] == 4 and wf_purge["n_segments"] == wf0["n_segments"]
+    assert bv.walk_forward(mat, 3, 10, purge=2)["n_segments"] == 0  # IS-purge<2 安全返空
+    # 多周期 preset：模拟 run_symbol 内的组织逻辑（不触 DB），两窗口规格各自出稳定性
+    presets = [(20, 10), (40, 20)]
+    multi = []
+    for tr, te in presets:
+        wfx = bv.walk_forward(mat, tr, te, purge=1, embargo=1)
+        multi.append(wf_stability(wfx.get("segments", []), ["p0", "p1", "p2"]))
+    assert len(multi) == 2 and all("grade" in x for x in multi)
+    print("wf_cost_lab selftest OK（9 组）")
     return 0
 
 
