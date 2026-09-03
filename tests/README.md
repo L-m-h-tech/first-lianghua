@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：39 个 `test_*.py` + `conftest.py`，共 **610** 个用例，全绿约 8 秒。
+当前规模：39 个 `test_*.py` + `conftest.py`，共 **618** 个用例，全绿约 8 秒。
 
 ## 设计纪律（必须保持）
 
@@ -43,7 +43,7 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_config_loader.py | .env解析/真实环境优先、深合并、类型矫正、受保护名、端到端子进程加载（第25轮 G10） |
 | test_data_router.py | 熔断CLOSED/OPEN/HALF_OPEN状态机、有序主备降级、残缺即弃、全失败、健康总账（第25轮 G11） |
 | test_data_health.py | 缺数/陈旧/跳变体检、跨轮连续缺数与连续全失败、增量折算、报告块（第25轮 G6） |
-| test_paper_broker.py | 三阈值迟滞、close/next两档成交时点（next严格晚于信号）、实时锁板顺延、滑点与双边费、反手先平后开、离场撤单、临时约束排队不膨胀、强平、资金不足拒单、三表落库与持仓中/平仓后重启恢复、默认休眠（第27轮 G1） |
+| test_paper_broker.py | 三阈值迟滞、close/next两档成交时点（next严格晚于信号）、实时锁板顺延、滑点与双边费、反手先平后开、离场撤单、临时约束排队不膨胀、强平、资金不足拒单、三表落库与持仓中/平仓后重启恢复、默认休眠（第27轮 G1）；第51轮 Portfolio.close(reduce_lots) 部分平仓剩余保留+分批净盈亏==一次全平+0手不减/超持仓全平、paper_delever 晚一轮自动减一半且当日只减一次、observe/paper_halt 零减仓 |
 | test_attribution.py | 方向化暴露/动态键归一、OLS恢复与奇异、加法归因闭合/零方差剔除/空样本、BHB手算+随机fuzz恒等、板块统计rb无方向、累计曲线闭合、IS-OOS、端到端报告（第35轮 G28） |
 | test_research_panel.py | 特征注册表与config一致/唯一/动态键、PIT严格asof边界与基本面当日不可见、暖机ret1d手算、扰动法无未来+故意泄漏反向用例、时间戳扫描、训练-服务parity一致+注入检出、PanelStore幂等重建回读、缓存结构审计干净/破坏检出、G21续面板回读roundtrip与xsmom/tsmom面板路径==网络路径/load_adjusted_bars不二次复权（第36/37轮 G21） |
 | test_tools_selftest.py | factor_eval/carry_eval/attribution/panel_builder/pit_audit/factor_health/factor_expr/expr_research/factor_regime/portfolio_constructor/portfolio_lab/trade_journal/research_review/build_ml_samples/backtest_validation/db_archive 及根模块 factors_catalog/experiment_ledger/db_backup/portfolio_risk、tools/wf_cost_lab/portfolio_risk_lab/circuit_review 自带合成断言 |
@@ -51,7 +51,7 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_research_review.py | 第43轮 G30③ 研究侧一键复盘编排器：sidecar缺/损安全、新鲜度三态、equity的BOM/末尾空记录/全表回撤、signal正则、各段提取排序与弱势桶门槛、规则待办WARN优先/可选降级/全OK、collect空目录与合成sidecar、七段成稿与allow_nan |
 | test_experiment_ledger.py | 第44轮 G27① 统一实验台账：config_hash键序无关/同配置一致/参数类型数据敏感、json_safe清洗NaN/时间/集合、文件指纹与数据身份排除mtime内容变才变、记录字段与run_id形态、追加回读/repeat_of串联/同秒碰撞-r2/坏行宽容/原子LF/filter、safe_record成功与不可写吞错、list/show/repeats/export CLI、环境变量关闭重定向 |
 | test_portfolio_risk.py | 第47轮 G5①②③ 组合风险纯函数：相关阵(正/负/零方差/板块块)、线性插值分位数参数化、组合收益序列、历史VaR/ES(全正序列VaR为负)、参数VaR精确值与√h缩放及未知分位报错、原油OLS beta精确线性与线性压力方向、分散化收益(不相关为正/完全相关为0)、risk_snapshot端到端与零方差退化（零网络零面板） |
-| test_circuit_breaker.py | 第48轮 G5④ 组合层单日浮亏熔断：日期解析/浮亏口径/三档边界/委托过滤/非法参数(参数化)、observe即使delever也恒可开、当日粘性不回落解锁与日切重置、warn仍可开、风险度第二触发与非法安全、from_config，及与PaperBroker的close档集成（paper_halt下新仓被拦、反手只留平仓腿；默认observe无断路器照常开新仓） |
+| test_circuit_breaker.py | 第48轮 G5④ 组合层单日浮亏熔断：日期解析/浮亏口径/三档边界/委托过滤/非法参数(参数化)、observe即使delever也恒可开、当日粘性不回落解锁与日切重置、warn仍可开、风险度第二触发与非法安全、from_config，及与PaperBroker的close档集成（paper_halt下新仓被拦、反手只留平仓腿；默认observe无断路器照常开新仓）；第51轮 paper_delever 模式停开+减仓计划、reduce_lots_of 向下取整/不足1手不减、delever_plan 只减不清/跳过done/不改入参、当日只减一次与日切清空、auto_delever 标志、observe/paper_halt 不出计划 |
 | test_portfolio_nav.py | 第49轮 G5⑤ 组合历史净值曲线：nav_curve复利/不改入参/空序列、drawdown_window手算回撤与峰值谷底日期及安全退化、rolling_proxy的idx与dates对齐且四方法等长共用再平衡日历、玩具面板gmv波动≤等权且净值有限（零网络零面板） |
 | test_circuit_review.py | 第50轮 G5④ 熔断阈值历史校准台：loss_of/forward_compound远期复利手算与不足返None、threshold_events含等号穿越、level_counts三档分档、续跌vs反弹条件远期分布对照基准、_dist统计、sweep_halt阈值网格单调与占比有界、analyze_method结构与空序列安全、render三段成稿、selftest（零网络零DB） |
 | test_db_backup.py | 第46轮 G19 在线热备/灾备：备份文件名解析与非法名反例(参数化)、prune_plan滚动保留/全保留、只认本工具命名不误删、online_backup一致性+源只读、sidecar表行数、滚动删最旧连同sidecar、同秒碰撞不覆盖、缺源报错、restore恢复到备份点且旧库改名留存、坏备份拒绝恢复、坏库quick_check返OPEN_ERROR、任务XML/bat内容、版本缺失安全（全 tmp_path 造库、绝不碰生产 monitor.db） |
