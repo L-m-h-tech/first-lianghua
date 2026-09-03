@@ -16,7 +16,7 @@ panel 各接一次，口径只靠"调用同一函数"口头保证。本模块用
 算子白名单：
   时序（尾窗 n、无未来）：delay/delta/ts_sum/ts_mean/ts_std/ts_min/ts_max/ts_rank/ts_minmax/decay_linear/corr
   截面（同一时点跨品种）：cross_rank/scale/zscore
-  逐元素/数学：abs/sign/log/max/min（二元）、四则与一元负号
+  逐元素/数学：abs/sign/log/tanh/max/min（二元）、四则与一元负号
 因子治理（纯标准库，自含不依赖 tools）：pearson/spearman、高斯消元 _solve、orthogonalize 正交残差、
 等权/IC 加权/ICIR 加权 combine。
 """
@@ -29,7 +29,7 @@ _TS_OPS = {
     "ts_minmax": (2, "ts"), "decay_linear": (2, "ts"), "corr": (3, "ts"),
 }
 _CS_OPS = {"cross_rank": (1, "cs"), "scale": (1, "cs"), "zscore": (1, "cs")}
-_EL_OPS = {"abs": 1, "sign": 1, "log": 1, "max": 2, "min": 2}
+_EL_OPS = {"abs": 1, "sign": 1, "log": 1, "tanh": 1, "max": 2, "min": 2}
 WHITELIST = set(_TS_OPS) | set(_CS_OPS) | set(_EL_OPS)
 # "__" 防 dunder、";" 防语句拼接；属性访问的 '.' 不是数字一部分时由分词器按非法字符拒绝；
 # import/eval/exec/lambda 等名字即便出现也只是"输入字段名"、绝不执行，且作为函数调用过不了白名单。
@@ -268,6 +268,8 @@ def _el_ts(fn, xs):
             return (1 if args[0] > 0 else (-1 if args[0] < 0 else 0)) if _isnum(args[0]) else None
         if fn == "log":
             return math.log(args[0]) if _isnum(args[0]) and args[0] > 0 else None
+        if fn == "tanh":
+            return math.tanh(args[0]) if _isnum(args[0]) else None
         if fn == "max":
             return max(args) if all(_isnum(v) for v in args) else None
         if fn == "min":
@@ -457,6 +459,8 @@ def _el_scalar(fn, args):
         return (1 if args[0] > 0 else (-1 if args[0] < 0 else 0)) if _isnum(args[0]) else None
     if fn == "log":
         return math.log(args[0]) if _isnum(args[0]) and args[0] > 0 else None
+    if fn == "tanh":
+        return math.tanh(args[0]) if _isnum(args[0]) else None
     if fn in ("max", "min"):
         return (max if fn == "max" else min)(args) if all(_isnum(v) for v in args) else None
     raise ExprError("未知逐元素算子 %r" % fn)
@@ -597,6 +601,14 @@ LIBRARY = (
      "name": "价格二阶加速度", "note": "嵌套 delta 的动量变化率"},
     {"key": "expr_illiq", "expr": "abs(delta(close,1)/delay(close,1))/(volume+1)", "direction": -1,
      "name": "非流动性代理", "note": "Amihud |收益|/成交量 的无量纲代理（面板无成交额，用volume）"},
+    # ===== G25续（第59轮）旧技术因子过程式→表达式：以下表达式刻意按 futures_data 过程式的**同一运算顺序**书写，
+    # ret 用 close/delay-1（而非 delta/delay）以保证逐字节相等；SMA 用 ts_mean（与增量SMA仅末位舍入差异，见 factor_legacy_expr）。
+    {"key": "expr_ret5_exact", "expr": "close/delay(close,5)-1", "direction": +1,
+     "name": "5日收益(过程式逐字节镜像)", "note": "与 technical_profile.ret5 同运算序，float.hex 逐位相等；区别于 delta 写法的 expr_ma_bias5"},
+    {"key": "expr_ret20_exact", "expr": "close/delay(close,20)-1", "direction": +1,
+     "name": "20日收益(过程式逐字节镜像)", "note": "与 technical_profile.ret20 同运算序，float.hex 逐位相等"},
+    {"key": "expr_ma10", "expr": "ts_mean(close,10)", "direction": 0,
+     "name": "10日均线(表达式版)", "note": "对应 _sma_series(close,10)，窗内求和与增量累加仅末位浮点差异"},
 )
 
 
@@ -675,6 +687,11 @@ def selftest():
     assert sg[0] == -1 and sg[4] == 1 and sg[3] == -1
     lg = compute_ts("log(close)", {"close": [1.0, math.e, 0.0, -1.0]})
     assert abs(lg[1] - 1.0) < 1e-12 and lg[2] is None and lg[3] is None
+    # tanh 逐元素（G25续：声明式复刻综合分 tanh 压缩所需）
+    th = compute_ts("tanh(close)", {"close": [0.0, 1.0, -1.0]})
+    assert th[0] == 0.0 and abs(th[1] - math.tanh(1.0)) < 1e-15 and abs(th[2] - math.tanh(-1.0)) < 1e-15
+    thc = eval_cs("tanh(m)", {"m": {"A": 0.5, "B": -0.5}})
+    assert abs(thc["A"] - math.tanh(0.5)) < 1e-15 and abs(thc["B"] + math.tanh(0.5)) < 1e-15
 
     # 7) 截面 cross_rank/scale/zscore 手算
     cs = {"m": {"A": 1.0, "B": 2.0, "C": 3.0, "D": 4.0}}

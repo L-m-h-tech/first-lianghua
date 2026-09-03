@@ -13,6 +13,7 @@ import db_archive
 import factors_catalog
 import factor_plugin
 import factor_parts
+import factor_legacy_expr
 import factor_health
 import factor_expr
 import expr_research
@@ -78,8 +79,13 @@ def test_factor_plugin_selftest():
 
 
 def test_factor_parts_selftest():
-    """G2（第58轮第二切片）日线动量 live part 适配器 --selftest：门控/手算/对公式与真analyzer逐位parity/注册 共8组。"""
+    """G2（第58轮第二切片/第59轮第三切片）live part 适配器 --selftest：日线+其余7part 对真analyzer逐位parity 共10组。"""
     assert factor_parts.selftest() == 0
+
+
+def test_factor_legacy_expr_selftest():
+    """G25续（第59轮）旧因子过程式→表达式 --selftest：ret逐字节/SMA容差/日线动量tanh声明式逐位/无未来 共7组。"""
+    assert factor_legacy_expr.selftest() == 0
 
 
 def test_panel_builder_selftest():

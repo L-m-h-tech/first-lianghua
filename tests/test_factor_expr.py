@@ -101,6 +101,20 @@ def test_safe_div_and_log_sign():
     assert lg[1] == pytest.approx(1.0) and lg[2] is None and lg[3] is None
 
 
+def test_tanh_elementwise():
+    # G25续：tanh 逐元素算子（时序/截面/标量、非有限安全降级）
+    out = compute_ts("tanh(close)", {"close": [0.0, 1.0, -1.0]})
+    assert out[0] == 0.0
+    assert out[1] == pytest.approx(math.tanh(1.0))
+    assert out[2] == pytest.approx(math.tanh(-1.0))
+    # 复合表达式：声明式复刻日线动量的一项
+    one = compute_ts("tanh(close*160)*2.5", {"close": [0.01]})
+    assert one[0] == pytest.approx(math.tanh(0.01 * 160) * 2.5)
+    cs = eval_cs("tanh(m)", {"m": {"A": 0.5, "B": -0.5}})
+    assert cs["A"] == pytest.approx(math.tanh(0.5)) and cs["B"] == pytest.approx(-math.tanh(0.5))
+    assert "tanh" in fe.WHITELIST and fe._EL_OPS["tanh"] == 1
+
+
 # ---------------- ③ 截面 ----------------
 def test_cross_rank_scale_zscore():
     cs = {"m": {"A": 1.0, "B": 2.0, "C": 3.0, "D": 4.0}}

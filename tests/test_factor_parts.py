@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""G2（第58轮·第二切片）综合分 live part 适配器 parity 测试。
+"""G2（第58轮第二切片 / 第59轮第三切片）综合分 live part 适配器 parity 测试。
 
 钉死四件事：
-  1. 「日线动量」适配器元数据与 factors_catalog 登记逐字一致；
+  1. 各 part 适配器元数据与 factors_catalog 登记逐字一致；
   2. 门控语义/手算公式与 analyzer 内联式一致；
   3. **逐字节 parity**：网格+固定随机用例上，插件 vs 独立 legacy 公式、插件 vs 真实 analyzer
-     主链 analyze_variety 全部 float.hex 逐位相等（门控关闭分支同样一致）；
+     主链 analyze_variety 全部 float.hex 逐位相等（门控关闭分支同样一致）；第二切片=日线动量，
+     第三切片=其余 7 个简单门控 part（仅余「基本面」）；
   4. 主链 main.py/analyzer.py 源码不得 import factor_plugin/factor_parts（仍不切主链）。
 """
 import math
@@ -84,10 +85,12 @@ def test_register_builtin_parts_and_cleanup():
     fp.clear()
     keys = factor_parts.register_builtin_parts()
     try:
-        assert keys == ["日线动量"]
+        # 第三切片后共 8 个 live part（按 PART_KEYS 规范序，仅余「基本面」）
+        expected = [k for k in catalog.PART_KEYS if k != "基本面"]
+        assert keys == expected and len(keys) == 8
         # 注册后与 catalog 零冲突、规范序可排
         assert fp.check_registry_vs_catalog() == []
-        assert "日线动量" in fp.ordered_live_keys()
+        assert fp.ordered_live_keys() == expected
         v, err = fp.evaluate({"kline_ok": True, "price": 3500.0,
                               "ind": {"ret5": 0.01, "ret20": -0.02, "ma10": 3500.0}},
                              "日线动量")
@@ -101,6 +104,54 @@ def test_register_builtin_parts_and_cleanup():
     finally:
         fp.clear()
     assert fp.names() == []
+
+
+# ---------------- 第59轮·第三切片：其余 7 个 live part ----------------
+def test_third_slice_metadata_matches_catalog():
+    for key, ctor in factor_parts._PLUGINS.items():
+        pl = ctor()
+        rec = catalog.by_key(key)
+        assert pl.key == key and pl.status == "live"
+        assert pl.direction == rec["direction"]
+        assert pl.bound == tuple(rec["bound"]) and pl.layer == rec["layer"]
+        assert isinstance(pl, fp.FactorPlugin)
+
+
+def test_third_slice_gate_semantics():
+    # 新闻无门控恒透传
+    assert factor_parts.news_compute({"news_score": 0.31}) == 0.31
+    # 原油 oil_w>0 才开门
+    assert factor_parts.oil_link_compute({"oil_w": 0.0, "oil_score": 1.0}) is None
+    assert factor_parts.oil_link_compute({"oil_w": -0.2, "oil_score": 1.0}) is None
+    # 机构 total>=3 才开门
+    assert factor_parts.institution_compute({"inst": {"total": 2}}) is None
+    # 阈值 0.01：恰等关门、越过才开（四个阈值 part 一致）
+    assert factor_parts.intraday_momentum_compute({"tick_mom": 0.01}) is None
+    assert factor_parts.intraday_momentum_compute({"tick_mom": -0.0101}) == -0.0101
+    assert factor_parts.flow_capital_compute({"flow_score": 0.01}) is None
+    assert factor_parts.minute_resonance_compute({"intraday_ok": True, "intra_resonance": 0.01}) is None
+    assert factor_parts.minute_resonance_compute({"intraday_ok": False, "intra_resonance": 0.3}) is None
+    assert factor_parts.tech_resonance_compute({"kline_ok": False, "price": 100.0, "resonance": 0.5}) is None
+    assert factor_parts.tech_resonance_compute({"kline_ok": True, "price": 0.0, "resonance": 0.5}) is None
+    assert factor_parts.tech_resonance_compute({"kline_ok": True, "price": 100.0, "resonance": 0.01}) is None
+
+
+def test_third_slice_cases_deterministic():
+    for key in factor_parts.THIRD_SLICE_KEYS:
+        a = factor_parts.part_parity_cases(key, seed=7, n_random=32)
+        b = factor_parts.part_parity_cases(key, seed=7, n_random=32)
+        assert a == b and len(a) > 30
+
+
+def test_third_slice_parity_real_analyzer_bit_exact():
+    reps = factor_parts.parity_all_against_analyzer()
+    assert set(reps) == set(factor_parts.THIRD_SLICE_KEYS)
+    for key, rep in reps.items():
+        assert rep["mismatches"] == [], (key, rep["mismatches"][:3])
+        assert rep["max_diff"] == 0.0 and rep["n_open"] >= 100
+    # 新闻无门控：用例全部开门；原油含 oil_w<=0 关门用例
+    assert reps["新闻消息面"]["n_closed"] == 0
+    assert reps["原油联动"]["n_closed"] >= 1
 
 
 def test_main_chain_does_not_import_plugin_layer():

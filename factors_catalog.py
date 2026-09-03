@@ -125,6 +125,23 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 38,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "expr_research",
      "formula": "abs(delta(close,1)/delay(close,1))/(volume+1)，Amihud|收益|/量的无量纲代理"},
+    # ===== G25续（第59轮）旧技术因子过程式→表达式：ret 按过程式同运算序书写以逐字节镜像；SMA 末位容差；日线动量用 tanh 声明式复刻 =====
+    {"key": "expr_ret5_exact", "name": "5日收益(过程式逐字节镜像)", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 59,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "close/delay(close,5)-1，与 futures_data.technical_profile.ret5 同运算序、float.hex 逐位相等"},
+    {"key": "expr_ret20_exact", "name": "20日收益(过程式逐字节镜像)", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 59,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "close/delay(close,20)-1，与 ret20 同运算序逐位相等"},
+    {"key": "expr_ma10", "name": "10日均线(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 59,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_mean(close,10)，对应增量式 _sma_series，窗内求和与累加仅末位1e-15级差异"},
+    {"key": "expr_part_momentum_decl", "name": "日线动量part(声明式复刻)", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 59,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "tanh(ret5*160)*2.5+tanh(ret20*70)*2.0+tanh(price/ma10-1)*220，输入已算标量，逐位复刻 analyzer 日线动量part（不切主链）"},
 )
 
 _BY_KEY = None
