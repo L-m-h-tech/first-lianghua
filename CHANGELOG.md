@@ -3,6 +3,22 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.44.0] — 2026-09-03 · 第44轮 G27① 统一实验台账 experiment_ledger（追加式JSONL登记各研究/回测实验，config_hash同配置一致+repeat_of漂移串联，4宿主旁路钩子，主链与默认CSV零改动）
+- **任务与定位**：落地总纲 G27「统一实验台账 + walk-forward 稳定性/成本敏感性」的第一切片。此前 portfolio_lab/trade_journal/research_review/portfolio --compare-risk 等研究实验各自落 reports，靠文件名与时间戳区分，"同参数是否重跑过、结果漂了多少、用哪份数据跑的、一键复现命令"没有统一登记处；生产库 backtest_runs 只登记日线回测且属 storage 主链（研究工具纪律=只读生产库、不往里写）。新增**根模块 `experiment_ledger.py`（626行，纯标准库、零网络、不被 main/analyzer import）**，只做"登记与查询"（MLflow 只借台账思想不引服务、vectorbt 只学实验组织不引 numba/numpy）：追加式 `reports/experiment_runs.jsonl`（gitignore 运行日志，绝不覆盖任何既有报告/CSV）。G27②walk-forward 滚动评估、③fee/slip 成本敏感性曲面/换手容量预留登记入口、留续。
+- **`experiment_ledger.py`（626行，13组零网络自测）**：
+  - **配置身份 config_hash（G27 验收点）**：canonical_bytes 排序键+紧凑分隔+UTF-8（键序无关、中文稳定），canonical_hash=sha256(实验类型+规范化参数+**输入数据内容身份**)取16位，**刻意不含运行时间/文件 mtime/产物**——输入被逐字节重写（mtime 变、内容不变）hash 不变，故同配置两次实验 hash 一致；json_safe 前置清洗（非有限浮点→None、datetime→串、set/tuple→list、键转 str），落库前 `json.dumps(allow_nan=False)` 预检。
+  - **数据指纹与身份**：file_fingerprint（exists/size/mtime/小文件≤2MB 算全量 sha256，超限只登记 size，避免对分钟库/大 CSV/DB 全量哈希）、build_manifest 批量去重、data_identity_from_manifest 有 sha 用 sha 否则退化 size 且**排除 mtime**。
+  - **追加式台账 LedgerStore**：每行一条紧凑 JSON（utf-8、LF），读时宽容（空行/坏行跳过并计 bad_lines），写时**原子替换**（同目录 tmp+os.replace）+进程内 RLock；同 config_hash 已存在则写 `repeat_of=上一条 run_id`（两条都保留、串联不覆盖），同秒同 hash 撞 run_id 自动加 -r2/-r3；filter 按实验类型/limit。
+  - **宿主统一入口 safe_record**：构造+追加，任何异常全吞返回 None（台账是旁路、绝不拖垮宿主）；环境变量 `FUTURES_EXPERIMENT_LEDGER` 可重定向台账路径，置 0/off/false/none 显式关闭（测试隔离用）。
+  - **查询 CLI**：`--list`（一行一次实验：时间/类型/config/重复↻/关键指标）、`--show run_id`（单条全文：参数/指标/输入数据身份/产物/复现命令/版本/py）、`--repeats`（同 config 多次运行与指标漂移）、`--export`（导 JSON 数组）、`--experiment/--limit/--ledger`。
+- **4 个宿主挂"旁路登记钩子"（全部 try 包裹、登记失败绝不影响宿主产物与返回值，不改任何产物口径）**：
+  - `portfolio.py`：**仅 `--compare-risk` 影子对照时**登记三法（等名义/逆波动/ERC）end_equity/total_ret/ann_ret/sharpe/max_dd/avg_risk/npos/n_trades 与全套 sizing 参数，普通回测路径完全不触发；
+  - `tools/portfolio_lab.py`：登记四方法滚动 ann_ret/ann_vol/sharpe/maxdd/calmar/有效N/换手与组合构建设置；
+  - `tools/trade_journal.py`：登记笔数/胜率/PF/盈亏比/期望/最长连亏/由盈转亏（payload 构造提到 json 分支外以便钩子复用）；
+  - `tools/research_review.py`：**惰性 import**（守其模块级不 import 项目模块的纪律，导入前补 _ROOT 到 sys.path），登记数据源 ok/陈旧/缺失计数与待办 WARN/INFO 计数。
+  - `tests/conftest.py`：测试启动把台账重定向到系统临时文件并清空，防止测试调用宿主 run() 时污染真实 reports；`.gitignore` 增 `reports/*.jsonl`。
+- **验证（全绿且主链零影响）**：新增 `tests/test_experiment_ledger.py`（22例零网络确定性测试：规范哈希键序无关/同配置一致/敏感性、json_safe、指纹与排 mtime、记录构造、追加与 repeat 串联、run_id 碰撞、坏行宽容、原子 LF、safe_record 成功/吞错、渲染、CLI、环境变量关闭重定向）+ selftest 注册 + compileall 随新根模块，全量 **pytest 486→510 全绿（0失败0错误0跳过）**、13组模块自测过、compileall 过；**真实冒烟4宿主钩子全部登记成功**，真实演示同配置两次 config_hash 完全一致（trade_journal fc30b0d5ce、research_review 3fe4f997a1）且 repeat_of 正确串联；**默认8品种(I,MA,RB,SA,TA,AU,AG,CU) equity/trades 与 cache 基线双 sha256 逐字节一致**（证明 portfolio.py 主链改动零影响）；grep 证明 main.py/analyzer.py 零 import 台账；真实 main --once exit0、stderr 空、零 ERROR/Traceback。生产 py 61→62（根43→44、tools18不变）27021→27751 行，tests 32→33 文件 5011→5245 行，运行依赖仍仅 requests/uiautomation/websocket-client。
+
 ## [0.43.0] — 2026-09-03 · 第43轮 G30③ 研究侧一键复盘编排器 research_review（聚合各研究sidecar七段成稿+规则化待办，纯标准库只读，不重跑/不import主链/不覆盖主链daily_review）
 - **任务与定位**：承接第42轮 G30① trade_journal，落地总纲 G30③「一键日/周复盘：行情→因子表现G29→信号命中→交易归因G28→风险G3/G5→待办」。新增 `tools/research_review.py`：把各研究工具**已落盘**的 reports/*.json sidecar + 组合权益 CSV + 主链信号追踪文本聚合成一份"收盘研究简报+规则化待办清单"，秒级出 reports/research_review.txt+.json。**设计取舍：不 subprocess 重跑任何工具**（解耦、秒级、零副作用；各工具按各自节奏人工跑，编排器只串联最新结论并指出先做什么），任一 sidecar 缺失/损坏/字段不全/陈旧全部安全降级并给出刷新命令。**命名隔离**：主链已有 reports/daily_review.txt（report.build_daily_review 实时轮动+新闻、永久保留，属 main 铁律不动），故研究侧模块/产物命名 research_review.*，绝不覆盖主链文件。守三铁律：纯标准库零新依赖、不 import 任何生产模块、不被 main import、不改主链/综合分/默认CSV。
 - **`tools/research_review.py`（777行，11组零网络自测，SOURCES 台账登记9个数据源与刷新命令）**：
