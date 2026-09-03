@@ -42,6 +42,7 @@ import config  # noqa: E402
 import futures_data  # noqa: E402
 import factor_eval as fe  # noqa: E402  复用 pearson/spearman
 import backtest  # noqa: E402  复用 resolve_codes/ratio_adjusted_bars
+import panel_builder as pb  # noqa: E402  G21续：--panel 读标准研究面板（已复权，不再二次复权）
 
 # 因子键前缀：z=波动调整动量（主），ret=原始累计收益（对照）
 FACTOR_KINDS = [("z", "波动调整动量z"), ("ret", "原始累计收益ret")]
@@ -60,12 +61,8 @@ def forward_returns(closes, horizons):
     return out
 
 
-def build_symbol_points(name, sector, raw_bars, lookbacks, horizons, days):
-    """单品种：比例复权 -> 逐时点 {sym,sector,date, 各L的z/ret/vol, 各H的fwd}（纯函数、不联网）。
-
-    只返回"最长回看窗因子可得"的暖机后时点；vol{L}=过去 L 日日收益样本 std，供反波动率加权。
-    """
-    bars, _roll = backtest.ratio_adjusted_bars(raw_bars[-days:])
+def points_from_adjusted(name, sector, bars, lookbacks, horizons):
+    """已比例复权 bar -> 逐时点 {sym,sector,date,各L的z/ret/vol,各H的fwd}（纯函数、不联网、不再复权）。"""
     if len(bars) < max(lookbacks) + min(horizons) + 2:
         return []
     closes = [futures_data._f(b["c"]) for b in bars]
@@ -88,6 +85,12 @@ def build_symbol_points(name, sector, raw_bars, lookbacks, horizons, days):
         if ok:
             pts.append(p)
     return pts
+
+
+def build_symbol_points(name, sector, raw_bars, lookbacks, horizons, days):
+    """单品种网络旧路径：raw[-days:] 再比例复权 -> points_from_adjusted（历史逐值一致）。"""
+    bars, _roll = backtest.ratio_adjusted_bars(raw_bars[-days:])
+    return points_from_adjusted(name, sector, bars, lookbacks, horizons)
 
 
 def build_panel(points):
@@ -688,11 +691,15 @@ def _sector_of(name):
     return meta.get("cat", "其他")
 
 
-def _fetch_one(item, lookbacks, horizons, days):
+def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False):
     name, code = item
     try:
-        raw = futures_data.fetch_daily_kline(code)
-        pts = build_symbol_points(name, _sector_of(name), raw, lookbacks, horizons, days)
+        if prefer_panel:
+            bars, _src = pb.load_adjusted_bars(code, days, prefer_panel=True)
+            pts = points_from_adjusted(name, _sector_of(name), bars, lookbacks, horizons)
+        else:
+            raw = futures_data.fetch_daily_kline(code)
+            pts = build_symbol_points(name, _sector_of(name), raw, lookbacks, horizons, days)
         if not pts:
             return name, [], "K线/暖机不足"
         return name, pts, ""
@@ -700,10 +707,10 @@ def _fetch_one(item, lookbacks, horizons, days):
         return name, [], "%s: %s" % (type(e).__name__, e)
 
 
-def collect_points(items, lookbacks, horizons, days, workers):
+def collect_points(items, lookbacks, horizons, days, workers, prefer_panel=False):
     points, errors = [], []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days) for it in items]
+        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days, prefer_panel) for it in items]
         for fut in as_completed(futs):
             name, pts, err = fut.result()
             if pts:
@@ -746,6 +753,8 @@ def run(argv=None):
                     help="档内加权：equal 等权（默认）；ivol 反波动率加权（AQR口径）")
     ap.add_argument("--workers", type=int, default=config.XSMOM_EVAL_WORKERS)
     ap.add_argument("--out", default=config.XSMOM_EVAL_FILE)
+    ap.add_argument("--panel", action="store_true",
+                    help="G21续：优先读 cache/research_panel.db 已复权面板（缺省仍联网现拉，结果一致）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -758,7 +767,7 @@ def run(argv=None):
     main_scope = tuple(s.strip() for s in args.scope.split(",") if s.strip()) or None
     items = backtest.resolve_codes(args.codes, args.limit if args.limit > 0 else None)
     # 一次拉满长样本（--days），主样本=全局日历最近 main_days 个交易日，两窗口同源可比
-    points, errors = collect_points(items, lookbacks, horizons, args.days, args.workers)
+    points, errors = collect_points(items, lookbacks, horizons, args.days, args.workers, getattr(args, 'panel', False))
     if not points:
         print("无可用样本（全部品种取数失败或暖机不足），错误示例：%s" % errors[:3])
         return 2

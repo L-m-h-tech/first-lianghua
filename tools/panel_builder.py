@@ -228,7 +228,7 @@ def _fund_pairs_for(sym):
 
 
 def resolve_items(codes_arg=None, limit=None):
-    """复用 backtest.resolve_codes 的品种→主连代码映射（返回 [(中文名,主连代码,板块)]）。"""
+    """复用 backtest.resolve_codes 的品种→主连代码映射（返回 [(中文名,主连代码,板块,sym)]）。"""
     raw = backtest.resolve_codes(codes_arg, limit)
     items = []
     for name, code in raw:
@@ -236,6 +236,41 @@ def resolve_items(codes_arg=None, limit=None):
         sym = code.rstrip("0").upper()
         items.append((name, code, meta.get("cat", "未知"), sym))
     return items
+
+
+# =========================== G21续（第37轮）：面板回读/统一装载层 ===========================
+def panel_rows_to_bars(rows):
+    """面板行（存的是**已比例复权** OHLC）回读成下游研究工具期望的 bar-dict 序列。
+
+    p=持仓量(面板 oi)；主连时序/截面研究只用收盘价 c，结算价 s 以 c 代（真正含展期口径走 term_history）。
+    """
+    out = []
+    for r in rows:
+        out.append({"d": r["date"], "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"],
+                    "v": r["v"], "p": r["oi"], "s": r["c"]})
+    return out
+
+
+def load_adjusted_bars(code, days, prefer_panel=False, db_path=None):
+    """统一装载"**已比例复权**日K"，返回 (bars, source)。这是 G21续 让研究工具读面板的唯一入口。
+
+    - prefer_panel=True 且独立面板库有该品种：直接回读已复权 bar（**绝不再二次 ratio_adjusted_bars**——
+      实证对已复权序列再复权会因 MAD 阈值变小而把真实大波动误判成换月，SC/J 价位可偏 6%~12%）；
+    - 否则（缺省）走旧网络路径 fetch_daily_kline[-days:]→ratio_adjusted_bars，与历史逐值一致（缺省等价旧版）。
+    面板比原始序列少最初 PANEL_WARMUP-1 根（暖机前不入面板），对需≥最长回看窗的研究输出无影响。
+    """
+    sym = str(code).rstrip("0").upper()
+    if prefer_panel:
+        db_path = db_path or config.PANEL_DB
+        if os.path.exists(db_path):
+            st = PanelStore(db_path)
+            rows = st.load_rows(sym)
+            st.close()
+            if rows:
+                return panel_rows_to_bars(rows)[-days:], "panel"
+    raw = futures_data.fetch_daily_kline(code)[-days:]
+    bars, _ = backtest.ratio_adjusted_bars(raw)
+    return bars, "network"
 
 
 def build_items(items, days, store=None, use_fund=True, verbose=False):
@@ -421,8 +456,32 @@ def selftest():
 
     # 7) 特征注册表自检联动
     assert not fc.validate()
+
+    # 8) G21续：面板回读==建面板时的已复权bar；且对回读序列再复权为恒等（不再误判换月）
+    raw8 = _synthetic_bars(80)
+    adj8, adj_roll = backtest.ratio_adjusted_bars(raw8)
+    rows8, _ = build_symbol_rows("RB", "黑色", raw8, warmup=10)
+    recon8 = panel_rows_to_bars(rows8)
+    assert len(recon8) == len(rows8)
+    # 面板行存的 c 就是已复权 c；回读逐值一致（对齐暖机后的 adj8）
+    for rb_row, bar in zip(rows8, recon8):
+        assert bar["d"] == rb_row["date"] and abs(bar["c"] - rb_row["c"]) < 1e-12
+        assert bar["p"] == rb_row["oi"]
+    # 回读序列（已复权）再跑一次复权：不产生新换月、收盘价不变（幂等，SC/J 类误判在合成平滑序列上为0）
+    re_adj, re_roll = backtest.ratio_adjusted_bars(recon8)
+    assert re_roll == 0
+    for a, b in zip(recon8, re_adj):
+        assert abs(a["c"] - b["c"]) < 1e-12
+    # load_adjusted_bars 面板路径回读==网络路径复权（同输入、临时库）
+    with tempfile.TemporaryDirectory() as td:
+        dbp = os.path.join(td, "p.db")
+        st = PanelStore(dbp); st.replace_symbol("RB", rows8); st.close()
+        pb_bars, src = load_adjusted_bars("RB0", 1023, prefer_panel=True, db_path=dbp)
+        assert src == "panel" and len(pb_bars) == len(rows8)
+        assert abs(pb_bars[-1]["c"] - adj8[-1]["c"]) < 1e-9
+        # 缺品种时面板路径软回退到网络（不编造）；此处断网会抛，故只验证缺库返回 network 分支不命中面板
     print("panel_builder selftest ALL PASS（asof边界/暖机ret1d/未来扰动PIT/基本面严格asof/"
-          "训练服务一致/PanelStore幂等/manifest/注册表联动 共7组）")
+          "训练服务一致/PanelStore幂等/manifest/注册表联动/面板回读不二次复权 共8组）")
     return 0
 
 

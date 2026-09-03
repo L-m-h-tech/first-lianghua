@@ -44,6 +44,7 @@ import config  # noqa: E402
 import futures_data  # noqa: E402
 import factor_eval as fe  # noqa: E402  复用 pearson/spearman/分档/月度IC/ICIR
 import backtest  # noqa: E402  复用 resolve_codes/ratio_adjusted_bars
+import panel_builder as pb  # noqa: E402  G21续：--panel 读已复权面板
 
 # 因子键 -> (中文名, 是否本次新增的长窗核心因子)
 FACTORS = [
@@ -116,9 +117,8 @@ def forward_returns(closes, horizons):
     return out
 
 
-def build_symbol_records(name, raw_bars, lookbacks, horizons):
-    """单品种：比例复权 -> 逐时点因子 + 未来收益 -> 暖机后的样本记录列表（纯函数，不联网）。"""
-    bars, _roll = backtest.ratio_adjusted_bars(raw_bars)
+def records_from_adjusted(name, bars, lookbacks, horizons):
+    """已比例复权 bar -> 逐时点因子+未来收益记录（纯函数、不联网、不再复权）。"""
     if len(bars) < max(lookbacks) + max(horizons) + 5:
         return []
     closes = [futures_data._f(b["c"]) for b in bars]
@@ -147,6 +147,12 @@ def build_symbol_records(name, raw_bars, lookbacks, horizons):
         if ok:
             recs.append(rec)
     return recs
+
+
+def build_symbol_records(name, raw_bars, lookbacks, horizons):
+    """网络旧路径：比例复权 -> records_from_adjusted（历史逐值一致）。"""
+    bars, _roll = backtest.ratio_adjusted_bars(raw_bars)
+    return records_from_adjusted(name, bars, lookbacks, horizons)
 
 
 def xy(records, factor, horizon):
@@ -461,12 +467,16 @@ def _sidecar(records, metrics, cmat, resid, weights, verdict, lookbacks, horizon
 
 
 # =========================== 数据抓取与入口 ===========================
-def _fetch_one(item, lookbacks, horizons, days):
+def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False):
     name, code = item
     try:
-        raw = futures_data.fetch_daily_kline(code)
-        raw = raw[-days:]
-        recs = build_symbol_records(name, raw, lookbacks, horizons)
+        if prefer_panel:
+            bars, _src = pb.load_adjusted_bars(code, days, prefer_panel=True)
+            recs = records_from_adjusted(name, bars, lookbacks, horizons)
+        else:
+            raw = futures_data.fetch_daily_kline(code)
+            raw = raw[-days:]
+            recs = build_symbol_records(name, raw, lookbacks, horizons)
         if not recs:
             return name, [], "K线/暖机不足"
         return name, recs, ""
@@ -474,10 +484,10 @@ def _fetch_one(item, lookbacks, horizons, days):
         return name, [], "%s: %s" % (type(e).__name__, e)
 
 
-def collect_records(items, lookbacks, horizons, days, workers):
+def collect_records(items, lookbacks, horizons, days, workers, prefer_panel=False):
     records, errors = [], []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days) for it in items]
+        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days, prefer_panel) for it in items]
         for fut in as_completed(futs):
             name, recs, err = fut.result()
             if recs:
@@ -502,6 +512,7 @@ def run(argv=None):
     ap.add_argument("--oos-ratio", type=float, default=config.TSMOM_EVAL_OOS_RATIO)
     ap.add_argument("--workers", type=int, default=config.TSMOM_EVAL_WORKERS)
     ap.add_argument("--out", default=config.TSMOM_EVAL_FILE)
+    ap.add_argument("--panel", action="store_true", help="G21续：优先读已复权研究面板（缺省联网现拉）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -510,7 +521,7 @@ def run(argv=None):
     horizons = tuple(int(x) for x in args.horizons.split(",") if x.strip())
     main_h = args.main_h if args.main_h in horizons else horizons[len(horizons) // 2]
     items = backtest.resolve_codes(args.codes, args.limit if args.limit > 0 else None)
-    records, errors = collect_records(items, lookbacks, horizons, args.days, args.workers)
+    records, errors = collect_records(items, lookbacks, horizons, args.days, args.workers, getattr(args,'panel',False))
     if not records:
         print("无可用样本（全部品种取数失败或暖机不足），错误示例：%s" % errors[:3])
         return 2

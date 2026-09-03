@@ -178,3 +178,68 @@ def test_audit_panel_db_clean_and_corrupt():
         st = pb.PanelStore(dbp); st.replace_symbol("RB", bad); st.close()
         res2 = pa.audit_panel_db(dbp)
         assert any("ret1d" in x for x in res2["issues"])
+
+
+# ---------------- G21续（第37轮）：面板回读/统一装载，与网络路径逐值一致 ----------------
+def _long_bars(n=340, start=100.0):
+    out = []
+    for i in range(n):
+        c = start * (1 + 0.0011 * i) + (0.4 if i % 3 == 0 else 0.0)
+        out.append({"d": "2025-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
+                    "o": c - 0.1, "h": c + 0.2, "l": c - 0.3,
+                    "c": c, "v": 1000 + i, "p": 5000 + i, "s": c})
+    return out
+
+
+def test_panel_rows_to_bars_roundtrip():
+    raw = _bars(40)
+    rows, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
+    recon = pb.panel_rows_to_bars(rows)
+    assert len(recon) == len(rows)
+    for r, b in zip(rows, recon):
+        assert b["d"] == r["date"] and abs(b["c"] - r["c"]) < 1e-12 and b["p"] == r["oi"]
+
+
+def test_xsmom_panel_path_equals_network_path():
+    import backtest
+    import xsmom_eval as xs
+    raw = _long_bars()
+    LB, HOR, days = (20, 60, 120, 252), (5, 20, 60), 1023
+    net = xs.build_symbol_points("RB", "黑色", raw, LB, HOR, days)
+    adj, _ = backtest.ratio_adjusted_bars(raw[-days:])       # 面板路径=已复权bar，不再二次复权
+    pan = xs.points_from_adjusted("RB", "黑色", adj, LB, HOR)
+    assert len(net) == len(pan)
+    for a, b in zip(net, pan):
+        assert a["date"] == b["date"]
+        for L in LB:
+            assert (a["z%d" % L] is None and b["z%d" % L] is None) or abs(a["z%d" % L] - b["z%d" % L]) < 1e-12
+
+
+def test_tsmom_panel_path_equals_network_path():
+    import backtest
+    import tsmom_eval as te
+    raw = _long_bars()
+    LB, HOR = (63, 126, 252), (5, 20, 60)
+    net = te.build_symbol_records("RB", raw, LB, HOR)
+    adj, _ = backtest.ratio_adjusted_bars(raw)
+    pan = te.records_from_adjusted("RB", adj, LB, HOR)
+    assert len(net) == len(pan)
+    for a, b in zip(net, pan):
+        assert a["date"] == b["date"] and abs(a["z252"] - b["z252"]) < 1e-12
+
+
+def test_load_adjusted_bars_panel_source_and_skip_double_adjust():
+    import backtest
+    raw = _long_bars()
+    rows, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
+    with tempfile.TemporaryDirectory() as td:
+        dbp = os.path.join(td, "p.db")
+        st = pb.PanelStore(dbp); st.replace_symbol("RB", rows); st.close()
+        bars, src = pb.load_adjusted_bars("RB0", 1023, prefer_panel=True, db_path=dbp)
+        assert src == "panel" and len(bars) == len(rows)
+        # 面板回读已是复权价；再复权不产生新换月、价位不变（实证 SC/J 类二次复权误判在此被根除）
+        re_bars, roll = backtest.ratio_adjusted_bars(bars)
+        assert roll == 0
+        for a, b in zip(bars, re_bars):
+            assert abs(a["c"] - b["c"]) < 1e-12
+

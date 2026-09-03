@@ -42,6 +42,7 @@ import config  # noqa: E402
 import futures_data  # noqa: E402
 import backtest  # noqa: E402
 import term_history as th  # noqa: E402
+import panel_builder as pb  # noqa: E402  G21续：--panel 主连读已复权面板（期限序列仍走 term_history）
 import xsmom_eval as xs  # noqa: E402  复用截面/绩效/双样本全套纯函数
 
 # 因子族：(point键, 中文名, 方向+1=因子越大未来收益越高)
@@ -78,8 +79,8 @@ def _term_maps(term_series, smooth, mom_k):
     return out
 
 
-def build_carry_points(name, sector, raw_main_bars, term_series, horizons,
-                       smooth=5, mom_k=20, vol_lb=63, days=2500):
+def carry_points_from_adjusted(name, sector, bars, term_series, horizons,
+                                smooth=5, mom_k=20, vol_lb=63):
     """对齐主连复权收益与期限因子，产出逐时点点集（不联网、纯函数）。
 
     每个点同时带两套未来 H 日收益：
@@ -87,7 +88,6 @@ def build_carry_points(name, sector, raw_main_bars, term_series, horizons,
       fwdn{H} = 近月连续净值收益（th.near_roll_nav，持续持有当时近月、**含展期 roll**，学术 carry 口径）。
     两套都给，避免"用抹掉 roll 的主连去检验 carry"造成错误证伪。
     """
-    bars, _roll = backtest.ratio_adjusted_bars(raw_main_bars[-days:])
     if len(bars) < vol_lb + min(horizons) + 2:
         return []
     closes = [futures_data._f(b["c"]) for b in bars]
@@ -126,6 +126,14 @@ def build_carry_points(name, sector, raw_main_bars, term_series, horizons,
     return pts
 
 
+def build_carry_points(name, sector, raw_main_bars, term_series, horizons,
+                       smooth=5, mom_k=20, vol_lb=63, days=2500):
+    """网络旧路径：主连 raw[-days:] 比例复权 -> carry_points_from_adjusted（历史逐值一致）。"""
+    bars, _roll = backtest.ratio_adjusted_bars(raw_main_bars[-days:])
+    return carry_points_from_adjusted(name, sector, bars, term_series, horizons,
+                                      smooth, mom_k, vol_lb)
+
+
 def retarget(points, target):
     """切换截面收益目标：'main'=主连复权(不含roll)原样；'near'=把 fwdn{H}(近月连续含roll) 覆盖到 fwd{H}。"""
     if target == "main":
@@ -159,7 +167,8 @@ def _ym_range_for(days, future_months=9, back_buffer_months=8):
     return (sy % 100, sm, ey % 100, em)
 
 
-def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner, store):
+def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner, store,
+                         prefer_panel=False):
     name, main_code = item
     meta = config.VARIETIES.get(name, {})
     sym = meta.get("sym") or main_code.rstrip("0")
@@ -168,9 +177,14 @@ def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner,
         syy, smm, eyy, emm = _ym_range_for(days)
         th.build_symbol_range(sym, syy, smm, eyy, emm, store, workers=workers_inner, pause=0.0)
         term_series = th.term_series_for(sym, store)
-        raw = futures_data.fetch_daily_kline(main_code)
-        pts = build_carry_points(name, sector, raw, term_series, horizons,
-                                 smooth, mom_k, vol_lb, days)
+        if prefer_panel:
+            bars, _src = pb.load_adjusted_bars(main_code, days, prefer_panel=True)
+            pts = carry_points_from_adjusted(name, sector, bars, term_series, horizons,
+                                             smooth, mom_k, vol_lb)
+        else:
+            raw = futures_data.fetch_daily_kline(main_code)
+            pts = build_carry_points(name, sector, raw, term_series, horizons,
+                                     smooth, mom_k, vol_lb, days)
         if not pts:
             return name, [], "期限/暖机不足(term天数=%d)" % len(term_series)
         return name, pts, ""
@@ -178,12 +192,13 @@ def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner,
         return name, [], "%s: %s" % (type(e).__name__, e)
 
 
-def collect_carry_points(items, days, horizons, smooth, mom_k, vol_lb, workers, workers_inner, store):
+def collect_carry_points(items, days, horizons, smooth, mom_k, vol_lb, workers, workers_inner, store,
+                         prefer_panel=False):
     points, errors = [], []
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futs = [pool.submit(_fetch_one_carry, it, days, horizons, smooth, mom_k,
-                            vol_lb, workers_inner, store) for it in items]
+                            vol_lb, workers_inner, store, prefer_panel) for it in items]
         for k, fut in enumerate(as_completed(futs), 1):
             name, pts, err = fut.result()
             if pts:
@@ -445,6 +460,7 @@ def run(argv=None):
     ap.add_argument("--db", default=th.TERM_DB_PATH)
     ap.add_argument("--out", default="reports/carry_eval.txt")
     ap.add_argument("--json", default="reports/carry_eval.json")
+    ap.add_argument("--panel", action="store_true", help="G21续：主连读已复权面板（期限仍走term_history；面板约1023日，长2500样本请用缺省网络）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -458,7 +474,7 @@ def run(argv=None):
         print("carry_eval：%d 个品种，逐合约缺失才下载并缓存到 %s ..." % (len(items), args.db))
         points, errors = collect_carry_points(
             items, args.days, horizons, args.smooth, args.mom_k, args.vol_lb,
-            args.workers, args.workers_inner, store)
+            args.workers, args.workers_inner, store, getattr(args, 'panel', False))
     finally:
         store.close()
     if not points:
