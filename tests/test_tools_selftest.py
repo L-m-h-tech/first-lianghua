@@ -22,6 +22,8 @@ import research_review
 import experiment_ledger
 import wf_cost_lab
 import db_backup
+import portfolio_risk
+import portfolio_risk_lab
 
 
 def test_factor_eval_selftest():
@@ -126,3 +128,13 @@ def test_wf_cost_lab_selftest():
 def test_db_backup_selftest():
     """G19（第46轮）sqlite在线热备/滚动保留/恢复/任务XML/bat --selftest：tmp造库零网络零生产库。"""
     assert db_backup.selftest() == 0
+
+
+def test_portfolio_risk_selftest():
+    """G5（第47轮）组合风险纯函数：相关矩阵/历史&参数VaR/ES/原油beta压力 11组零网络自测。"""
+    assert portfolio_risk.selftest() == 0
+
+
+def test_portfolio_risk_lab_selftest():
+    """G5（第47轮）组合风险实验台：窗口切片/超长窗取全/四方案渲染不崩 3组自测。"""
+    assert portfolio_risk_lab.selftest() == 0
