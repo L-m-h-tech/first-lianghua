@@ -39,6 +39,7 @@ from datetime import datetime
 
 import config
 import portfolio as portfolio_mod
+import circuit_breaker
 from backtest import load_fee_schedule
 from storage import score_band_name
 
@@ -146,7 +147,7 @@ class PaperBroker:
     def __init__(self, *, db=None, equity0=None, fill_mode=None, entry_score=None,
                  exit_score=None, sizing=None, margin_table=None, fee_table=None,
                  sector_of=None, slip_rate=None, restore=True, clock=None, owner_fn=None,
-                 risk_sizing=None, risk_gross=None):
+                 risk_sizing=None, risk_gross=None, circuit=None):
         self.db = db
         self.fill_mode = fill_mode or getattr(config, "PAPER_FILL_MODE", "next")
         if self.fill_mode not in ("close", "next"):
@@ -185,6 +186,16 @@ class PaperBroker:
         self.pos_ref = {}          # sym -> 当前持仓 pos_ref
         self.last_summary = None   # 最近一轮 on_cycle 结果
         self.restored = False
+        # G5④（第48轮）组合层单日浮亏熔断：显式传入优先；否则仅在 config 开启且 paper_halt 模式才挂。
+        # 默认 CIRCUIT_ACTION='observe' -> self.breaker=None，阶段B不过滤任何委托、成交逐字节等价旧版。
+        if circuit is not None:
+            self.breaker = circuit
+        elif getattr(config, "CIRCUIT_ENABLED", False) and \
+                getattr(config, "CIRCUIT_ACTION", circuit_breaker.OBSERVE) == circuit_breaker.PAPER_HALT:
+            self.breaker = circuit_breaker.CircuitBreaker.from_config()
+        else:
+            self.breaker = None
+        self._last_circuit = None
         if restore and self.db is not None:
             self.restore()
 
@@ -494,6 +505,9 @@ class PaperBroker:
             if not sym:
                 continue
             orders = self._decide(ts, row)
+            # G5④ 组合熔断：断路器停开时剔除开新仓腿（保留平仓腿）；breaker=None(默认observe)时原样返回
+            if self.breaker is not None:
+                orders = circuit_breaker.filter_orders(orders, self.breaker.open_allowed())
             if self.fill_mode == "next":
                 new_sig = [(o["action"], o["direction"]) for o in orders]
                 old_q = self.pending.get(sym)
@@ -536,11 +550,16 @@ class PaperBroker:
         cycle_trades += self._liquidate(ts, by_sym)
         # 阶段D：权益快照（一轮一条，同 ts 覆盖、重跑幂等）
         snap = self._snapshot(ts, prices_raw)
+        # G5④ 用本轮最新权益更新熔断状态（供下一轮阶段B使用，严格无未来函数）；observe/None 时不挂
+        if self.breaker is not None:
+            self._last_circuit = self.breaker.update(
+                snap["ts"], snap["equity"], risk_degree=snap.get("risk_degree"),
+                n_positions=snap.get("n_positions"))
         n_pending = sum(len(q) for q in self.pending.values())
         summary = {"ts": ts, "snapshot": snap, "n_orders": len(cycle_orders),
                    "n_trades": len(cycle_trades), "n_pending": n_pending,
                    "n_positions": len(self.pf.positions),
-                   "n_skipped": len(self.pf.skipped),
+                   "n_skipped": len(self.pf.skipped), "circuit": self._last_circuit,
                    "orders": cycle_orders, "trades": cycle_trades}
         self.last_summary = summary
         return summary
