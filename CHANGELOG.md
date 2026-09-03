@@ -3,6 +3,15 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.47.0] — 2026-09-03 · 第47轮 G5 组合层风险（研究侧①②③）相关矩阵+组合VaR(历史/参数)+原油压力传导（新增根模块 portfolio_risk.py 纯函数 + tools/portfolio_risk_lab.py 只读面板，主链/risk_gate/综合分/sizing 零改动）
+- **任务与边界**：G5 总纲含①相关矩阵②组合VaR③原油压力④risk_gate熔断可配置动作⑤第四种风险平价sizing+组合历史净值回测。本轮**只做研究侧①②③的只读度量**，④熔断动作/⑤sizing与净值回测留后续（任何接入仍须"默认等价旧版、不传不变"）。新增**根模块 `portfolio_risk.py`（347行纯标准库、零网络纯函数，协方差复用 portfolio_constructor）**与**研究工具 `tools/portfolio_risk_lab.py`（241行，只读 G21 面板 cache/research_panel.db，出 reports/portfolio_risk_lab.txt|.json，末尾经统一实验台账旁路登记一条）**；main/analyzer/portfolio/risk_gate 经 grep 证明**零 import 新模块**。
+- **① 相关结构**：correlation_matrix（协方差→Pearson，零方差安全记0）、平均绝对/带符号相关（系统性联动强度）、板块×板块平均相关 sector_corr_block、最强/最弱相关对 top_pairs、线性插值分位数 percentile。
+- **② 组合 VaR/ES（双口径对照）**：历史模拟法 historical_var（组合日收益经验分位，VaR 损失为正、ES=超 VaR 尾部条件均值、最差日，不假设正态、含真实肥尾）；参数法 parametric_var（σ_p=sqrt(w'Σw)、VaR=z·σ_p，95/99 分位，多日按 √h 缩放给10日）；分散化收益=1−组合参数VaR/加权单体VaR。对 equal/inv_vol/erc/gmv 四套权重同篮子对照，回答"风险型权重能否真正降尾部风险"。
+- **③ 原油压力**：以 SC 为驱动，oil_betas 从协方差算各品种 OLS 斜率 β=C(i,oil)/C(oil,oil) 与 R²，stress_oil 线性一阶传导组合损益=Σw_iβ_i·shock，给原油 −5%/−10%/+5% 三情景总损益与主要贡献品种（明确标注忽略非线性/危机时相关突变，属数量级情景）。
+- **真实数据诚实结论（固定宇宙61/64品种、风险窗2026-03-04~09-02共126日、收缩0.10/单票上限20%/满仓多头未加杠杆）**：平均绝对相关仅 **0.161**（商品篮子整体易分散），但板块内联动强——贵金属0.598、能源化工0.346、黑色0.300、有色0.279，贵金属对能源化工 −0.160 具跨板块对冲；最强相关对为产业链 PX-TA=0.81、BC-CU=0.78、L-PP=0.77、J-JM=0.72，最弱为黄金对化工 AU-PF=−0.40；**等权组合单日历史VaR95=1.06%/ES95=1.21%/VaR99=1.31%，参数VaR95=0.98%（肥尾溢价+8%，正态略低估左尾）、10日VaR95=3.11%**；风险型权重显著降尾部——erc 历史VaR95=0.66%、gmv=0.40%（代价是有效N 61→34.8/12.3、更集中），分散化收益等权59.7%→gmv71.8%；**原油−5% 等权组合−0.61%（SC/FU/LU/EB 拖累最大），gmv 仅−0.07%**。
+- **测试与零改动证据**：新增 `tests/test_portfolio_risk.py`（139行19例零网络/零面板：相关阵正负与零方差、平均相关、板块块、分位数参数化、组合收益序列、历史VaR/ES与全正序列VaR为负、参数VaR精确值与√h及未知分位报错、原油beta精确线性/零方差、压力方向排序、分散化不相关为正完全相关为0、端到端与零方差退化）+ test_tools_selftest 注册 portfolio_risk 11组与 portfolio_risk_lab 3组 selftest；全量 **pytest 549→572 全绿（0失败/错误/跳过，cache/r47_junit.xml）**、compileall 过。默认8品种 equity=c4da4cdf61f3bcdc/trades=50dcc800d326f8e9 双 sha256 逐字节一致；main/analyzer/portfolio/risk_gate 零引用；运行依赖仍仅 requests/uiautomation/websocket-client。
+- **规模**：生产 py 64→66（根45→46新增 portfolio_risk 347行、tools19→20新增 portfolio_risk_lab 241行）/28897→29485 行；tests 35→36 文件/5597→5748 行；用例 549→572；统一实验台账6类各1条（新增 portfolio_risk_lab）。代码 commit d87983f。G5 研究侧①②③闭环，④熔断动作/⑤风险平价sizing与组合历史净值回测为后续。
+
 ## [0.46.0] — 2026-09-03 · 第46轮 G19 数据库在线热备份+滚动保留+开机自启/定时任务导出+灾备恢复+main --version（新增根模块 db_backup.py，只读源库只写backup/，主链与默认CSV零改动）
 - **任务与定位**：补运维安全短板——monitor.db（WAL、约360MB，含 quotes/minute_bars/signals/signal_outcomes/news/options/paper_*/backtest_runs 全部家当）此前**没有任何自动备份**，磁盘损坏/误写/误删即全损。新增**根模块 `db_backup.py`（533行，纯标准库 sqlite3/os/shutil，零网络，不接 main 主循环、不改综合分、不改任何生产数据）**。区别于 tools/db_archive.py（按年导出归档快照）：本工具做**高频在线热备+滚动保留+一键恢复+自启导出**。
 - **在线热备（不用停程序）**：用 SQLite 官方 **Online Backup API**（`src.backup(dst,pages=-1)`），源库以**只读 URI（mode=ro）**打开，main 常驻写库时也得到事务一致性快照、对 WAL 安全、不持长锁；约360MB 实测约10秒。备份后对**副本**跑 `PRAGMA quick_check`，不通过立即删除坏副本并报错——**不留"看着有、实际坏"的假备份**；每份配同名 `.json` sidecar（源/副本大小、双 quick_check、各表行数、VERSION、时间）。
