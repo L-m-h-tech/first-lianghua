@@ -106,6 +106,8 @@ D:\Python\python.exe tools\expr_research.py --selftest   # 零网络断言(面�
 D:\Python\python.exe factor_expr.py --selftest       # G25表达式引擎自测(白名单安全/时序截面算子手算/OLS正交/IC加权)
 D:\Python\python.exe tools\factor_regime.py         # 第39轮G29续：因子regime分层(牛熊×高低波IC)+换手稳定性+指数vs幂律衰减形态
 D:\Python\python.exe tools\factor_regime.py --selftest  # 零网络断言(PIT标签/分层IC/持续性/衰减形态择优与安全降级)
+D:\Python\python.exe portfolio_constructor.py      # 第40轮G26组合构建器自测(等权/逆波动/ERC全牛顿/长仓GMV/capped-simplex/目标波动)
+D:\Python\python.exe tools\portfolio_lab.py         # 第40轮G26：四方法最新权重快照+每20日滚动样本外代理回测(严格无未来,equal为基线)
 D:\Python\python.exe tools\build_ml_samples.py --selftest    # 止盈/止损/同根双触/跳空/超时/PIT/embargo 断言
 D:\Python\python.exe tools\backtest_validation.py --selftest           # DSR/CSCV-PBO/PurgedKFold/Walk-forward/参数高原 断言
 D:\Python\python.exe tools\backtest_validation.py --grid RB --period 30 # 单品种18组参数网格样本外验证
@@ -218,6 +220,8 @@ OpenVlab市场页的隐波排行走内部POST接口暂无法稳定获取，程�
 
 8. **因子 regime 分层/换手/衰减形态（`tools/factor_regime.py`，第39轮 G29续，研究侧定期人工跑）**：在因子体检之上回答三个更细的问题——①**regime 条件有效性**：用面板 PIT 的 ret126 分牛/熊/震荡、hv60 过去120日分位（G25 ts_rank、无未来）分高/中/低波，桶内算前向 RankIC；②**持续性与隐含换手**：因子滚动分位在 1/5/20 日再平衡间隔的秩自相关与平均|分位变动|；③**衰减形态**：同一 IC(H) 曲线分别拟合指数/幂律、按 R² 择优，不硬套半衰期。真实结论：**长周期动量 ret252/tsmom252 只在低波 regime 有效（H20 低波 IC≈+0.10）、高波 regime 转负（动量高波崩溃）**，短周期各 regime 均≈0；信号 lag1 自相关约0.83、月度隐含换手约0.39；近零 IC 无干净衰减形态。输出 `reports/factor_regime.txt/.json`，只研究、不改权重不进分。
 
+9. **组合构建器（`portfolio_constructor.py` + `tools/portfolio_lab.py`，第40轮 G26，研究侧）**：补"同一篮子谁分多少资本"的横截面权重层（区别于 portfolio.py 逐品种独立定手数），纯标准库、只用协方差不预测收益：等权（基线，等价旧等名义口径）/逆波动/ERC 风险平价（全 Newton 解 ½w'Σw−Σlnw，各品种风险贡献相等）/长仓最小方差 GMV（投影梯度+capped-simplex 单票上限），另含对角收缩保正定、目标波动缩放与杠杆上限、风险贡献/分散化度/有效N/换手诊断。portfolio_lab 读 G21 面板做最新快照与每20日滚动样本外代理回测（严格无未来）。真实61商品近2年：**ERC 降波动25%/降回撤32%、夏普0.42→0.53且风险最均衡，逆波动最省换手，GMV 降波动48%但集中到有效N仅11、高换手、夏普反降**；默认仍 equal、不改线上 sizing，ERC/逆波动是否接入 paper/backtest 留后续影子对照。输出 `reports/portfolio_lab.txt/.json`。
+
 ### 4.7 样本外验证与防过拟合工具箱（`tools/backtest_validation.py`，WP-F4 前置 / AFML ch7、11-12）
 
 研究侧、纯标准库、离线只读，回答一个问题——**"在一堆候选参数/因子里挑出回测最好的那个"，这个挑选动作本身有多大概率在拟合噪声**。五块方法（公式来自公开论文，代码自写）：
@@ -304,6 +308,7 @@ Black-76 模型（国内商品期权均为期货期权）+ Delta/Gamma/Vega/Thet
 | `reports/factor_health.txt` / `factor_health.json` | 第37轮 G29 由 `tools/factor_health.py` 生成的**因子体检卡**：事件层 RankIC/滚动IC失效预警/块bootstrap CI/多空·档位regime，日频层 IC 期限曲线/指数半衰期/Q5-Q1；结论同步回写 factors_catalog.HEALTH_SNAPSHOT，只体检不改线上权重 |
 | `reports/expr_research.txt` / `expr_research.json` | 第38轮 G25 由 `tools/expr_research.py` 生成的**表达式因子研究台**结果：面板列 vs bar回读同表达式全64品种 parity（maxAbsDiff=0）、表达式动量对齐实时 ret5、5个表达式因子对未来1/5/20日的逐品种/池化 RankIC 与截面 cross_rank 演示；research 因子不进综合分 |
 | `reports/factor_regime.txt` / `factor_regime.json` | 第39轮 G29续 由 `tools/factor_regime.py` 生成的**因子 regime/换手/衰减形态**：牛熊震荡×高中低波分桶前向 RankIC、1/5/20日秩自相关与隐含换手、指数vs幂律衰减 R² 择优；只研究不改权重 |
+| `reports/portfolio_lab.txt` / `portfolio_lab.json` | 第40轮 G26 由 `tools/portfolio_lab.py` 生成的**组合构建实验台**：等权/逆波动/ERC/GMV 最新目标权重快照（年化波动/有效N/分散化度/风险贡献/目标波动杠杆）+ 每20日滚动样本外代理回测（年化收益/波动/夏普/回撤/换手，equal为基线，严格无未来）；默认不改线上sizing |
 | `reports/backtest_validation.txt` | 由 `tools/backtest_validation.py` 生成的防过拟合报告：组合 DSR、逐品种参数网格 CSCV-PBO、Walk-forward 衰减、参数高原/孤峰与全市场结论（只评估不改参） |
 | `data/futures_fees.csv` | 由用户券商手续费表通过`tools/build_fee_table.py`转换的64品种真实费率：投机账户、按金额费率、按手数固定金额、合约乘数；回测运行时只用标准库csv读取，原始xlsx归档在同目录 |
 | `data/futures_margins.csv` | 由`tools/build_margin_table.py`从银河期货保证金比例页解析的64品种**公司保证金率（投机档）+基础板幅+每手报价单位乘数**，组合账户`portfolio.py`运行时只用标准库csv读取；交易所基准档无干净免费源故`exchange_margin`列留空不编造，临近交割/长假公司会上浮、以公司通知为准 |
@@ -406,7 +411,7 @@ equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION�
 
 ## 九、回归测试（开发用，不影响常驻监控）
 
-`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：30 个测试文件、440 个用例，约 6.8 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）。
+`tests/` 目录是第21轮落地、历轮持续扩充的 **pytest 零网络回归网**，把历轮“验证后即删”的合成断言固化下来：30 个测试文件、444 个用例，约 7.9 秒跑完，覆盖调度时段、横截面稳健z、风控闸门、胜率校准、基本面/情绪因子、期权T链与IV曲面、分钟K聚合、量仓资金、回测费用、**回测严谨性（第26轮 test_backtest_rigor 17 例：next_open 次根成交/末根不虚构/锁板顺延/反手、bootstrap 区间、IS-OOS、backtest_runs 留档）**、**纸面交易（第27轮 test_paper_broker 18 例：迟滞/两档成交时点/锁板顺延/滑点双边费/反手先平后开/强平/拒单与临时约束排队/三表落库与重启恢复）**、**研究面板与PIT（第36/37轮 test_research_panel 18 例：特征注册表一致/严格asof/扰动无未来+反向泄漏/训练-服务parity/PanelStore幂等/结构审计/G21续面板回读与网络路径逐值等价、不二次复权）**、**因子体检（第37轮 factor_health 自测：滚动IC/块bootstrap/失效预警/IC半衰期）**、**表达式引擎（第38轮 test_factor_expr 37 例：21个危险/畸形解析反向用例、时序截面算子手算、无未来扰动、OLS正交恢复β、IC/ICIR加权、实时离线结构性parity、表达式因子必登记）**、组合账户强平、存储去重、图表数据层及研究工具自测（含第39轮 factor_regime 自测：PIT regime标签边界/分层IC只在有效桶显著/秩自相关换手/指数vs幂律衰减择优与安全降级）、组合构建器（第40轮 portfolio_constructor 10组+portfolio_lab 5组：ERC全牛顿等风险贡献/长仓GMV凸最优且波动≤等权/capped-simplex/目标波动杠杆/滚动样本外无未来）。
 
 ```bat
 D:\Python\python.exe -m pytest          # 项目根目录下全量运行
