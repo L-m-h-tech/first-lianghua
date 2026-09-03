@@ -3,6 +3,12 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.48.0] — 2026-09-03 · 第48轮 G5④ 组合层单日浮亏熔断：risk_gate 由"只标注"升级为"可配置动作"（新增根模块 circuit_breaker.py 纯决策状态机 + paper_broker 默认旁路挂钩，默认 observe 只标注、显式 paper_halt 才停开新仓，主链/综合分/默认纸面成交零改动）
+- **任务与边界**：G5 总纲④要求 risk_gate 单日浮亏熔断由"只标注"升级为"可配置动作（纸面层停开/减仓、建议层文字，默认仍只标注）"。现有 `risk_gate.py` 是**单品种/信号级** veto（无有效价、量不足、信号与涨跌背离、HV极端），本轮补的是与之**正交的组合账户级**维度。新增**根模块 `circuit_breaker.py`（约250行纯标准库、零网络、纯决策不直接下单/不改持仓）**；`paper_broker.py` 加默认旁路挂钩（默认 `CIRCUIT_ACTION='observe'` 时 `self.breaker=None`、阶段B不过滤任何委托，成交逐字节等价旧版）；main/analyzer/综合分**零改动**，⑤风险平价sizing与组合历史净值回测仍留后续。
+- **三档+第二触发源（单日浮亏，损失为正）**：warn≥2% 只提示降杠杆；halt≥3% 停开新仓（只允许平仓/减仓）；delever≥5% 在停开基础上给"建议减仓约50%"文字（**仅建议、不自动砍仓**，自动减仓留后续）；保证金风险度 risk_degree≥95% 作为第二触发源抬到 halt。阈值全部走 config（CIRCUIT_ENABLED/CIRCUIT_ACTION/CIRCUIT_WARN_LOSS/HALT_LOSS/DELEVER_LOSS/RISK_HALT/DELEVER_RATIO），from_config 缺项回退默认。
+- **两条关键纪律**：①**当日粘性、日切重置**——级别按"当日最深浮亏 peak_loss"定档，触发后当日不回落解锁（防阈值附近反复抖动），跨交易日（ts 日期前缀变化）自动重置、重计日初基准；②**动作模式默认 observe**——observe 下 allow_open 恒 True（即便 delever 也不拦），只有显式 paper_halt 才在 halt/delever 真正拦截纸面层开新仓，真实账户永不自动操作。断路器在 on_cycle 阶段D快照后用最新权益更新、供下一轮阶段B使用，严格无未来函数；filter_orders 停开时剔 open/reverse_open 腿、保留 close/reverse_close（反手只平不反向开）。
+- **测试与零改动证据**：新增 `tests/test_circuit_breaker.py`（19例零网络：日期解析/浮亏口径/三档边界/委托过滤/非法参数/observe恒可开/当日粘性与日切重置/warn仍可开/风险度第二触发/from_config，及与 PaperBroker 的 close 档集成——paper_halt 下新仓被拦、反手只留平仓腿，默认 observe 无断路器照常开新仓）+ test_tools_selftest 注册 circuit_breaker 11组 selftest；全量 **pytest 572→593 全绿（0失败/错误/跳过，cache/r48_junit.xml）**、compileall 过。默认8品种 equity=c4da4cdf61f3bcdc/trades=50dcc800d326f8e9 双 sha256 逐字节一致；main --once 正常退出；运行依赖仍仅 requests/uiautomation/websocket-client。诚实边界：PAPER_ENABLED 默认 False、paper_equity 当前无历史曲线，本轮熔断阈值用合成断言验证状态机，未在真实纸面长序列上回放统计触发频次（待 paper 影子积累后补历史回放校准阈值）。
+
 ## [0.47.0] — 2026-09-03 · 第47轮 G5 组合层风险（研究侧①②③）相关矩阵+组合VaR(历史/参数)+原油压力传导（新增根模块 portfolio_risk.py 纯函数 + tools/portfolio_risk_lab.py 只读面板，主链/risk_gate/综合分/sizing 零改动）
 - **任务与边界**：G5 总纲含①相关矩阵②组合VaR③原油压力④risk_gate熔断可配置动作⑤第四种风险平价sizing+组合历史净值回测。本轮**只做研究侧①②③的只读度量**，④熔断动作/⑤sizing与净值回测留后续（任何接入仍须"默认等价旧版、不传不变"）。新增**根模块 `portfolio_risk.py`（347行纯标准库、零网络纯函数，协方差复用 portfolio_constructor）**与**研究工具 `tools/portfolio_risk_lab.py`（241行，只读 G21 面板 cache/research_panel.db，出 reports/portfolio_risk_lab.txt|.json，末尾经统一实验台账旁路登记一条）**；main/analyzer/portfolio/risk_gate 经 grep 证明**零 import 新模块**。
 - **① 相关结构**：correlation_matrix（协方差→Pearson，零方差安全记0）、平均绝对/带符号相关（系统性联动强度）、板块×板块平均相关 sector_corr_block、最强/最弱相关对 top_pairs、线性插值分位数 percentile。

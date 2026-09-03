@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：36 个 `test_*.py` + `conftest.py`，共 **572** 个用例，全绿约 8 秒。
+当前规模：37 个 `test_*.py` + `conftest.py`，共 **593** 个用例，全绿约 8 秒。
 
 ## 设计纪律（必须保持）
 
@@ -51,6 +51,7 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_research_review.py | 第43轮 G30③ 研究侧一键复盘编排器：sidecar缺/损安全、新鲜度三态、equity的BOM/末尾空记录/全表回撤、signal正则、各段提取排序与弱势桶门槛、规则待办WARN优先/可选降级/全OK、collect空目录与合成sidecar、七段成稿与allow_nan |
 | test_experiment_ledger.py | 第44轮 G27① 统一实验台账：config_hash键序无关/同配置一致/参数类型数据敏感、json_safe清洗NaN/时间/集合、文件指纹与数据身份排除mtime内容变才变、记录字段与run_id形态、追加回读/repeat_of串联/同秒碰撞-r2/坏行宽容/原子LF/filter、safe_record成功与不可写吞错、list/show/repeats/export CLI、环境变量关闭重定向 |
 | test_portfolio_risk.py | 第47轮 G5①②③ 组合风险纯函数：相关阵(正/负/零方差/板块块)、线性插值分位数参数化、组合收益序列、历史VaR/ES(全正序列VaR为负)、参数VaR精确值与√h缩放及未知分位报错、原油OLS beta精确线性与线性压力方向、分散化收益(不相关为正/完全相关为0)、risk_snapshot端到端与零方差退化（零网络零面板） |
+| test_circuit_breaker.py | 第48轮 G5④ 组合层单日浮亏熔断：日期解析/浮亏口径/三档边界/委托过滤/非法参数(参数化)、observe即使delever也恒可开、当日粘性不回落解锁与日切重置、warn仍可开、风险度第二触发与非法安全、from_config，及与PaperBroker的close档集成（paper_halt下新仓被拦、反手只留平仓腿；默认observe无断路器照常开新仓） |
 | test_db_backup.py | 第46轮 G19 在线热备/灾备：备份文件名解析与非法名反例(参数化)、prune_plan滚动保留/全保留、只认本工具命名不误删、online_backup一致性+源只读、sidecar表行数、滚动删最旧连同sidecar、同秒碰撞不覆盖、缺源报错、restore恢复到备份点且旧库改名留存、坏备份拒绝恢复、坏库quick_check返OPEN_ERROR、任务XML/bat内容、版本缺失安全（全 tmp_path 造库、绝不碰生产 monitor.db） |
 | test_wf_cost_lab.py | 第45轮 G27②③ WF稳定性+成本曲面/换手容量：笔统计与复利、成本曲面沿fee/slip单调与基准格定位、break-even 转负/全程为正/基准已亏三态、WF 稳定-漂移-越界chosen防御与评级、combo名解析、容量手算（市场日均名义/单手名义/参与率上限手数/年换手/空与零乘数降级/字符串日期）、成稿与JSON无NaN（注入假runner零DB） |
 | test_factor_expr.py | 第38轮 G25 表达式引擎：21个危险/畸形解析反向用例（未知算子/dunder/属性点/语句拼接/非常量窗口/元数）、delay-delta-窗口统计-ts_rank-minmax-decay_linear-corr嵌套手算、无未来扰动、截面cross_rank/scale/zscore、pearson-spearman/OLS正交恢复β/IC·ICIR加权、实时离线结构性parity、表达式因子必登记且validate干净 |
