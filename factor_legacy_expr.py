@@ -14,6 +14,10 @@ G25（第38轮）先落地了白名单表达式引擎 factor_expr 与一批**新
   · 日线动量 part：第59轮给 factor_expr 增补 tanh 逐元素算子后，整条 part 可声明式写成
     `tanh(ret5*160)*2.5+tanh(ret20*70)*2.0+tanh((price/ma10-1)*220)*1.0`（运算顺序与 analyzer 内联
     完全一致），对 factor_parts.legacy_daily_momentum 在网格上 **float.hex 逐位相等**。
+  · 第60轮再扩：ma5/20/60 同 SMA 末位容差；布林20日样本标准差 ts_std(close,20) 与年化历史波动率
+    ts_std(log(close/delay(close,1)),20)*sqrt252 因**求和顺序与过程式完全一致**而 float.hex 逐位相等；
+    并提供 orthogonal_ic_blend（顺序正交去共线 + |IC| 有符号归一加权）作为 G16 浅ML 样本未齐前的
+    可解释线性合成基线（纯研究侧、不进综合分）。
 
 分层依赖：顶层只 import 标准库 + factor_expr（纯引擎）；对 futures_data / factor_parts 的真实比对在
 函数内**惰性 import**，保证纯函数层在缺主链依赖时也能自测。main.py/analyzer.py/futures_data.py 不得
@@ -157,11 +161,93 @@ def _synthetic_closes(seed=20260904, n=420):
     return closes
 
 
+def parity_boll_std(closes, p=20):
+    """布林标准差：表达式 ts_std(close,p) vs futures_data._sample_std(窗内)，同求和序要求**逐位相等**。"""
+    import futures_data
+    got = fe.compute_ts("ts_std(close,%d)" % p, {"close": list(closes)})
+    n_pair = n_hex = 0
+    max_diff = 0.0
+    mismatches = []
+    for t in range(len(closes)):
+        seg = closes[max(0, t - p + 1):t + 1]
+        want = futures_data._sample_std(seg) if len(seg) >= p else None
+        a = got[t]
+        if want is None and a is None:
+            continue
+        n_pair += 1
+        if _isnum(a) and _isnum(want) and float.hex(a) == float.hex(want):
+            n_hex += 1
+        else:
+            mismatches.append((t, a, want))
+        if _isnum(a) and _isnum(want):
+            max_diff = max(max_diff, abs(a - want))
+    return {"factor": "boll_std%d" % p, "n_pair": n_pair, "n_hex": n_hex,
+            "max_diff": max_diff, "mismatches": mismatches[:5],
+            "bit_exact": n_pair == n_hex and max_diff == 0.0}
+
+
+# sqrt(252) 的精确 float 字面量（=math.sqrt(252)），保证年化乘法与过程式逐位一致
+_SQRT252 = 15.874507866387544
+HV20_EXPR = "ts_std(log(close/delay(close,1)),20)*%r" % _SQRT252
+
+
+def parity_hv20(closes, window=20):
+    """20日历史波动率年化：表达式 log收益样本std*sqrt252 vs futures_data._hv_at，同运算序要求**逐位相等**。"""
+    import futures_data
+    got = fe.compute_ts(HV20_EXPR, {"close": list(closes)})
+    n_pair = n_hex = 0
+    max_diff = 0.0
+    mismatches = []
+    for t in range(len(closes)):
+        want = futures_data._hv_at(closes, t, window)
+        a = got[t]
+        if want is None and a is None:
+            continue
+        n_pair += 1
+        if _isnum(a) and _isnum(want) and float.hex(a) == float.hex(want):
+            n_hex += 1
+        else:
+            mismatches.append((t, a, want))
+        if _isnum(a) and _isnum(want):
+            max_diff = max(max_diff, abs(a - want))
+    return {"factor": "hv%d" % window, "n_pair": n_pair, "n_hex": n_hex,
+            "max_diff": max_diff, "mismatches": mismatches[:5],
+            "bit_exact": n_pair == n_hex and max_diff == 0.0}
+
+
+def orthogonal_ic_blend(factor_matrix, ics, sequential=True):
+    """G16 前置（研究侧、不进综合分）：逐因子对"已正交残差"再正交去共线，再按 |IC| 有符号归一加权合成。
+
+    factor_matrix: [因子时序...]（等长，缺失位置 None）；ics: 各因子前瞻 IC（有符号）。
+    顺序 Schmidt 式正交（每个因子只对前面已残差化的因子回归取残差），再用 factor_expr.ic_weights/combine。
+    返回 {"blend":合成序列,"weights":IC权重(和=1),"residuals":[残差序列...],"betas":[回归系数...]}。
+    G16 浅 ML 样本未齐前，它提供一条可解释的"正交+IC"线性合成基线；样本齐后由 ml_inference 接管。
+    """
+    if fe is None:
+        raise RuntimeError("factor_expr 引擎不可用")
+    k = len(factor_matrix)
+    if k != len(ics):
+        raise ValueError("因子数与 IC 数不一致")
+    residuals, betas = [], []
+    for i in range(k):
+        if sequential and residuals:
+            resid, beta = fe.orthogonalize(factor_matrix[i], residuals)
+        else:
+            resid, beta = list(factor_matrix[i]), []
+        residuals.append(resid)
+        betas.append(beta)
+    weights = fe.ic_weights(list(ics))
+    blend = fe.combine(residuals, weights)
+    return {"blend": blend, "weights": weights, "residuals": residuals, "betas": betas}
+
+
 def parity_report(closes=None):
     """对一条收盘价序列跑全部旧因子表达式化 parity，返回汇总 dict。"""
     closes = closes if closes is not None else _synthetic_closes()
     rep = {"ret": {n: parity_ret(closes, n) for n in sorted(RET_EXPRS)},
            "sma": {p: parity_sma(closes, p) for p in SMA_PERIODS},
+           "boll_std": parity_boll_std(closes),
+           "hv20": parity_hv20(closes),
            "daily_momentum": parity_daily_momentum()}
     return rep
 
@@ -204,17 +290,41 @@ def selftest():
         math.tanh(0.01 * 160) * 2.5 + math.tanh(-0.01 * 70) * 2.0)
     # 7) 表达式因子均已在 factors_catalog 登记（唯一注册表），且引擎因子库可编译
     import factors_catalog as catalog
-    for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl"):
+    for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
+              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20"):
         assert catalog.by_key(k) is not None, k
     assert catalog.validate() == []
     for f in fe.LIBRARY:
         out = fe.compute_ts(f["expr"], {"close": closes, "volume": [1000 + i for i in range(len(closes))]})
         assert len(out) == len(closes)
+    # 8) 第60轮新增：boll_std / hv20 与过程式**同求和序逐位相等**（非容差）
+    rb, rh = parity_boll_std(closes), parity_hv20(closes)
+    assert rb["n_pair"] > 300 and rb["bit_exact"], rb["mismatches"][:3]
+    assert rh["n_pair"] > 300 and rh["bit_exact"], rh["mismatches"][:3]
+    assert abs(_SQRT252 - math.sqrt(252.0)) == 0.0
+    # 9) 正交IC加权（G16前置）：残差对基底近似不相关、权重和=1、合成有限且保留主导方向
+    rng2 = random.Random(20260904)
+    n = 240
+    base = [rng2.gauss(0, 1) for _ in range(n)]
+    f1 = [x for x in base]
+    f2 = [0.8 * base[t] + 0.2 * rng2.gauss(0, 1) for t in range(n)]   # 与 f1 强共线
+    f3 = [rng2.gauss(0, 1) for _ in range(n)]                          # 独立因子
+    ob = orthogonal_ic_blend([f1, f2, f3], [0.30, 0.20, 0.10])
+    assert abs(sum(ob["weights"]) - 1.0) < 1e-12 and len(ob["weights"]) == 3
+    resid2 = ob["residuals"][1]
+    cov = sum(base[t] * resid2[t] for t in range(n)) / n              # 正交后与基底协方差≈0
+    var = sum(resid2[t] * resid2[t] for t in range(n)) / n
+    assert var > 0 and abs(cov) < 0.05, (cov, var)
+    assert all(_isnum(x) for x in ob["blend"])
+    # 单因子退化：正交无基底时残差=原序列、权重=1
+    ob1 = orthogonal_ic_blend([f1], [0.4])
+    assert ob1["weights"] == [1.0] and ob1["residuals"][0] == f1
     rep = parity_report(closes)
-    print("factor_legacy_expr selftest ALL PASS（7组：ret1/5/20逐字节镜像/运算序反例/手算、"
-          "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记；"
-          "SMA最大相对差 ma20=%.2e）"
-          % (dm["n_pair"], max(rep["sma"][p]["max_rel_diff"] for p in SMA_PERIODS)))
+    print("factor_legacy_expr selftest ALL PASS（9组：ret1/5/20逐字节镜像/运算序反例/手算、"
+          "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记9条、"
+          "boll_std/hv20同求和序逐位 n=%d/%d、正交IC加权去共线；SMA最大相对差 ma20=%.2e）"
+          % (dm["n_pair"], rb["n_pair"], rh["n_pair"],
+             max(rep["sma"][p]["max_rel_diff"] for p in SMA_PERIODS)))
     return 0
 
 

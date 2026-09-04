@@ -142,6 +142,27 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 59,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
      "formula": "tanh(ret5*160)*2.5+tanh(ret20*70)*2.0+tanh(price/ma10-1)*220，输入已算标量，逐位复刻 analyzer 日线动量part（不切主链）"},
+    # ===== G25续（第60轮）：更多过程式技术量同运算序表达式化（ma5/20/60 末位容差；boll_std/hv20 逐字节） =====
+    {"key": "expr_ma5", "name": "5日均线(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 60,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_mean(close,5)，对应增量式 _sma_series，仅末位1e-15级差异"},
+    {"key": "expr_ma20", "name": "20日均线(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 60,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_mean(close,20)，布林中轨同源，与增量SMA仅末位差异"},
+    {"key": "expr_ma60", "name": "60日均线(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 60,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_mean(close,60)=TECH_LONG_MA，与增量SMA仅末位差异"},
+    {"key": "expr_boll_std20", "name": "20日样本标准差(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 60,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_std(close,20)，与 _sample_std(close[-20:]) 同求和序、float.hex 逐位相等"},
+    {"key": "expr_hv20", "name": "20日历史波动率年化(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 60,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_std(log(close/delay(close,1)),20)*sqrt252，与 _hv_at(.,20) 同运算序逐位相等"},
 )
 
 _BY_KEY = None

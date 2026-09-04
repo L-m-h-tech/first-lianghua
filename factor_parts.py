@@ -100,10 +100,10 @@ def _part_plugin(key, compute, meta):
 
 
 def builtin_part_plugins():
-    """当前已用适配器搬进注册表的 live part（按 PART_KEYS 规范序；后续切片追加，仅剩「基本面」）。"""
+    """第60轮第四切片后：9 个 live part 全部适配器化（按 PART_KEYS 规范序）。"""
     return [news_plugin(), oil_link_plugin(), institution_plugin(), daily_momentum_plugin(),
             tech_resonance_plugin(), minute_resonance_plugin(),
-            intraday_momentum_plugin(), flow_capital_plugin()]
+            intraday_momentum_plugin(), flow_capital_plugin(), fundamental_plugin()]
 
 
 def register_builtin_parts(replace=False):
@@ -115,6 +115,39 @@ def register_builtin_parts(replace=False):
         fp.register(pl, replace=replace)
         keys.append(pl.key)
     return keys
+
+
+def assemble_live_parts(*, news_score, oil_w, oil_score, inst, ind, kline_ok, price,
+                        tick_mom, flow, term, fund_raw):
+    """【G2 最后一切片·宿主装配】用注册表 9 个 live part 重建 analyzer 的 parts 有序 dict。
+
+    严格按 catalog.PART_KEYS 序求值——该序与 analyzer 内联 parts 的插入序完全一致，
+    故下游 sum(parts.values()) 浮点累加顺序相同、综合分逐字节相等；原油用主链动态键
+    "原油联动(w=%.2f)"；插件返回 None（门控关闭）的 part 不入 dict，与内联门控一致。
+    调用前须 register_builtin_parts(replace=True)。返回普通 dict（空门控下至少含新闻消息面）。
+    """
+    ind = ind or {}
+    tech = ind.get("tech") or {}
+    intra = ind.get("intraday") or {}
+    contexts = {
+        "新闻消息面": {"news_score": news_score},
+        "原油联动": {"oil_w": oil_w, "oil_score": oil_score},
+        "机构动向": {"inst": inst},
+        "日线动量": {"kline_ok": kline_ok, "price": price, "ind": ind},
+        "技术共振": {"kline_ok": kline_ok, "price": price, "resonance": tech.get("resonance_score")},
+        "分钟共振": {"intraday_ok": intra.get("ok"), "intra_resonance": intra.get("resonance_score")},
+        "盘中动量": {"tick_mom": tick_mom},
+        "量仓资金": {"flow_score": (flow or {}).get("score")},
+        "基本面": {"term": term, "fund_raw": fund_raw},
+    }
+    out = {}
+    for key in catalog.PART_KEYS:
+        val, err = fp.evaluate(contexts[key], key)
+        if err is not None or val is None:
+            continue
+        emit_key = "原油联动(w=%.2f)" % oil_w if key == "原油联动" else key
+        out[emit_key] = val
+    return out
 
 
 # =========================== 第59轮·第三切片：其余 7 个 live part（仍不接主链） ===========================
@@ -188,12 +221,39 @@ def flow_capital_compute(context):
     return x if abs(x) > 0.01 else None
 
 
+# ---- 基本面（第60轮第四切片，9 part 里 context 最复杂）：四子项走 fundamental_factors，门控 |score|>0.01 ----
+def fundamental_compute(context):
+    """复刻 analyzer 第80~90行：库存/龙虎/期限carry/基差四子项 build_fundamental 后 |score|>0.01 才计分。
+
+    context:
+      term: 宿主已用 contracts.term_structure(contract) 算好的期限结构 dict（或 None）；
+      fund_raw: {"inv":库存序列,"rank":(L,S,pL,pS),"basis":基差率}，各键可缺。
+    """
+    ctx = context or {}
+    term = ctx.get("term")
+    fund_raw = ctx.get("fund_raw") or {}
+    inv_in = fund_raw.get("inv")
+    rank_in = fund_raw.get("rank")
+    basis_in = fund_raw.get("basis")
+    import fundamental_factors as ff
+    inv_f = ff.inventory_factor(inv_in) if inv_in else None
+    rank_f = ff.rank_factor(*rank_in) if rank_in else None
+    carry_f = ff.carry_factor(term)
+    basis_f = ff.basis_factor(basis_in) if basis_in is not None else None
+    pack = ff.build_fundamental(inv_f, rank_f, carry_f, basis_f)
+    if pack and abs(pack["score"]) > 0.01:
+        return pack["score"]
+    return None
+
+
 _COMPUTE = {
     "新闻消息面": news_compute, "原油联动": oil_link_compute, "机构动向": institution_compute,
     "技术共振": tech_resonance_compute, "分钟共振": minute_resonance_compute,
     "盘中动量": intraday_momentum_compute, "量仓资金": flow_capital_compute,
+    "基本面": fundamental_compute,
 }
-THIRD_SLICE_KEYS = tuple(_COMPUTE.keys())
+THIRD_SLICE_KEYS = tuple(k for k in _COMPUTE.keys() if k != "基本面")
+FOURTH_SLICE_KEY = "基本面"
 
 
 def news_plugin():
@@ -230,10 +290,16 @@ def flow_capital_plugin():
                         {"legacy": "flow.score 透传，门控 |x|>0.01", "slice": 59})
 
 
+def fundamental_plugin():
+    return _part_plugin("基本面", fundamental_compute,
+                        {"legacy": "fundamental_factors 四子项 build，门控 |score|>0.01", "slice": 60})
+
+
 _PLUGINS = {
     "新闻消息面": news_plugin, "原油联动": oil_link_plugin, "机构动向": institution_plugin,
     "技术共振": tech_resonance_plugin, "分钟共振": minute_resonance_plugin,
     "盘中动量": intraday_momentum_plugin, "量仓资金": flow_capital_plugin,
+    "基本面": fundamental_plugin,
 }
 
 
@@ -284,6 +350,47 @@ def part_parity_cases(key, seed=20260904, n_random=160):
             cases.append({field: x})
         for _ in range(n_random):
             cases.append({field: rng.uniform(-1.5, 1.5)})
+    elif key == "基本面":
+        import contracts as _ct
+
+        def _info_of(prices):
+            rows, yy, mm = [], 26, 9
+            for i, pr in enumerate(prices):
+                y, m2 = yy + (mm + i - 1) // 12, ((mm + i - 1) % 12) + 1
+                rows.append({"code": "RB%02d%02d" % (y, m2), "yy": y, "mm": m2, "latest": pr, "oi": 1000})
+            return {"list": rows}
+
+        def _case(prices=None, inv=None, rank=None, basis=None):
+            info = _info_of(prices) if prices else None
+            return {"contract": info, "term": _ct.term_structure(info) if info else None,
+                    "fund_raw": {"inv": inv, "rank": rank, "basis": basis}}
+
+        cases.append({"contract": None, "term": None, "fund_raw": None})               # 四子项全缺
+        for pr in ([3100, 3050, 3000], [3000, 3050, 3100], [3000, 3000, 3000]):        # 仅 carry：back/contango/平
+            cases.append(_case(prices=pr))
+        for b in (-0.08, -0.001, 0.0, 0.001, 0.05):                                     # 仅基差
+            cases.append(_case(basis=b))
+        for tup in ((1000, 800, 900, 900), (800, 1000, None, None), (1000, 1000, 1000, 800)):  # 仅龙虎
+            cases.append(_case(rank=tup))
+        inv20 = [{"date": "d%02d" % i, "stock": 100 + i, "chg": 0} for i in range(20)]  # 仅库存（>=15 点）
+        cases.append(_case(inv=inv20))
+        cases.append(_case(prices=[3100, 3000], rank=(1200, 800, 1100, 900), basis=0.03, inv=inv20))  # 四项齐
+        for _ in range(n_random):
+            kw = {}
+            if rng.random() < 0.7:
+                base = 3000.0
+                kw["prices"] = [base * (1 + rng.uniform(-0.06, 0.06) * ((i + 1) / 2.0))
+                                for i in range(rng.randint(2, 4))]
+            if rng.random() < 0.6:
+                kw["inv"] = [{"date": "d", "stock": rng.uniform(50, 500)}
+                             for _ in range(rng.randint(15, 30))]
+            if rng.random() < 0.6:
+                L, S = rng.randint(0, 2000), rng.randint(0, 2000)
+                kw["rank"] = ((L, S, rng.randint(0, 2000), rng.randint(0, 2000))
+                              if rng.random() < 0.5 else (L, S, None, None))
+            if rng.random() < 0.6:
+                kw["basis"] = rng.uniform(-0.1, 0.1)
+            cases.append(_case(**kw))
     else:
         raise KeyError(key)
     return cases
@@ -318,6 +425,9 @@ def _drive_main(key, ctx):
         tick_mom = ctx.get("tick_mom")
     elif key == "量仓资金":
         flow = {"score": ctx.get("flow_score")}
+    elif key == "基本面":
+        contract = ctx.get("contract")
+        fund_raw = ctx.get("fund_raw")
     return analyzer.analyze_variety(
         "parity", dict(meta), quote, ind, kline_ok, news_score, news_hits,
         oil_score, tick_mom, contract=contract, inst=inst, flow=flow, fund_raw=fund_raw)
@@ -374,8 +484,9 @@ def parity_part_against_analyzer(key, cases=None):
 
 
 def parity_all_against_analyzer():
-    """第三切片 7 个 part 全部对真实主链逐位 parity；返回 {key: report}。"""
-    return {key: parity_part_against_analyzer(key) for key in THIRD_SLICE_KEYS}
+    """第三切片7 part + 第四切片「基本面」对真实主链逐位 parity（日线动量在 selftest 单列）；返回 {key: report}。"""
+    keys = [k for k in catalog.PART_KEYS if k in THIRD_SLICE_KEYS or k == FOURTH_SLICE_KEY]
+    return {key: parity_part_against_analyzer(key) for key in keys}
 
 
 # =========================== parity 用例（确定性，无随机种子漂移） ===========================
@@ -512,6 +623,7 @@ def parity_against_analyzer(cases=None, meta=None):
 
 # =========================== 离线自测 ===========================
 def selftest():
+    import analyzer
     assert fp is not None and catalog is not None
     fp.clear()
     # 1) 插件元数据与 factors_catalog 登记逐字一致（方向/界/状态/层级）
@@ -545,10 +657,10 @@ def selftest():
     assert arep["n_open"] == rep["n_open"] and arep["n_closed"] == rep["n_closed"]
     assert not arep["mismatches"], arep["mismatches"][:3]
     assert arep["max_diff"] == 0.0
-    # 6) 注册内置 live part（第三切片后共 8 个，仅余「基本面」）：catalog 一致性零问题、按 PART_KEYS 规范序
-    expected = [k for k in catalog.PART_KEYS if k != "基本面"]
+    # 6) 注册内置 live part（第四切片后 9 个全齐）：catalog 一致性零问题、按 PART_KEYS 规范序
+    expected = list(catalog.PART_KEYS)
     keys = register_builtin_parts()
-    assert keys == expected and len(keys) == 8, keys
+    assert keys == expected and len(keys) == 9, keys
     assert fp.check_registry_vs_catalog() == []
     assert fp.ordered_live_keys() == expected and fp.names(status="live") == expected
     v, e = fp.evaluate({"kline_ok": True, "price": 100.0,
@@ -561,9 +673,9 @@ def selftest():
     vv, ee = fp.evaluate({}, "boom")
     assert vv is None and "ZeroDivision" in ee
     fp.clear()
-    # 8) 适配器列表可重复构造且彼此独立（无进程级副作用），第三切片后 8 个
+    # 8) 适配器列表可重复构造且彼此独立（无进程级副作用），第四切片后 9 个全齐
     a, b = builtin_part_plugins(), builtin_part_plugins()
-    assert len(a) == len(b) == 8 and all(x is not y for x, y in zip(a, b))
+    assert len(a) == len(b) == 9 and all(x is not y for x, y in zip(a, b))
     assert [x.key for x in a] == [y.key for y in b] == expected
     fp.clear()
     # 9) 第三切片 7 part：元数据对齐 catalog + 门控/公式手算
@@ -588,22 +700,74 @@ def selftest():
     assert minute_resonance_compute({"intraday_ok": True, "intra_resonance": 0.01}) is None
     assert tech_resonance_compute({"kline_ok": True, "price": 0.0, "resonance": 0.5}) is None
     assert tech_resonance_compute({"kline_ok": True, "price": 100.0, "resonance": 0.01}) is None
-    # 10) 第三切片 7 part 全部对**真实 analyzer 主链**逐位 parity（门控开/闭一致、float.hex 相等）
+    # 10) 第三切片7 + 第四切片基本面 全部对**真实 analyzer 主链**逐位 parity（门控开/闭一致、float.hex 相等）
     allrep = parity_all_against_analyzer()
     tot_open = tot_closed = 0
     for key, rr in allrep.items():
         assert not rr["mismatches"], (key, rr["mismatches"][:3])
         assert rr["max_diff"] == 0.0, (key, rr["max_diff"])
-        assert rr["n_open"] >= 100, (key, rr["n_open"])
+        min_open = 40 if key == FOURTH_SLICE_KEY else 100   # 基本面含全缺/小分关门，开门阈值放宽
+        assert rr["n_open"] >= min_open, (key, rr["n_open"])
         tot_open += rr["n_open"]
         tot_closed += rr["n_closed"]
     assert allrep["新闻消息面"]["n_closed"] == 0   # 新闻无门控，用例全部开门
     assert allrep["原油联动"]["n_closed"] >= 10     # oil_w<=0 关门
+    assert allrep["基本面"]["n_closed"] >= 1       # 四子项全缺/小分关门
     fp.clear()
-    print("factor_parts selftest ALL PASS（10组：日线元数据/门控/手算/公式parity/真analyzer parity；"
-          "注册8part一致性/异常隔离/无副作用；第三切片7part元数据+门控手算+对真analyzer逐位parity；"
-          "日线 n_open=%d n_closed=%d；第三切片合计 n_open=%d n_closed=%d）"
-          % (rep["n_open"], rep["n_closed"], tot_open, tot_closed))
+    # 11) 最后一切片·宿主装配：9 part 同时在场时，assemble_live_parts 重建的 parts 必须与真实主链
+    #     **逐键逐位一致**（含原油动态键、PART_KEYS 插入序），从而 sum 顺序相同、综合分逐字节相等
+    import contracts as _ct
+    register_builtin_parts(replace=True)
+    asm_ok = 0
+    for _ in range(240):
+        rr = random.Random(20260904 + asm_ok)
+        oil_w = rr.choice((0.0, 0.0, 0.3, 0.5))
+        oil_score = rr.uniform(-3, 3)
+        kline_ok = rr.random() < 0.8
+        price = rr.choice((0.0, 3500.0))
+        ret5, ret20 = rr.uniform(-0.08, 0.08), rr.uniform(-0.08, 0.08)
+        ma10 = 3500.0 * (1 + rr.uniform(-0.05, 0.05)) if rr.random() < 0.8 else None
+        tech_r = rr.uniform(-1.2, 1.2)
+        intra_ok = rr.random() < 0.6
+        intra_r = rr.uniform(-0.4, 0.4)
+        tick = rr.uniform(-1.5, 1.5)
+        flow_score = rr.uniform(-1.2, 1.2)
+        total = rr.choice((0, 2, 5, 10))
+        inst = _inst_dict(total, rr.randint(0, total), total - rr.randint(0, total)) if total else None
+        nmonth = rr.randint(2, 4)
+        info = {"list": [{"code": "RB%02d%02d" % (26, 9 + i), "yy": 26, "mm": 9 + i,
+                          "latest": 3000 * (1 + rr.uniform(-0.05, 0.05)), "oi": 1000}
+                         for i in range(nmonth)]}
+        term = _ct.term_structure(info)
+        fund_raw = {"inv": [{"date": "d", "stock": rr.uniform(50, 500)} for _ in range(20)] if rr.random() < 0.6 else None,
+                    "rank": (rr.randint(0, 2000), rr.randint(0, 2000), None, None) if rr.random() < 0.6 else None,
+                    "basis": rr.uniform(-0.1, 0.1) if rr.random() < 0.6 else None}
+        ind = {"ret5": ret5, "ret20": ret20,
+               "tech": {"resonance_score": tech_r},
+               "intraday": {"ok": intra_ok, "resonance_score": intra_r}}
+        if ma10 is not None:
+            ind["ma10"] = ma10
+        assembled = assemble_live_parts(
+            news_score=rr.uniform(-4, 4), oil_w=oil_w, oil_score=oil_score, inst=inst, ind=ind,
+            kline_ok=kline_ok, price=price, tick_mom=tick, flow={"score": flow_score},
+            term=term, fund_raw=fund_raw)
+        row = analyzer.analyze_variety(
+            "asm", {"code": "RB0", "sym": "RB", "ex": "SHFE", "cat": "黑色", "oil_w": oil_w},
+            {"latest": price}, ind, kline_ok, assembled.get("新闻消息面", 0.0), [], oil_score,
+            tick, contract=info, inst=inst, flow={"score": flow_score}, fund_raw=fund_raw)
+        main_parts = row["parts"]
+        assert set(assembled.keys()) == set(main_parts.keys()), (assembled.keys(), main_parts.keys())
+        for kk, vv in assembled.items():
+            assert _bits(vv) == _bits(main_parts[kk]), (kk, vv, main_parts[kk])
+        # 综合分（sum 顺序相同）逐位一致
+        assert _bits(row["score"]) == _bits(max(-10.0, min(10.0, sum(assembled.values()))))
+        asm_ok += 1
+    fp.clear()
+    print("factor_parts selftest ALL PASS（11组：日线元数据/门控/手算/公式parity/真analyzer parity；"
+          "注册9part一致性/异常隔离/无副作用；第三切片7+基本面元数据+门控手算+对真analyzer逐位parity；"
+          "宿主装配9part同时在场逐键逐位一致 asm=%d例；日线 n_open=%d n_closed=%d；"
+          "第三+四切片合计 n_open=%d n_closed=%d）"
+          % (asm_ok, rep["n_open"], rep["n_closed"], tot_open, tot_closed))
     return 0
 
 

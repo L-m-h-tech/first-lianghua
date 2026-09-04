@@ -32,6 +32,28 @@ def rating(score):
     return f"强看{d}", f"顺势持{d}（40%~60%仓位），移动止损跟踪", 82
 
 
+def _parts_via_plugins(fallback, oil_w, news_score, oil_score, inst, ind, kline_ok, price,
+                       tick_mom, flow, term, fund_raw):
+    """G2 最后一切片（第60轮）：经 factor_parts 注册表装配 9 个 live part 重建 parts。
+
+    惰性 import 插件层（顶层不依赖）；9 个 part 已在 factor_parts.selftest 逐位 parity，
+    重建结果与内联路径逐字节一致。任何异常都回退到内联 fallback，绝不影响主链可用性。
+    """
+    try:
+        import factor_parts
+        import factor_plugin as _fp
+        factor_parts.register_builtin_parts(replace=True)
+        try:
+            return factor_parts.assemble_live_parts(
+                news_score=news_score, oil_w=oil_w, oil_score=oil_score, inst=inst, ind=ind,
+                kline_ok=kline_ok, price=price, tick_mom=tick_mom, flow=flow, term=term,
+                fund_raw=fund_raw)
+        finally:
+            _fp.clear()
+    except Exception:
+        return fallback
+
+
 def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
                     oil_score, tick_mom, contract=None, inst=None, page=None, flow=None,
                     fund_raw=None):
@@ -88,6 +110,13 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
     fund_pack = fundamental_factors.build_fundamental(inv_f, rank_f, carry_f, basis_f)
     if fund_pack and abs(fund_pack["score"]) > 0.01:
         parts["基本面"] = fund_pack["score"]
+
+    # G2 最后一切片（默认关，config.PLUGIN_PARTS_ENABLED）：用 factor_parts 注册表重建 parts。
+    # 9 个 part 已逐位 parity，重建结果与上面内联一致；任何异常都由 helper 回退内联 parts，主链不受影响。
+    if getattr(config, "PLUGIN_PARTS_ENABLED", False):
+        parts = _parts_via_plugins(
+            parts, meta.get("oil_w", 0.0), news_score, oil_score, inst, ind, kline_ok, price,
+            tick_mom, flow, term, fund_raw)
 
     score = clip(sum(parts.values()), -10.0, 10.0)
     label, advice, conf = rating(score)

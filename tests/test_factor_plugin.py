@@ -103,9 +103,15 @@ def test_example_plugins_values():
     assert abs(v2 - 0.8) < 1e-12
 
 
-def test_main_chain_does_not_import_plugin_host():
-    """G2第一/二切片铁律：main/analyzer 不 import factor_plugin/factor_parts，综合分主链逐字节不变。"""
-    for fn in ("main.py", "analyzer.py"):
-        src = open(os.path.join(_ROOT, fn), "r", encoding="utf-8").read()
-        assert "factor_plugin" not in src, "%s 不得接入插件宿主（切换留待后续 parity 切片）" % fn
-        assert "factor_parts" not in src, "%s 不得接入 live part 适配器（第二切片仍只平行 parity）" % fn
+def test_main_chain_plugin_boundary():
+    """G2 切片铁律：main.py 永不接插件层；analyzer 第60轮最后一切片起仅允许函数内惰性 import、受默认关开关门控。"""
+    main_src = open(os.path.join(_ROOT, "main.py", ), "r", encoding="utf-8").read()
+    assert "factor_plugin" not in main_src and "factor_parts" not in main_src
+    az = open(os.path.join(_ROOT, "analyzer.py"), "r", encoding="utf-8").read()
+    # 不得有模块顶层 import（行首无缩进）插件层
+    for line in az.splitlines():
+        if line.startswith(("import ", "from ")):
+            assert "factor_plugin" not in line and "factor_parts" not in line
+    # 最后一切片必须有默认关开关与回退 helper
+    import config
+    assert config.PLUGIN_PARTS_ENABLED is False and "_parts_via_plugins" in az

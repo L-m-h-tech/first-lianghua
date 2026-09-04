@@ -72,14 +72,53 @@ def test_no_future_leak():
         assert all(base[t] == after[t] for t in range(len(c) - 1))
 
 
+def test_boll_std_bit_exact():
+    c = _closes(n=420)
+    rep = fle.parity_boll_std(c, 20)
+    assert rep["bit_exact"] and rep["max_diff"] == 0.0 and rep["n_pair"] == rep["n_hex"] > 300
+
+
+def test_hv20_bit_exact():
+    c = _closes(n=420)
+    rep = fle.parity_hv20(c, 20)
+    assert rep["bit_exact"] and rep["max_diff"] == 0.0 and rep["n_pair"] == rep["n_hex"] > 300
+    assert abs(fle._SQRT252 - math.sqrt(252.0)) == 0.0
+
+
+def test_orthogonal_ic_blend():
+    import random
+    rng = random.Random(99)
+    n = 200
+    base = [rng.gauss(0, 1) for _ in range(n)]
+    f1 = list(base)
+    f2 = [0.7 * base[t] + 0.3 * rng.gauss(0, 1) for t in range(n)]
+    f3 = [rng.gauss(0, 1) for _ in range(n)]
+    ob = fle.orthogonal_ic_blend([f1, f2, f3], [0.3, 0.2, 0.1])
+    assert abs(sum(ob["weights"]) - 1.0) < 1e-12
+    # f2 残差对基底 f1 近似正交
+    resid = ob["residuals"][1]
+    cov = sum(base[t] * resid[t] for t in range(n)) / n
+    assert abs(cov) < 0.05
+    assert all(isinstance(x, float) for x in ob["blend"])
+    # 单因子退化
+    one = fle.orthogonal_ic_blend([f1], [0.5])
+    assert one["weights"] == [1.0] and one["residuals"][0] == f1
+    # 因子数/IC数不一致报错
+    import pytest
+    with pytest.raises(ValueError):
+        fle.orthogonal_ic_blend([f1, f2], [0.1])
+
+
 def test_parity_report_and_catalog():
     rep = fle.parity_report(_closes())
     assert set(rep["ret"]) == {1, 5, 20} and set(rep["sma"]) == {5, 10, 20, 60}
     assert all(r["bit_exact"] for r in rep["ret"].values())
     assert all(r["within_tol"] for r in rep["sma"].values())
+    assert rep["boll_std"]["bit_exact"] and rep["hv20"]["bit_exact"]
     assert rep["daily_momentum"]["bit_exact"]
     import factors_catalog as catalog
-    for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl"):
+    for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
+              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20"):
         assert catalog.by_key(k) is not None and catalog.by_key(k)["status"] == "research"
     assert catalog.validate() == []
 

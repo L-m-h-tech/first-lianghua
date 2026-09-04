@@ -388,6 +388,11 @@ PRS_MIN_HIST = 40            # 单品种收益历史少于该值不纳入协方�
 PRS_GROSS = 1.00             # 权重和=1后的目标总敞口（旧等名义12仓×15%≈1.8；风险型默认满敞口1.0更稳，可调）
 PRS_CAP = PC_MAX_WEIGHT      # 单品种目标权重上限（复用 portfolio_constructor capped-simplex）
 
+# ---- G2（第60轮·最后一切片）综合分 live part 是否改由 factor_parts 注册表装配 ----
+# 默认 False=完全走 analyzer 内联路径（逐字节等价基线，旧路径始终保留可回退）；
+# 置 True 时 analyzer 在内联算完后用注册表重建 parts（9 part 已全部逐位 parity，等价证明见 factor_parts.selftest）。
+PLUGIN_PARTS_ENABLED = False
+
 # ---------------- 输出 ----------------
 REPORT_FILE = os.path.join(BASE_DIR, "reports", "latest_report.txt")
 SIGNALS_CSV = os.path.join(BASE_DIR, "reports", "signals.csv")

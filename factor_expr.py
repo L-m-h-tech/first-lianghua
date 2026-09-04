@@ -609,6 +609,17 @@ LIBRARY = (
      "name": "20日收益(过程式逐字节镜像)", "note": "与 technical_profile.ret20 同运算序，float.hex 逐位相等"},
     {"key": "expr_ma10", "expr": "ts_mean(close,10)", "direction": 0,
      "name": "10日均线(表达式版)", "note": "对应 _sma_series(close,10)，窗内求和与增量累加仅末位浮点差异"},
+    # ===== G25续（第60轮）更多过程式技术量按同运算序表达式化 =====
+    {"key": "expr_ma5", "expr": "ts_mean(close,5)", "direction": 0,
+     "name": "5日均线(表达式版)", "note": "对应 _sma_series(close,5)，与增量SMA仅末位舍入差异"},
+    {"key": "expr_ma20", "expr": "ts_mean(close,20)", "direction": 0,
+     "name": "20日均线(表达式版)", "note": "对应 _sma_series(close,20)，布林中轨同源"},
+    {"key": "expr_ma60", "expr": "ts_mean(close,60)", "direction": 0,
+     "name": "60日均线(表达式版)", "note": "对应 _sma_series(close,60)=TECH_LONG_MA"},
+    {"key": "expr_boll_std20", "expr": "ts_std(close,20)", "direction": 0,
+     "name": "20日样本标准差(表达式版)", "note": "与 _sample_std(close[-20:]) 同求和序，float.hex 逐位相等（布林带宽用）"},
+    {"key": "expr_hv20", "expr": "ts_std(log(close/delay(close,1)),20)*15.874507866387544", "direction": 0,
+     "name": "20日历史波动率年化(表达式版)", "note": "log收益样本std*sqrt252(=15.874507866387544)，与 _hv_at(.,20) 同运算序逐位相等"},
 )
 
 
