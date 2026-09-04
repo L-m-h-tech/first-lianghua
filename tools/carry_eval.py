@@ -230,6 +230,94 @@ def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+# =========================== G22续（第66轮）：掩码前后截面多空绩效对照 ===========================
+def _load_panel_mask():
+    """读 research_panel.db 算可交易性掩码；返回 (mask, rows_by_date) 或 (None, None)。纯研究侧。"""
+    try:
+        from collections import defaultdict as _dd
+        db_p = str(ROOT / "cache" / "research_panel.db")
+        if not os.path.exists(db_p):
+            return None, None
+        import sqlite3 as _sq
+        con = _sq.connect(db_p)
+        rows_by_date = _dd(dict)
+        for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
+            rows_by_date[row[1]][row[0]] = {"c": row[2], "h": row[3], "l": row[4]}
+        con.close()
+        return tmask.mask_for_panel(rows_by_date), rows_by_date
+    except Exception:
+        return None, None
+
+
+def _ls_summary(dates, by_date, factor, main_h, vol_lb, n_q, min_names, cost_round):
+    """对给定面板跑主因子截面多空，返回精简绩效摘要（纯函数、供对照表复用）。"""
+    pers = xs.cross_section_periods(dates, by_date, factor, main_h, vol_lb, n_q,
+                                    min_names, "equal", main_h)
+    if not pers:
+        return None
+    pf = xs.perf_stats(pers, main_h, cost_round, "ls")
+    bp = xs.bands_profile(pers, n_q)
+    return {"n_periods": len(pers), "pf": pf, "bands": bp}
+
+
+def compare_mask(points_main, points_near, factor, main_h, vol_lb, n_q, min_names,
+                 cost_round, mask=None, mask_notes=""):
+    """掩码前后截面多空绩效对照表（G22续第66轮）。
+
+    mask=None 时只返回原始版摘要；否则返回 {"raw": 原始版, "masked": 掩码后版, "mask_notes"}。
+    对照口径：同一 main_dates 截断窗（用原始面板的交易日做窗口，保证两版可比）。
+    """
+    mask = mask if mask is not None else _load_panel_mask()[0]
+    # 原始版（无掩码）
+    raw_dates, raw_by = xs.build_panel(points_main)
+    raw_main_dates = xs.truncate_dates(raw_dates, 1023)
+    raw_set = set(raw_main_dates)
+    raw_main_points = [p for p in points_main if p["date"] in raw_set]
+    _, raw_by2 = xs.build_panel(raw_main_points)
+    raw_sum = _ls_summary(raw_main_dates, raw_by2, factor, main_h, vol_lb, n_q,
+                          min_names, cost_round)
+    out = {"raw": raw_sum, "mask": None, "mask_notes": ""}
+    if mask is None:
+        return out
+    # 掩码版（剔除不可交易点）
+    fm = tmask.filter_points(points_main, mask)
+    masked_main = fm["points"]
+    md_dates, md_by = xs.build_panel(masked_main)
+    md_main_dates = xs.truncate_dates(md_dates, 1023)
+    md_set = set(md_main_dates)
+    md_points = [p for p in masked_main if p["date"] in md_set]
+    _, md_by2 = xs.build_panel(md_points)
+    md_sum = _ls_summary(md_main_dates, md_by2, factor, main_h, vol_lb, n_q,
+                         min_names, cost_round)
+    out.update({"mask": md_sum, "mask_notes": mask_notes,
+                "removed": {"original": fm["original"], "locked": fm["removed_locked"],
+                            "near": fm["removed_near"], "filtered": fm["filtered"]}})
+    return out
+
+
+def render_mask_compare(cmp):
+    """把 compare_mask 结果渲染成人类可读对照文本。"""
+    L = ["\n" + "=" * 108,
+         " G22续（第66轮）掩码前后截面多空绩效对照（同一输入，主窗交易日窗口各取最近1023个）",
+         "=" * 108]
+    L.append("  %-14s %10s %10s %10s %8s %8s %8s" % ("口径", "期数", "净t", "净均收%", "胜率%", "单调%", "Q5-Q1%"))
+    for label, key in (("原始(无掩码)", "raw"), ("掩码后(剔不可交易)", "mask")):
+        s = cmp.get(key)
+        if s is None or s.get("pf") is None:
+            L.append("  %-14s %10s" % (label, "无样本"))
+            continue
+        pf, bp = s["pf"], s["bands"]
+        L.append("  %-14s %10d %10.2f %10.3f %8.0f %8.0f %8.3f"
+                 % (label, s["n_periods"], pf["net_t"], pf["net_mean"] * 100,
+                    pf["win"] * 100, bp["mono"] * 100, bp["spread"] * 100))
+    if cmp.get("removed"):
+        r = cmp["removed"]
+        L.append("  剔除统计：原%d点→剔锁板%d+临近交割%d→剩%d点"
+                 % (r["original"], r["locked"], r["near"], r["filtered"]))
+    L.append("=" * 108)
+    return "\n".join(L)
+
+
 def _pf_line(pf):
     if pf is None:
         return "无样本"
@@ -512,6 +600,7 @@ def run(argv=None):
     ap.add_argument("--json", default="reports/carry_eval.json")
     ap.add_argument("--panel", action="store_true", help="G21续：主连读已复权面板（期限仍走term_history；面板约1023日，长2500样本请用缺省网络）")
     ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码（疑似锁板/距交割月1号≤15天）并剔除不可交易点后重做截面多空对照")
+    ap.add_argument("--mask-compare", action="store_true", help="G22续（第66轮）：掩码前后截面多空绩效对照表（同一输入各跑无掩码/有掩码）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -579,6 +668,24 @@ def run(argv=None):
     print("品种时点 %d、覆盖品种 %d；主裁决 ok=%s；双样本稳健候选 %d%s；报告 -> %s；JSON -> %s"
           % (len(main_points), sidecar["n_symbols"], verdict["ok"],
              sidecar["verdict"]["n_robust"], mask_notes, args.out, args.json))
+    # G22续（第66轮）：掩码前后截面多空绩效对照表
+    if args.mask_compare:
+        mask, _rb = _load_panel_mask()
+        cmp = compare_mask(points_main, points_near, args.factor, main_h, args.vol_lb,
+                           args.quantiles, args.min_names, cost_round,
+                           mask=mask, mask_notes=mask_notes)
+        cmp_txt = render_mask_compare(cmp)
+        print(cmp_txt)
+        # 追加到报告文件尾部
+        with open(args.out, "a", encoding="utf-8-sig") as f:
+            f.write(cmp_txt + "\n")
+        # 追加到 sidecar JSON
+        cmp_sidecar = {k: v for k, v in cmp.items() if k != "mask" or v is not None}
+        sidecar["mask_compare"] = {"raw": (cmp.get("raw") or {}),
+                                   "mask": (cmp.get("mask") or {}),
+                                   "removed": cmp.get("removed")}
+        with open(args.json, "w", encoding="utf-8") as f:
+            f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
     return 0
 
 
@@ -674,8 +781,24 @@ def selftest():
     assert "carry" in text and set(verdict) >= {"ok", "reasons", "main"}
     assert sc["n_symbols"] == 20 and "conditional" in sc and "family" in sc
     assert set(next(iter(sc["conditional"].values()))["windows"]) == {"近窗", "长窗"}
+
+    # 6) G22续（第66轮）掩码前后对照：结构齐全、渲染不崩（合成面板日期 2025-01~11 无真交割日，
+    #     显式传 fake_mask 保证剔除统计非零）
+    cmp0 = compare_mask(points, points, "carry", 20, 63, 5, 16, 0.0003, mask=None)
+    assert "raw" in cmp0
+    # 构造把所有 2025-03 点（合成面板首月）标为不可交易的掩码
+    fake_mask = {}
+    for p in points:
+        dm = fake_mask.setdefault(p["sym"], {})
+        near_del = p["date"].startswith("2025-03")
+        dm[p["date"]] = {"locked": False, "near_delivery": near_del, "tradable": not near_del}
+    cmp1 = compare_mask(points, points, "carry", 20, 63, 5, 16, 0.0003, mask=fake_mask)
+    assert cmp1["raw"]["pf"] is not None
+    assert cmp1["mask"] is not None and cmp1["removed"]["near"] > 0
+    txt1 = render_mask_compare(cmp1)
+    assert "掩码前后" in txt1 and "剔除统计" in txt1
     print("carry_eval selftest ALL PASS（期限映射/年月范围/收益对齐/合成carry多空单调/"
-          "噪声因子不显著/报告与双样本结构 共5组）")
+          "噪声因子不显著/报告与双样本结构/掩码前后对照 共6组）")
     return 0
 
 
