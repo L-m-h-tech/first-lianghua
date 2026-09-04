@@ -452,6 +452,75 @@ def evaluate_grid(dates, by_date, lookbacks, horizons, n_q, min_names, cost_roun
     return grid
 
 
+def _xs_ls_summary(dates, by_date, main_l, main_h, n_q, min_names,
+                   cost_round, weight="equal", leg="ls"):
+    """对给定面板跑 XSMOM 主因子（z{main_l}）截面多空，返回精简绩效摘要（纯函数，供掩码前后对照复用）。"""
+    pers = cross_section_periods(dates, by_date, "z%d" % main_l, main_h, main_l, n_q,
+                                 min_names, weight, main_h)
+    if not pers:
+        return None
+    key = LEG_KEY.get(leg, "ls")
+    pf = perf_stats(pers, main_h, cost_round, key)
+    bp = bands_profile(pers, n_q)
+    return {"n_periods": len(pers), "pf": pf, "bands": bp}
+
+
+def compare_mask_xs(points, lookbacks, horizons, main_l, main_h, n_q, min_names,
+                    cost_round, weight="equal", leg="ls", mask=None, mask_notes=""):
+    """XSMOM 掩码前后截面多空绩效对照（G22续第67轮；同一输入各跑无掩码/有掩码）。
+
+    返回 {"raw": 原始版摘要, "mask": 掩码后摘要或None, "removed": 剔除统计, "mask_notes"}。
+    对照口径：两版都用同一 main_h/main_l 主组合参数、各自主窗最近 horizons 上限交易日。
+    """
+    # 原始版
+    raw_dates, raw_by = build_panel(points)
+    raw_main_dates = truncate_dates(raw_dates, 1023)
+    raw_main = [p for p in points if p["date"] in set(raw_main_dates)]
+    _, raw_by2 = build_panel(raw_main)
+    raw_sum = _xs_ls_summary(raw_main_dates, raw_by2, main_l, main_h, n_q,
+                             min_names, cost_round, weight, leg)
+    out = {"raw": raw_sum, "mask": None, "removed": None, "mask_notes": ""}
+    if mask is None:
+        return out
+    import tradable_mask as tmask
+    fm = tmask.filter_points(points, mask)
+    md_dates, md_by = build_panel(fm["points"])
+    md_main_dates = truncate_dates(md_dates, 1023)
+    md_main = [p for p in fm["points"] if p["date"] in set(md_main_dates)]
+    _, md_by2 = build_panel(md_main)
+    md_sum = _xs_ls_summary(md_main_dates, md_by2, main_l, main_h, n_q,
+                            min_names, cost_round, weight, leg)
+    out.update({"mask": md_sum, "mask_notes": mask_notes,
+                "removed": {"original": fm["original"], "locked": fm["removed_locked"],
+                            "near": fm["removed_near"], "filtered": fm["filtered"]}})
+    return out
+
+
+def render_mask_compare_xs(cmp, main_l, main_h, leg="ls"):
+    """把 compare_mask_xs 结果渲染成人类可读对照文本。"""
+    key_lab = LEG_LABEL.get(leg, leg)
+    L = ["\n" + "=" * 108,
+         " G22续（第67轮）XSMOM 掩码前后截面多空绩效对照（主因子 L=%d H=%d，腿=%s；窗口各取最近1023个交易日）"
+         % (main_l, main_h, key_lab),
+         "=" * 108]
+    L.append("  %-18s %10s %10s %10s %8s %8s %8s" % ("口径", "期数", "净t", "净均收%", "胜率%", "单调%", "Q5-Q1%"))
+    for label, key in (("原始(无掩码)", "raw"), ("掩码后(剔不可交易)", "mask")):
+        s = cmp.get(key)
+        if s is None or s.get("pf") is None:
+            L.append("  %-18s %10s" % (label, "无样本"))
+            continue
+        pf, bp = s["pf"], s["bands"]
+        L.append("  %-18s %10d %10.2f %10.3f %8.0f %8.0f %8.3f"
+                 % (label, s["n_periods"], pf["net_t"], pf["net_mean"] * 100,
+                    pf["win"] * 100, bp["mono"] * 100, bp["spread"] * 100))
+    if cmp.get("removed"):
+        r = cmp["removed"]
+        L.append("  剔除统计：原%d点→剔锁板%d+临近交割%d→剩%d点"
+                 % (r["original"], r["locked"], r["near"], r["filtered"]))
+    L.append("=" * 108)
+    return "\n".join(L)
+
+
 def build_report(points, errors, dates, by_date, lookbacks, horizons, main_l, main_h,
                  n_q, min_names, min_sector, oos_ratio, tmin, mono_gate, max_drive,
                  cost_round, days, weight_kind="equal", robust_panel=None,
@@ -754,6 +823,7 @@ def run(argv=None):
     ap.add_argument("--workers", type=int, default=config.XSMOM_EVAL_WORKERS)
     ap.add_argument("--out", default=config.XSMOM_EVAL_FILE)
     ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码（锁板/交割）并剔除不可交易点后重做截面")
+    ap.add_argument("--mask-compare", action="store_true", help="G22续（第67轮）：掩码前后截面多空绩效对照表（同一输入各跑无掩码/有掩码）")
     ap.add_argument("--panel", action="store_true",
                     help="G21续：优先读 cache/research_panel.db 已复权面板（缺省仍联网现拉，结果一致）")
     ap.add_argument("--selftest", action="store_true")
@@ -822,6 +892,36 @@ def run(argv=None):
     print("品种时点 %d、覆盖品种 %d；主组合裁决 ok=%s；双样本稳健候选 %d 个%s；报告 -> %s；JSON -> %s"
           % (len(main_points), sidecar["n_symbols"], verdict["ok"], n_robust, mask_notes,
              args.out, config.XSMOM_EVAL_JSON))
+    # G22续（第67轮）：掩码前后绩效对照表
+    if args.mask_compare:
+        try:
+            import tradable_mask as tmask
+            from collections import defaultdict as _dd
+            db_p = str(ROOT / "cache" / "research_panel.db")
+            mask = None
+            if os.path.exists(db_p):
+                import sqlite3 as _sq
+                con = _sq.connect(db_p)
+                rows_by_date = _dd(dict)
+                for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
+                    rows_by_date[row[1]][row[0]] = {"c": row[2], "h": row[3], "l": row[4]}
+                con.close()
+                mask = tmask.mask_for_panel(rows_by_date)
+            cmp = compare_mask_xs(points, lookbacks, horizons, main_l, main_h,
+                                  args.quantiles, args.min_names, cost_round,
+                                  weight=args.weight, leg=args.leg, mask=mask, mask_notes=mask_notes)
+            cmp_txt = render_mask_compare_xs(cmp, main_l, main_h, args.leg)
+            print(cmp_txt)
+            with open(args.out, "a", encoding="utf-8-sig") as f:
+                f.write(cmp_txt + "\n")
+            import json
+            sidecar["mask_compare_xs"] = {"raw": (cmp.get("raw") or {}),
+                                          "mask": (cmp.get("mask") or {}),
+                                          "removed": cmp.get("removed")}
+            with open(config.XSMOM_EVAL_JSON, "w", encoding="utf-8") as f:
+                f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
+        except Exception as e:
+            print("；G22续掩码对照失败（不影响主流程）: %s" % type(e).__name__)
     return 0
 
 
@@ -1005,8 +1105,21 @@ def selftest():
         wkeys = list(c["windows"])
         assert len(wkeys) == 2 and wkeys[0].startswith("近") and wkeys[1].startswith("长")
         assert "robust" in c
+    # 15) G22续（第67轮）掩码前后对照：合成面板主因子 L=20 有 z20 键；mask=None 有 raw；fake_mask 验证 removed
+    c0 = compare_mask_xs(pts, (20, 60), (5, 20), 20, 20, 5, 16, 0.0003, weight="equal", leg="ls", mask=None)
+    assert "raw" in c0 and c0.get("raw") is not None, c0
+    fake_mask = {}
+    for p in pts:
+        dm = fake_mask.setdefault(p["sym"], {})
+        drop = p["date"].startswith("2025-03")   # 合成面板首月
+        dm[p["date"]] = {"locked": False, "near_delivery": drop, "tradable": not drop}
+    c1 = compare_mask_xs(pts, (20, 60), (5, 20), 20, 20, 5, 16, 0.0003,
+                         weight="equal", leg="ls", mask=fake_mask)
+    assert c1["mask"] is not None and c1["removed"]["near"] > 0
+    txt1 = render_mask_compare_xs(c1, 20, 20, "ls")
+    assert "掩码前后" in txt1 and "剔除统计" in txt1
     print("xsmom_eval selftest ALL PASS（远期无泄漏/分档/加权/趋势多空/成本/IS-OOS/裁决门/报告/"
-          "板块池·多头超额/窗口截断/双样本稳健/条件化第五章 共14组）")
+          "板块池·多头超额/窗口截断/双样本稳健/条件化第五章/掩码前后对照 共15组）")
     return 0
 
 
