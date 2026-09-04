@@ -192,7 +192,9 @@ def test_library_compiles_and_registered():
     import factors_catalog as fc
     catalog_keys = {r["key"] for r in fc.CATALOG}
     for f in fe.LIBRARY:
-        out = compute_ts(f["expr"], {"close": C, "volume": [1000 + i for i in range(len(C))]})
+        out = compute_ts(f["expr"], {"close": C, "high": [v * 1.005 for v in C],
+                                     "low": [v * 0.995 for v in C],
+                                     "volume": [1000 + i for i in range(len(C))]})
         assert len(out) == len(C)
         assert f["key"] in catalog_keys  # 表达式因子必须在唯一注册表登记
     assert fc.validate() == []

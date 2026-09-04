@@ -133,6 +133,76 @@ def _side_of(direction, leg):
     return "sell" if direction > 0 else "buy"   # 平多卖出、平空买回
 
 
+# =========================== G1续（第63轮）OMS/成交回报/持仓对账 纯函数 ===========================
+
+def reconcile_position_sets(internal, external, price_tol=1e-6):
+    """持仓对账纯函数：把内部持仓 {sym:{direction,lots,entry_price}} 与外部/托管台账逐品种比对。
+
+    每个 sym 归入 matched 或 breaks；break 类型可叠加（如 "direction+lots"）：
+      missing_external 内部有、外部无（内部幽灵仓/外部漏报）；missing_internal 外部有、内部无（内部漏记）；
+      direction 多空方向相反；lots 手数不符（带 lots_delta=外部-内部）；entry_price 开仓价差超 price_tol（None=不比价）。
+    返回 {matched,breaks,n_matched,n_breaks,clean}；纯函数、零 IO，便于确定性单测。"""
+    internal = internal or {}
+    external = external or {}
+    matched, breaks = [], []
+    for sym in sorted(set(internal) | set(external)):
+        i, e = internal.get(sym), external.get(sym)
+        if i and not e:
+            breaks.append({"sym": sym, "type": "missing_external",
+                           "internal": dict(i), "external": None})
+            continue
+        if e and not i:
+            breaks.append({"sym": sym, "type": "missing_internal",
+                           "internal": None, "external": dict(e)})
+            continue
+        problems = []
+        if int(i.get("direction", 0)) != int(e.get("direction", 0)):
+            problems.append("direction")
+        lots_delta = int(e.get("lots", 0)) - int(i.get("lots", 0))
+        if lots_delta != 0:
+            problems.append("lots")
+        if price_tol is not None and \
+                abs(float(i.get("entry_price", 0.0) or 0.0)
+                    - float(e.get("entry_price", 0.0) or 0.0)) > price_tol:
+            problems.append("entry_price")
+        if problems:
+            breaks.append({"sym": sym, "type": "+".join(problems), "lots_delta": lots_delta,
+                           "internal": dict(i), "external": dict(e)})
+        else:
+            matched.append(sym)
+    return {"matched": matched, "breaks": breaks, "n_matched": len(matched),
+            "n_breaks": len(breaks), "clean": not breaks}
+
+
+def aggregate_fills(fills):
+    """成交回报汇总纯函数：对一批 fill(trade) dict 聚合笔数/手数/名义/费/滑点/已实现/多空开平。"""
+    agg = {"n_fills": len(fills), "lots": 0, "notional": 0.0, "fee_yuan": 0.0,
+           "slip_yuan": 0.0, "realized_yuan": 0.0,
+           "n_open": 0, "n_close": 0, "open_long": 0, "open_short": 0,
+           "close_long": 0, "close_short": 0, "n_forced": 0}
+    for t in fills:
+        lots = int(t.get("lots", 0) or 0)
+        agg["lots"] += lots
+        agg["notional"] += float(t.get("notional", 0.0) or 0.0)
+        agg["fee_yuan"] += float(t.get("fee_yuan", 0.0) or 0.0)
+        agg["slip_yuan"] += float(t.get("slip_yuan", 0.0) or 0.0)
+        agg["realized_yuan"] += float(t.get("realized_yuan", 0.0) or 0.0)
+        agg["n_forced"] += int(t.get("forced", 0) or 0)
+        if t.get("side") == "open":
+            agg["n_open"] += 1
+            if int(t.get("direction", 0)) > 0:
+                agg["open_long"] += lots
+            else:
+                agg["open_short"] += lots
+        else:
+            agg["n_close"] += 1
+            if int(t.get("direction", 0)) > 0:
+                agg["close_long"] += lots
+            else:
+                agg["close_short"] += lots
+    return agg
+
+
 # next 档开仓时遇到这些【临时性】约束，挂单保持 pending 顺延等约束缓解（而非直接拒单丢弃）；
 # 而"无合约乘数/策略目标不足1手"这类确定性约束才立即 rejected。
 RETRYABLE_SKIP = {"同时持仓数达上限", "可用资金不足1手", "板块名义上限",
@@ -184,6 +254,10 @@ class PaperBroker:
         self.pending = {}          # sym -> [order, ...] next 档待成交队列（先平后开）
         self._open_seq = {}        # sym -> 开仓序号（生成 pos_ref）
         self.pos_ref = {}          # sym -> 当前持仓 pos_ref
+        # G1续（第63轮）：内存级 OMS 全状态委托台账（id->最新委托快照）与成交回报流水，
+        # 让纯内存模式也能像 DB 模式一样回溯任意终态委托/全部成交；纯增量、不改变既有撮合输出。
+        self._orders_by_id = {}
+        self.fill_ledger = []
         self.last_summary = None   # 最近一轮 on_cycle 结果
         self.restored = False
         # G5④（第48轮）组合层单日浮亏熔断：显式传入优先；否则仅在 config 开启且 paper_halt 模式才挂。
@@ -205,15 +279,19 @@ class PaperBroker:
     def _ins_order(self, order):
         if self.db is None:
             order["id"] = order.get("id") or (id(order) & 0x7fffffff)
+            self._orders_by_id[order["id"]] = dict(order)
             return order["id"]
         try:
             order["id"] = self.db.insert_paper_order(order)
+            self._orders_by_id[order["id"]] = dict(order)
             return order["id"]
         except Exception:
             return None
 
     def _upd_order(self, order, **fields):
         order.update(fields)
+        if order.get("id"):
+            self._orders_by_id[order["id"]] = dict(order)
         if self.db is not None and order.get("id"):
             try:
                 self.db.update_paper_order(order["id"], **fields)
@@ -221,6 +299,7 @@ class PaperBroker:
                 pass
 
     def _ins_trade(self, t):
+        self.fill_ledger.append(dict(t))     # 内存成交回报流水（DB 模式同时落库）
         if self.db is None:
             return None
         try:
@@ -672,6 +751,18 @@ class PaperBroker:
                 self.pending.setdefault(sym, []).insert(0, order)
         except Exception:
             pass
+        # G1续：重启后回填内存 OMS 台账与成交回报流水，使 orders_view/fills_view 跨进程连续
+        try:
+            for o in self.db.paper_orders_recent(5000):
+                if o.get("id"):
+                    self._orders_by_id[o["id"]] = dict(o)
+        except Exception:
+            pass
+        try:
+            self.fill_ledger = [dict(t) for t in self.db.paper_trades_recent(100000)][::-1] \
+                if hasattr(self.db, "paper_trades_recent") else self.fill_ledger
+        except Exception:
+            pass
         self.restored = True
         return True
 
@@ -744,6 +835,97 @@ class PaperBroker:
                 "pending": {s: [dict(o) for o in q]
                             for s, q in self.pending.items()},
                 "performance": perf}
+
+    # ---------------- G1续（第63轮）：OMS 全状态台账 / 主动撤单 / 成交回报 / 持仓对账 ----------------
+
+    def orders_view(self, status=None, sym=None):
+        """OMS 全状态委托台账（不只在途 pending；含 filled/rejected/cancelled/blocked 终态）。
+
+        内存模式取 _orders_by_id，DB 模式以三表为准回填；可按 status/sym 过滤，按 (ts,id) 升序。"""
+        rows = list(self._orders_by_id.values())
+        if self.db is not None and hasattr(self.db, "paper_orders_recent"):
+            try:
+                rows = self.db.paper_orders_recent(100000)[::-1]
+            except Exception:
+                pass
+        out = []
+        for o in rows:
+            if status is not None and o.get("status") != status:
+                continue
+            if sym is not None and o.get("sym") != sym:
+                continue
+            out.append(dict(o))
+        out.sort(key=lambda o: (str(o.get("ts", "")), int(o.get("id") or 0)))
+        return out
+
+    def cancel_order(self, *, sym=None, order_id=None, reason="手动撤单(OMS)"):
+        """主动撤销在途挂单：按 order_id 或某 sym 整组撤；返回撤掉的委托数。只动 pending，不碰已成交。"""
+        n = 0
+        if order_id is not None:
+            for s in list(self.pending):
+                keep = []
+                for o in self.pending[s]:
+                    if o.get("id") == order_id:
+                        self._upd_order(o, status="cancelled", reason=reason)
+                        n += 1
+                    else:
+                        keep.append(o)
+                if keep:
+                    self.pending[s] = keep
+                else:
+                    self.pending.pop(s, None)
+            return n
+        if sym is None:
+            return 0
+        for o in self.pending.pop(sym, []):
+            self._upd_order(o, status="cancelled", reason=reason)
+            n += 1
+        return n
+
+    def fills_view(self, sym=None, side=None, since=None):
+        """成交回报流水（全部 fill，可按品种/开平/时间戳下界过滤），时间升序。"""
+        rows = self.fill_ledger
+        if self.db is not None and hasattr(self.db, "paper_trades_recent") and not rows:
+            try:
+                rows = self.db.paper_trades_recent(100000)[::-1]
+            except Exception:
+                rows = self.fill_ledger
+        out = []
+        for t in rows:
+            if sym is not None and t.get("sym") != sym:
+                continue
+            if side is not None and t.get("side") != side:
+                continue
+            if since is not None and str(t.get("ts", "")) < str(since):
+                continue
+            out.append(dict(t))
+        out.sort(key=lambda t: (str(t.get("ts", "")), int(t.get("id") or 0)))
+        return out
+
+    def fill_report(self, since=None):
+        """成交回报汇总：since 以来（默认全部）成交的笔数/手数/名义/费/滑点/已实现/多空开平拆分。"""
+        return aggregate_fills(self.fills_view(since=since))
+
+    def _internal_position_set(self):
+        return {r["sym"]: {"direction": r["direction"], "lots": int(r["lots"]),
+                           "entry_price": float(r["entry_price"] or 0.0)}
+                for r in self.positions_view()}
+
+    def reconcile_positions(self, external, price_tol=1e-6):
+        """内部持仓 vs 外部/托管台账 {sym:{direction,lots,entry_price}} 对账，返回 matched/breaks 明细。"""
+        return reconcile_position_sets(self._internal_position_set(), external, price_tol)
+
+    def reconcile_against_db(self, price_tol=1e-9):
+        """自洽对账：用三表里"仍持仓的开仓腿"重建外部持仓，与内存账户内核逐品种核对（捕获持久化漂移）。
+
+        db 为空（纯内存）返回 None。"""
+        if self.db is None or not hasattr(self.db, "paper_open_position_trades"):
+            return None
+        external = {}
+        for t in self.db.paper_open_position_trades():
+            external[t["sym"]] = {"direction": int(t["direction"]), "lots": int(t["lots"]),
+                                  "entry_price": float(t["price"])}
+        return self.reconcile_positions(external, price_tol)
 
 
 # =========================== 合成自检（零网络） ===========================
@@ -897,6 +1079,57 @@ def selftest():
     view = pbo.account_summary()
     ck("账户摘要含状态计数/视图", set(["pending", "filled", "blocked", "rejected",
        "cancelled"]).issubset(view["status"]) and "float_pnl" in view and "n_pending" in view)
+
+    # 12) G1续 OMS 全状态台账 + 主动撤单（pbc 为 group7 close 档持 CU 多）
+    ck("OMS台账含已成交终态", any(o["status"] == "filled" for o in pbc.orders_view())
+       and len(pbc.orders_view()) >= 1)
+    ck("OMS按状态过滤", len(pbc.orders_view(status="filled")) >= 1
+       and len(pbc.orders_view(status="rejected")) == 0)
+    pbq = PaperBroker(db=None, fill_mode="next", equity0=10_000_000, slip_rate=0.0, restore=False)
+    pbq.on_cycle("2026-09-02 09:05:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    ck("挂单在途1", pbq.order_status_counts()["pending"] == 1)
+    ck("主动撤单返回1且清在途", pbq.cancel_order(sym="RB") == 1
+       and pbq.order_status_counts()["pending"] == 0)
+    ck("撤单落 cancelled 终态", any(o["status"] == "cancelled" for o in pbq.orders_view()))
+
+    # 13) 成交回报汇总（broker 方法 + 纯聚合函数）
+    fr = pbc.fill_report()
+    ck("成交回报笔数/开平/费", fr["n_fills"] == 1 and fr["lots"] >= 1 and fr["n_open"] == 1
+       and fr["open_long"] >= 1 and fr["fee_yuan"] >= 0.0)
+    agg = aggregate_fills([
+        {"side": "open", "direction": 1, "lots": 2, "notional": 100.0, "fee_yuan": 1.0,
+         "slip_yuan": 0.2, "realized_yuan": 0.0, "forced": 0},
+        {"side": "close", "direction": 1, "lots": 2, "notional": 100.0, "fee_yuan": 1.0,
+         "slip_yuan": 0.2, "realized_yuan": 5.0, "forced": 1}])
+    ck("成交回报聚合多空开平/强平", agg["lots"] == 4 and agg["open_long"] == 2
+       and agg["close_long"] == 2 and agg["n_forced"] == 1 and abs(agg["realized_yuan"] - 5.0) < 1e-9)
+
+    # 14) 持仓对账：纯函数五类 break + broker 方法
+    internal = {"RB": {"direction": 1, "lots": 2, "entry_price": 3000.0},
+                "CU": {"direction": -1, "lots": 1, "entry_price": 70000.0}}
+    ck("对账完全一致=clean", reconcile_position_sets(internal, dict(internal))["clean"])
+    ext_dir = dict(internal)
+    ext_dir["RB"] = {"direction": -1, "lots": 2, "entry_price": 3000.0}
+    t_dir = {b["sym"]: b["type"] for b in reconcile_position_sets(internal, ext_dir)["breaks"]}
+    ck("对账识别方向反", t_dir.get("RB") == "direction")
+    ext_miss = dict(internal)
+    ext_miss["AU"] = {"direction": 1, "lots": 1, "entry_price": 500.0}
+    t_miss = {b["sym"]: b["type"] for b in reconcile_position_sets(internal, ext_miss)["breaks"]}
+    ck("对账识别内部漏记(missing_internal)", t_miss.get("AU") == "missing_internal")
+    t_ghost = {b["sym"]: b["type"]
+               for b in reconcile_position_sets(internal, {"CU": internal["CU"]})["breaks"]}
+    ck("对账识别外部漏仓(missing_external)", t_ghost.get("RB") == "missing_external")
+    ext_lots = dict(internal)
+    ext_lots["CU"] = {"direction": -1, "lots": 3, "entry_price": 70000.0}
+    t_lots = {b["sym"]: b["type"] for b in reconcile_position_sets(internal, ext_lots)["breaks"]}
+    ck("对账识别手数不符带delta", t_lots.get("CU") == "lots")
+    own_ext = {x["sym"]: {"direction": x["direction"], "lots": x["lots"],
+                          "entry_price": x["entry_price"]} for x in pbc.positions_view()}
+    ck("broker对账自洽clean", pbc.reconcile_positions(own_ext)["clean"])
+    bad_ext = {s: {"direction": v["direction"], "lots": v["lots"] + 1,
+                   "entry_price": v["entry_price"]} for s, v in own_ext.items()}
+    ck("broker对账抓手数差", not pbc.reconcile_positions(bad_ext)["clean"])
+    ck("纯内存无DB自洽对账返回None", pbc.reconcile_against_db() is None)
 
     print("paper_broker --selftest：%d 项断言全部通过" % len(checks))
     for n, _ in checks:

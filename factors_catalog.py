@@ -180,6 +180,27 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 61,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
      "formula": "100-100/(1+ts_rma(涨,14)/ts_rma(跌,14))，非平盘逐位；avg_loss≈0强制100分支差异已钉死"},
+    # ===== 第63轮 G25续：EMA 列 + KDJ 表达式化（KDJ 非 close-only，输入带 high/low） =====
+    {"key": "expr_ema12", "name": "12日EMA(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 63,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_ema(close,12)，SMA播种，MACD快线，与 _ema_series(close,12) 逐位相等"},
+    {"key": "expr_ema26", "name": "26日EMA(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 63,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_ema(close,26)，SMA播种，MACD慢线，与 _ema_series(close,26) 逐位相等"},
+    {"key": "expr_kdj_k", "name": "KDJ-K(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 63,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "kdj_sm(kdj_rsv(high,low,close,9),9)，固定初值50、α=1/3，与 _kdj_series K 逐位相等"},
+    {"key": "expr_kdj_d", "name": "KDJ-D(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 63,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "对K再套一次同系数平滑(当拍新K)，与 _kdj_series D 逐位相等"},
+    {"key": "expr_kdj_j", "name": "KDJ-J(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 63,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "3K-2D，与 _kdj_series J 逐位相等"},
 )
 
 _BY_KEY = None

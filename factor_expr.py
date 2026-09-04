@@ -31,6 +31,9 @@ _TS_OPS = {
     # 第61轮：状态型递推时序算子（全序列因果递推、无未来；跳过前导非有限值，前 n 个有限值SMA播种）
     "ts_ema": (2, "ts"),   # 标准EMA：alpha=2/(n+1)，逐字对齐 futures_data._ema_series
     "ts_rma": (2, "ts"),   # Wilder RMA：((n-1)*prev+x)/n，逐字对齐 RSI 的 avg_gain/avg_loss 平滑
+    # 第63轮 G25续：KDJ 专用算子（非 close-only，吃 high/low）
+    "kdj_rsv": (4, "ts"),  # 未成熟随机值 (high,low,close,n)：尾窗 hh/ll，(c-ll)/(hh-ll)*100，平盘给50
+    "kdj_sm": (2, "ts"),   # K/D 固定初值50、α=1/3 的递推 (2prev+x)/3（首个有限值即起递推，区别于 ts_ema 的SMA播种）
 }
 _CS_OPS = {"cross_rank": (1, "cs"), "scale": (1, "cs"), "zscore": (1, "cs")}
 _EL_OPS = {"abs": 1, "sign": 1, "log": 1, "tanh": 1, "max": 2, "min": 2}
@@ -335,6 +338,34 @@ def _seeded_recurrence(x, n, mode):
     return out
 
 
+def _kdj_rsv(high, low, close, n):
+    """KDJ 未成熟随机值 RSV（逐字对齐 futures_data._kdj_series 内层）：
+    t>=n-1 取尾窗 [t-n+1,t] 的最高/最低；hh==ll（|差|<1e-12）给 50，否则 (c-ll)/(hh-ll)*100。因果无未来。"""
+    out = [None] * len(close)
+    for t in range(n - 1, len(close)):
+        hs, ls, cs = high[t - n + 1:t + 1], low[t - n + 1:t + 1], close[t]
+        if not all(_isnum(v) for v in hs + ls) or not _isnum(cs):
+            continue
+        hh, ll = max(hs), min(ls)
+        out[t] = 50.0 if abs(hh - ll) < 1e-12 else (cs - ll) / (hh - ll) * 100.0
+    return out
+
+
+def _kdj_smooth(x, init=50.0):
+    """KDJ 的 K/D 平滑：固定初值 init=50、α=1/3 递推，从首个有限值起算（不做SMA播种）。
+
+    逐字对齐 _kdj_series 的 k=2/3*k+1/3*rsv、d=2/3*d+1/3*k（对 K 序列再套一次即得 D）；
+    必须保持 (2/3)*prev+(1/3)*x 的**结合顺序**，写成 (2prev+x)/3 会差 1 ULP，不逐位。"""
+    out = [None] * len(x)
+    prev = init
+    a, b = 2.0 / 3.0, 1.0 / 3.0
+    for t in range(len(x)):
+        if _isnum(x[t]):
+            prev = a * prev + b * x[t]
+            out[t] = prev
+    return out
+
+
 def _ts_op(fn, args):
     x = args[0]
     n = args[-1]
@@ -368,6 +399,10 @@ def _ts_op(fn, args):
         return out
     if fn in ("ts_ema", "ts_rma"):
         return _seeded_recurrence(x, n, "ema" if fn == "ts_ema" else "rma")
+    if fn == "kdj_rsv":
+        return _kdj_rsv(args[0], args[1], args[2], n)
+    if fn == "kdj_sm":
+        return _kdj_smooth(x)
     if fn in ("ts_min", "ts_max"):
         for t in range(len(x)):
             w = _window(x, t, n)
@@ -667,6 +702,18 @@ LIBRARY = (
      "expr": "100.0-100.0/(1.0+ts_rma(max(close-delay(close,1),0.0),14)/ts_rma(max(delay(close,1)-close,0.0),14))",
      "direction": 0, "name": "Wilder RSI14(表达式版)",
      "note": "ts_rma=Wilder平滑；非平盘分支与 _rsi_series 逐位相等，avg_loss≈0 的平盘强制100分支口径差异已在parity钉死"},
+    # ===== G25续（第63轮）EMA 列 + KDJ 表达式化（KDJ 非 close-only，输入需带 high/low） =====
+    {"key": "expr_ema12", "expr": "ts_ema(close,12)", "direction": 0,
+     "name": "12日EMA(表达式版)", "note": "MACD 快线 ema_fast，SMA播种，与 futures_data._ema_series(close,12) 逐位相等"},
+    {"key": "expr_ema26", "expr": "ts_ema(close,26)", "direction": 0,
+     "name": "26日EMA(表达式版)", "note": "MACD 慢线 ema_slow，SMA播种，与 futures_data._ema_series(close,26) 逐位相等"},
+    {"key": "expr_kdj_k", "expr": "kdj_sm(kdj_rsv(high,low,close,9),9)", "direction": 0,
+     "name": "KDJ-K(表达式版)", "note": "RSV 固定初值50、α=1/3 递推，与 _kdj_series 的 K 逐位相等（需 high/low 输入）"},
+    {"key": "expr_kdj_d", "expr": "kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)", "direction": 0,
+     "name": "KDJ-D(表达式版)", "note": "对 K 序列再做一次同系数平滑（当拍新K即时喂入），与 _kdj_series 的 D 逐位相等"},
+    {"key": "expr_kdj_j",
+     "expr": "3.0*kdj_sm(kdj_rsv(high,low,close,9),9)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)",
+     "direction": 0, "name": "KDJ-J(表达式版)", "note": "J=3K-2D，与 _kdj_series 的 J 逐位相等"},
 )
 
 
@@ -807,14 +854,45 @@ def selftest():
     offline = compute_ts("ts_mean(close,5)/ts_std(close,5)", {"close": c})
     realtime = compute_ts("ts_mean(close,5)/ts_std(close,5)", {"close": list(c)})
     assert offline == realtime
-    # 因子库每条表达式都能编译且时序可算
+    # 10) 第63轮 KDJ 算子手算（固定初值50、α=1/3；RSV 平盘给50）
+    H = [11.0, 12.0, 13.0]
+    L = [9.0, 10.0, 11.0]
+    C = [10.0, 11.0, 12.0]
+    rsv = compute_ts("kdj_rsv(high,low,close,3)", {"high": H, "low": L, "close": C})
+    assert rsv[0] is None and rsv[1] is None
+    # t=2 窗 H[0:3]=11,12,13 hh=13 ll=9 rsv=(12-9)/4*100=75
+    assert float.hex(rsv[2]) == float.hex(75.0)
+    k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)", {"high": H, "low": L, "close": C})
+    assert k[0] is None and k[1] is None
+    assert float.hex(k[2]) == float.hex((2.0 / 3.0) * 50.0 + (1.0 / 3.0) * 75.0)
+    d = compute_ts("kdj_sm(kdj_sm(kdj_rsv(high,low,close,3),3),3)",
+                   {"high": H, "low": L, "close": C})
+    assert float.hex(d[2]) == float.hex((2.0 / 3.0) * 50.0 + (1.0 / 3.0) * k[2])
+    j = compute_ts("3.0*kdj_sm(kdj_rsv(high,low,close,3),3)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,3),3),3)",
+                   {"high": H, "low": L, "close": C})
+    assert float.hex(j[2]) == float.hex(3.0 * k[2] - 2.0 * d[2])
+    # 平盘窗（hh==ll）RSV=50，K=(2*50+50)/3=50
+    flat = compute_ts("kdj_rsv(high,low,close,2)",
+                      {"high": [5.0, 5.0], "low": [5.0, 5.0], "close": [5.0, 5.0]})
+    assert flat[1] == 50.0
+    # KDJ 无未来：改最后一根，之前输出不变
+    base_k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)", {"high": H, "low": L, "close": C})
+    H2, L2, C2 = list(H), list(L), list(C)
+    H2[-1], L2[-1], C2[-1] = 99.0, 1.0, 50.0
+    pert_k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)",
+                        {"high": H2, "low": L2, "close": C2})
+    assert all(base_k[t] == pert_k[t] for t in range(len(C) - 1))
+    # 因子库每条表达式都能编译且时序可算（KDJ 条目需 high/low）
+    hi = [v * 1.005 for v in c]
+    lo = [v * 0.995 for v in c]
     for f in LIBRARY:
         ast = parse(f["expr"])
-        out = compute_ts(ast, {"close": c, "volume": [1000 + i for i in range(len(c))]})
+        out = compute_ts(ast, {"close": c, "high": hi, "low": lo,
+                               "volume": [1000 + i for i in range(len(c))]})
         assert len(out) == len(c)
     print("factor_expr selftest ALL PASS（安全解析白名单/拒绝危险调用、delay-delta/窗口统计/"
           "ts_rank-minmax-decay/corr嵌套与无未来、截面cross_rank-scale-zscore、pearson-spearman/"
-          "OLS正交恢复/IC·ICIR加权、实时离线结构性parity、因子库可编译 共9组）")
+          "OLS正交恢复/IC·ICIR加权、实时离线结构性parity、KDJ固定初值递推/RSV平盘/无未来、因子库可编译 共10组）")
     return 0
 
 

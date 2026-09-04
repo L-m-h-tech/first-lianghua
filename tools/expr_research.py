@@ -33,14 +33,18 @@ DEFAULT_JSON = os.path.join(_ROOT, "reports", "expr_research.json")
 
 # ---------------- 输入装配：面板列（离线） vs bar 回读（实时形状） ----------------
 def series_from_rows(rows):
-    """离线：直接读面板存储列。"""
-    return {"close": [r["c"] for r in rows], "volume": [r["v"] for r in rows]}
+    """离线：直接读面板存储列（KDJ 因子需 high/low，缺则回退用收盘）。"""
+    return {"close": [r["c"] for r in rows], "volume": [r["v"] for r in rows],
+            "high": [r.get("h", r["c"]) for r in rows],
+            "low": [r.get("l", r["c"]) for r in rows]}
 
 
 def series_from_bars(rows):
-    """实时形状：面板行先回读成 bar-dict（研究工具读面板的统一桥梁），再取 c/v。"""
+    """实时形状：面板行先回读成 bar-dict（研究工具读面板的统一桥梁），再取 c/v/h/l。"""
     bars = pb.panel_rows_to_bars(rows)
-    return {"close": [b["c"] for b in bars], "volume": [b["v"] for b in bars]}
+    return {"close": [b["c"] for b in bars], "volume": [b["v"] for b in bars],
+            "high": [b.get("h", b["c"]) for b in bars],
+            "low": [b.get("l", b["c"]) for b in bars]}
 
 
 def forward_return(close, t, h):

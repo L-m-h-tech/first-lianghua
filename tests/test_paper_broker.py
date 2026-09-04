@@ -438,3 +438,88 @@ def test_observe_and_halt_do_not_auto_cut(loose):
         br.update("2026-09-03 10:00:00", s0["snapshot"]["equity"] * 0.94)
         s1 = b.on_cycle("2026-09-03 10:01:00", hold_row)
         assert s1["n_delever"] == 0 and b.pf.positions["RB"].lots == held
+
+
+# ---------------- G1续（第63轮）：OMS 台账 / 主动撤单 / 成交回报 / 持仓对账 ----------------
+
+def test_reconcile_position_sets_pure():
+    rec = pb_mod.reconcile_position_sets
+    internal = {"RB": {"direction": 1, "lots": 2, "entry_price": 3000.0},
+                "CU": {"direction": -1, "lots": 1, "entry_price": 70000.0}}
+    assert rec(internal, dict(internal))["clean"]
+    # 方向反
+    ext = dict(internal)
+    ext["RB"] = {"direction": -1, "lots": 2, "entry_price": 3000.0}
+    types = {b["sym"]: b["type"] for b in rec(internal, ext)["breaks"]}
+    assert types["RB"] == "direction" and "CU" not in types
+    # 手数不符带 delta
+    ext = dict(internal)
+    ext["CU"] = {"direction": -1, "lots": 4, "entry_price": 70000.0}
+    bk = [b for b in rec(internal, ext)["breaks"] if b["sym"] == "CU"][0]
+    assert bk["type"] == "lots" and bk["lots_delta"] == 3
+    # 内部漏记 / 外部漏仓
+    assert any(b["type"] == "missing_internal" and b["sym"] == "AU"
+               for b in rec(internal, {**internal, "AU": {"direction": 1, "lots": 1, "entry_price": 500.0}})["breaks"])
+    assert any(b["type"] == "missing_external" and b["sym"] == "RB"
+               for b in rec(internal, {"CU": internal["CU"]})["breaks"])
+    # 开仓价差超容差
+    ext = dict(internal)
+    ext["RB"] = {"direction": 1, "lots": 2, "entry_price": 3005.0}
+    types = {b["sym"]: b["type"] for b in rec(internal, ext, price_tol=1e-6)["breaks"]}
+    assert types["RB"] == "entry_price"
+    assert rec(internal, ext, price_tol=None)["clean"]   # 不比价即一致
+
+
+def test_aggregate_fills():
+    agg = pb_mod.aggregate_fills([
+        {"side": "open", "direction": 1, "lots": 2, "notional": 100.0, "fee_yuan": 1.0,
+         "slip_yuan": 0.2, "realized_yuan": 0.0, "forced": 0},
+        {"side": "open", "direction": -1, "lots": 1, "notional": 50.0, "fee_yuan": 0.5,
+         "slip_yuan": 0.1, "realized_yuan": 0.0, "forced": 0},
+        {"side": "close", "direction": 1, "lots": 2, "notional": 110.0, "fee_yuan": 1.0,
+         "slip_yuan": 0.2, "realized_yuan": 8.0, "forced": 1}])
+    assert agg["n_fills"] == 3 and agg["lots"] == 5
+    assert agg["open_long"] == 2 and agg["open_short"] == 1 and agg["close_long"] == 2
+    assert agg["n_open"] == 2 and agg["n_close"] == 1 and agg["n_forced"] == 1
+    assert agg["realized_yuan"] == pytest.approx(8.0)
+    assert pb_mod.aggregate_fills([])["n_fills"] == 0
+
+
+def test_oms_orders_view_and_cancel(loose):
+    b = make_broker("next", db=None, restore=False, slip=0.0)
+    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])   # 只挂 pending
+    assert len(b.orders_view()) == 1 and b.orders_view(status="pending")[0]["sym"] == "RB"
+    assert b.cancel_order(sym="RB") == 1
+    assert b.order_status_counts()["pending"] == 0
+    assert b.orders_view(status="cancelled")[0]["status"] == "cancelled"
+    # 已无在途可撤，返回 0
+    assert b.cancel_order(sym="RB") == 0
+
+
+def test_fill_report_and_reconcile_broker(loose):
+    b = make_broker("close", db=None, restore=False, slip=0.0)
+    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])   # close 当轮开多
+    fills = b.fills_view()
+    assert len(fills) == 1 and fills[0]["side"] == "open"
+    rep = b.fill_report()
+    assert rep["n_fills"] == 1 and rep["open_long"] == fills[0]["lots"] and rep["n_close"] == 0
+    # 内部持仓与一份一致的外部台账对账：clean
+    ext = {x["sym"]: {"direction": x["direction"], "lots": x["lots"], "entry_price": x["entry_price"]}
+           for x in b.positions_view()}
+    assert b.reconcile_positions(ext)["clean"]
+    # 外部多一手 -> 抓 lots break
+    ext["RB"]["lots"] += 1
+    rec = b.reconcile_positions(ext)
+    assert not rec["clean"] and rec["breaks"][0]["type"] == "lots"
+    # 纯内存无 DB：自洽对账返回 None
+    assert b.reconcile_against_db() is None
+
+
+def test_reconcile_against_db_roundtrip(loose, tmp_db):
+    b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
+    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    rec = b.reconcile_against_db()
+    assert rec is not None and rec["clean"] and rec["n_matched"] == 1
+    # 重启后内存台账/成交流水回填
+    b2 = make_broker("close", db=tmp_db, restore=True, slip=0.0)
+    assert len(b2.orders_view()) >= 1 and len(b2.fills_view()) == 1

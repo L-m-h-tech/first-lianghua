@@ -200,6 +200,13 @@ MACD_HIST_EXPR = ("(ts_ema(close,12)-ts_ema(close,26)"
 RSI14_EXPR = ("100.0-100.0/(1.0+ts_rma(max(close-delay(close,1),0.0),14)"
               "/ts_rma(max(delay(close,1)-close,0.0),14))")
 
+# ===== 第63轮：EMA 列（MACD 底层 12/26）与 KDJ（非 close-only，吃 high/low）声明式复刻 =====
+EMA_EXPRS = {12: "ts_ema(close,12)", 26: "ts_ema(close,26)"}
+KDJ_K_EXPR = "kdj_sm(kdj_rsv(high,low,close,9),9)"
+KDJ_D_EXPR = "kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)"
+KDJ_J_EXPR = ("3.0*kdj_sm(kdj_rsv(high,low,close,9),9)"
+              "-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)")
+
 
 def _procedural_macd(closes):
     """逐字复刻 futures_data.technical_profile 的 MACD 块（dif/dea/hist 三条序列）。"""
@@ -280,6 +287,38 @@ def parity_rsi(closes, period=14):
             "bit_exact_nonflat": n_pair == n_hex and max_diff == 0.0}
 
 
+def parity_ema(closes, period):
+    """EMA{period} 列：表达式 ts_ema vs futures_data._ema_series（SMA播种），要求**逐位相等**。"""
+    import futures_data
+    got = fe.compute_ts(EMA_EXPRS[period], {"close": list(closes)})
+    want = futures_data._ema_series(list(closes), period)
+    return _bit_cmp("ema%d" % period, got, want)
+
+
+def _synthetic_ohlc(seed=20260904, n=420):
+    """合成 high>=close>=low 的 OHLC 随机游走（KDJ 非 close-only，需三序列且高低夹住收盘）。"""
+    rng = random.Random(seed + 1)
+    closes = _synthetic_closes(seed, n)
+    highs, lows = [], []
+    for c in closes:
+        w = c * rng.uniform(0.001, 0.012)
+        highs.append(c + w)
+        lows.append(max(0.01, c - w * rng.uniform(0.5, 1.0)))
+    return highs, lows, closes
+
+
+def parity_kdj(highs, lows, closes, period=9):
+    """KDJ K/D/J：声明式 vs futures_data._kdj_series（固定初值50、α=1/3、当拍新K喂D），要求三序列**逐位相等**。"""
+    import futures_data
+    data = {"high": list(highs), "low": list(lows), "close": list(closes)}
+    got_k = fe.compute_ts(KDJ_K_EXPR, data)
+    got_d = fe.compute_ts(KDJ_D_EXPR, data)
+    got_j = fe.compute_ts(KDJ_J_EXPR, data)
+    wk, wd, wj = futures_data._kdj_series(list(highs), list(lows), list(closes), period)
+    return {"k": _bit_cmp("kdj_k", got_k, wk), "d": _bit_cmp("kdj_d", got_d, wd),
+            "j": _bit_cmp("kdj_j", got_j, wj)}
+
+
 def parity_hv20(closes, window=20):
     """20日历史波动率年化：表达式 log收益样本std*sqrt252 vs futures_data._hv_at，同运算序要求**逐位相等**。"""
     import futures_data
@@ -339,6 +378,8 @@ def parity_report(closes=None):
            "hv20": parity_hv20(closes),
            "macd": parity_macd(closes),
            "rsi": parity_rsi(closes),
+           "ema": {p: parity_ema(closes, p) for p in sorted(EMA_EXPRS)},
+           "kdj": parity_kdj(*_synthetic_ohlc()),
            "daily_momentum": parity_daily_momentum()}
     return rep
 
@@ -383,11 +424,15 @@ def selftest():
     import factors_catalog as catalog
     for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
               "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20",
-              "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14"):
+              "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14",
+              "expr_ema12", "expr_ema26", "expr_kdj_k", "expr_kdj_d", "expr_kdj_j"):
         assert catalog.by_key(k) is not None, k
     assert catalog.validate() == []
+    _h = [v * 1.004 for v in closes]
+    _l = [v * 0.996 for v in closes]
     for f in fe.LIBRARY:
-        out = fe.compute_ts(f["expr"], {"close": closes, "volume": [1000 + i for i in range(len(closes))]})
+        out = fe.compute_ts(f["expr"], {"close": closes, "high": _h, "low": _l,
+                                        "volume": [1000 + i for i in range(len(closes))]})
         assert len(out) == len(closes)
     # 8) 第60轮新增：boll_std / hv20 与过程式**同求和序逐位相等**（非容差）
     rb, rh = parity_boll_std(closes), parity_hv20(closes)
@@ -426,8 +471,22 @@ def selftest():
         pp = list(closes); pp[-1] += 500.0
         b1 = fe.compute_ts(expr, {"close": pp})
         assert all(b0[t] == b1[t] for t in range(len(closes) - 1))
+    # 11) 第63轮：EMA12/26 列逐位、KDJ K/D/J 三序列逐位（非 close-only，喂 high/low）
+    for p in sorted(EMA_EXPRS):
+        re = parity_ema(closes, p)
+        assert re["n_pair"] > 300 and re["bit_exact"], ("ema%d" % p, re["mismatches"][:3])
+    hs, ls, cs = _synthetic_ohlc()
+    kd = parity_kdj(hs, ls, cs)
+    for key, kr in kd.items():
+        assert kr["n_pair"] > 300 and kr["bit_exact"], (key, kr["n_pair"], kr["mismatches"][:3])
+    # KDJ 无未来：改最后一根 high/low/close，之前 K 输出不变
+    b0 = fe.compute_ts(KDJ_K_EXPR, {"high": hs, "low": ls, "close": cs})
+    h2, l2, c2 = list(hs), list(ls), list(cs)
+    h2[-1], l2[-1], c2[-1] = h2[-1] * 2, 0.01, c2[-1]
+    b1 = fe.compute_ts(KDJ_K_EXPR, {"high": h2, "low": l2, "close": c2})
+    assert all(b0[t] == b1[t] for t in range(len(cs) - 1))
     rep = parity_report(closes)
-    print("factor_legacy_expr selftest ALL PASS（10组：ret1/5/20逐字节镜像/运算序反例/手算、"
+    print("factor_legacy_expr selftest ALL PASS（11组：ret1/5/20逐字节镜像/运算序反例/手算、"
           "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记、"
           "boll/hv同求和序逐位 n=%d/%d、正交IC去共线、MACD三序列嵌套ts_ema逐位/RSI非平盘逐位(平盘分支n=%d)；"
           "SMA最大相对差 ma20=%.2e）"
