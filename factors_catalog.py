@@ -206,6 +206,19 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 64,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
      "formula": "ts_mean(max(max(h-l,|h-prev_c|),|l-prev_c|),14)，与 compute_indicators 的 TR/ATR 同求和序逐位相等"},
+    # ===== 第65轮 G25续：TSMOM 多窗口 z 表达式化（blend 的 sum pairwise vs 左结合容差已钉死） =====
+    {"key": "expr_tsmom63", "name": "TSMOM63 z(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 65,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ret63/(ts_std(收益,63)*sqrt252)，与 tsmom_at.tsmom63 逐位相等"},
+    {"key": "expr_tsmom126", "name": "TSMOM126 z(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 65,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ret126/(ts_std(收益,126)*sqrt252)，与 tsmom_at.tsmom126 逐位相等"},
+    {"key": "expr_tsmom252", "name": "TSMOM252 z(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 65,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ret252/(ts_std(收益,252)*sqrt252)，与 tsmom_at.tsmom252 逐位相等"},
 )
 
 _BY_KEY = None

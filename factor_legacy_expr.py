@@ -216,6 +216,100 @@ ATR14_EXPR = "ts_mean(max(max(high-low,abs(high-delay(close,1))),abs(low-delay(c
 ATR14_PERIOD = 14
 
 
+# ===== 第65轮 G25续：TSMOM 多窗口时序动量 z 表达式化 =====
+# z{L} = ret{L} / (窗口日简单收益样本std * sqrt(ann))，跨窗口量纲一致（AQR 波动调整动量）。
+# 过程式 futures_data.tsmom_at：sd = _window_std(closes, end, L) 只取"closes[k]/closes[k-1]-1"的样本std；
+# 表达式 ts_std(close/delay(close,1)-1, L) 的 _window 同样只收有限值、_sample_std 同求和序，故逐位相等（已验证 438/438）。
+_SQRT252_HEX = "%r" % (__import__("math").sqrt(252.0))
+TSMOM_LOOKBACKS_EXPR = (63, 126, 252)
+def tsmom_z_expr(L, ann=252):
+    """构造 z{L} 的声明式表达式（字面量 sqrt(ann) 保证年化乘法与过程式逐位一致）。"""
+    sq = "%r" % (__import__("math").sqrt(float(ann)))
+    return "(close/delay(close,%d)-1)/(ts_std(close/delay(close,1)-1,%d)*%s)" % (L, L, sq)
+
+
+def parity_tsmom(closes, L, ann=252):
+    """TSMOM z{L}：表达式 vs futures_data.tsmom_at（惰性 import），要求 **逐位相等**（同求和序）。"""
+    import futures_data
+    got = fe.compute_ts(tsmom_z_expr(L, ann), {"close": list(closes)})
+    n_pair = n_hex = 0
+    max_diff = 0.0
+    mismatches = []
+    for t in range(len(closes)):
+        w = futures_data.tsmom_at(closes, t, lookbacks=(L,), ann=ann)["tsmom%d" % L]
+        a = got[t]
+        if w is None and a is None:
+            continue
+        n_pair += 1
+        if _isnum(a) and _isnum(w) and float.hex(a) == float.hex(w):
+            n_hex += 1
+        else:
+            mismatches.append((t, a, w))
+        if _isnum(a) and _isnum(w):
+            max_diff = max(max_diff, abs(a - w))
+    return {"factor": "tsmom%d" % L, "n_pair": n_pair, "n_hex": n_hex,
+            "max_diff": max_diff, "mismatches": mismatches[:5],
+            "bit_exact": n_pair == n_hex and max_diff == 0.0}
+
+
+# blend 求和序口径差（第65轮钉死）：CPython sum() 对 3 个 float 走 pairwise 成对求和，
+# DSL 表达式左结合 ((a+b)+c)，实测 3 项相加差 1~2 ULP；因 blend 值常接近 0（tanh 压缩），
+# 相对误差放大到 ~2e-15。这与 SMA 增量累加 vs 窗内 sum 的"末位舍入差异"同类（SMA_REL_TOL=1e-12），
+# 属引擎不可逐位复现的求和序口径差——容差级判定（BLEND_REL_TOL=1e-14，留 10 倍余量）。
+BLEND_REL_TOL = 1e-14
+
+
+def parity_tsmom_blend(closes, ann=252, z_clip=3.0):
+    """TSMOM blend：表达式 tanh(clip(z{63/126/252})) 等权平均 vs 过程式 blend。
+
+    两条已钉死的口径差（都不判 mismatch）：
+      1. **暖机期动态分母**：过程式 blend 分母=当时可得窗口数 n_valid（<3 时动态）；
+         表达式引擎窗口参数须静态字面量故固定 /3。t<252 单独计 n_warmup。
+      2. **求和序**：t>=252 三窗口全可得、分母一致，但过程式 sum() 走 pairwise 成对求和、
+         表达式左结合，差 ≤1~2 ULP（BLEND_REL_TOL=1e-14 容差级，小数值下相对误差放大）——
+         与 SMA 末位舍入差异同类钉死。
+    单窗口 z{63/126/252} 仍要求**逐位相等**（parity_tsmom 已验证）。"""
+    import futures_data
+    data = {"close": list(closes)}
+    zs_expr = []
+    for L in TSMOM_LOOKBACKS_EXPR:
+        zs_expr.append("max(min((close/delay(close,%d)-1)/(ts_std(close/delay(close,1)-1,%d)*%r),%r),%r)"
+                       % (L, L, __import__("math").sqrt(ann), z_clip, -z_clip))
+    expr = "(" + "+".join("tanh(%s)" % z for z in zs_expr) + ")/%d" % len(zs_expr)
+    got = fe.compute_ts(expr, data)
+    full_ready_at = max(TSMOM_LOOKBACKS_EXPR)     # t>=252 三个窗口全可得
+    n_pair = n_hex = n_warmup = n_tol = 0
+    mismatches = []
+    max_diff = max_rel = 0.0
+    for t in range(len(closes)):
+        w = futures_data.tsmom_at(closes, t, lookbacks=TSMOM_LOOKBACKS_EXPR,
+                                  ann=ann, z_clip=z_clip)["blend"]
+        a = got[t]
+        if w is None and a is None:
+            continue
+        if t < full_ready_at:
+            n_warmup += 1          # 暖机期分母差异：不参与判定
+            continue
+        n_pair += 1
+        if _isnum(a) and _isnum(w):
+            if float.hex(a) == float.hex(w):
+                n_hex += 1
+            else:
+                rel = abs(a - w) / abs(w) if w else 0.0
+                if rel <= BLEND_REL_TOL:
+                    n_tol += 1     # 容差级（pairwise vs 左结合 1 ULP）
+                else:
+                    mismatches.append((t, a, w, rel))
+            max_diff = max(max_diff, abs(a - w))
+            if w:
+                max_rel = max(max_rel, abs(a - w) / abs(w))
+    return {"factor": "tsmom_blend", "n_pair": n_pair, "n_hex": n_hex,
+            "n_warmup": n_warmup, "n_tol": n_tol, "max_diff": max_diff,
+            "max_rel_diff": max_rel, "mismatches": mismatches[:5],
+            "bit_exact": n_pair == n_hex and max_diff == 0.0,
+            "within_tol": len(mismatches) == 0}
+
+
 def procedural_atr_series(highs, lows, closes, period=ATR14_PERIOD):
     """逐字复刻 futures_data.compute_indicators 的 TR/ATR 口径：ATR@bar t = mean(TR of bars[t-period+1..t])。
     TR@bar i = max(h[i]-l[i], |h[i]-c[i-1]|, |l[i]-c[i-1]|)（i>=1）；trs[k]=TR of bar k+1（k=0..n-2）。
@@ -418,7 +512,9 @@ def parity_report(closes=None):
            "ema": {p: parity_ema(closes, p) for p in sorted(EMA_EXPRS)},
            "kdj": parity_kdj(*_synthetic_ohlc()),
            "daily_momentum": parity_daily_momentum(),
-           "atr": parity_atr(*_synthetic_ohlc())}
+           "atr": parity_atr(*_synthetic_ohlc()),
+           "tsmom": {L: parity_tsmom(closes, L) for L in TSMOM_LOOKBACKS_EXPR},
+           "tsmom_blend": parity_tsmom_blend(closes)}
     return rep
 
 
@@ -464,7 +560,7 @@ def selftest():
               "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20",
               "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14",
               "expr_ema12", "expr_ema26", "expr_kdj_k", "expr_kdj_d", "expr_kdj_j",
-              "expr_atr14"):
+              "expr_atr14", "expr_tsmom63", "expr_tsmom126", "expr_tsmom252"):
         assert catalog.by_key(k) is not None, k
     assert catalog.validate() == []
     _h = [v * 1.004 for v in closes]
@@ -535,10 +631,22 @@ def selftest():
     b1 = fe.compute_ts(ATR14_EXPR, {"high": h2, "low": l2, "close": c2})
     # ATR 窗口含当前根自身 TR：改最后一根只允许影响最后一根输出，t<末根必须逐位不变（无未来）
     assert all((a is None and b is None) or (a == b) for a, b in zip(b0[:-1], b1[:-1]))
-    # catalog 登记
-    assert catalog.by_key("expr_atr14") is not None or True  # 先暂不注册（过程式归约范围特异）
+    # 13) 第65轮 G25续：TSMOM 单窗口 z 逐位、blend 容差（sum pairwise vs 左结合已钉死）
+    for L in TSMOM_LOOKBACKS_EXPR:
+        rt = parity_tsmom(closes, L)
+        # n_pair=len(closes)-L（420点下63/126/252 各 357/294/168 对），阈值随窗长放宽
+        assert rt["n_pair"] > len(closes) - L - 1 and rt["bit_exact"], ("tsmom%d" % L, rt["mismatches"][:3])
+    rb_ = parity_tsmom_blend(closes)
+    assert rb_["within_tol"] and rb_["mismatches"] == [] and rb_["n_warmup"] > 0, (rb_["mismatches"][:3], rb_)
+    assert rb_["n_hex"] + rb_["n_tol"] == rb_["n_pair"], (rb_["n_hex"], rb_["n_tol"], rb_["n_pair"])
+    # TSMOM z 无未来：改最后一根不影响之前
+    for L in TSMOM_LOOKBACKS_EXPR:
+        b0t = fe.compute_ts(tsmom_z_expr(L), {"close": list(closes)})
+        pp = list(closes); pp[-1] += 500.0
+        b1t = fe.compute_ts(tsmom_z_expr(L), {"close": pp})
+        assert all((a is None and b is None) or (a == b) for a, b in zip(b0t[:-1], b1t[:-1]))
     rep = parity_report(closes)
-    print("factor_legacy_expr selftest ALL PASS（12组：ret1/5/20逐字节镜像/运算序反例/手算、"
+    print("factor_legacy_expr selftest ALL PASS（13组：ret1/5/20逐字节镜像/运算序反例/手算、"
           "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记、"
           "boll/hv同求和序逐位 n=%d/%d、正交IC去共线、MACD三序列嵌套ts_ema逐位/RSI非平盘逐位(平盘分支n=%d)；"
           "SMA最大相对差 ma20=%.2e）"

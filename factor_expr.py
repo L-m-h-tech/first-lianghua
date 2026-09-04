@@ -719,6 +719,20 @@ LIBRARY = (
      "expr": "ts_mean(max(max(high-low,abs(high-delay(close,1))),abs(low-delay(close,1))),14)",
      "direction": 0, "name": "14日ATR(表达式版)",
      "note": "TR=max(h-l,|h-prev_c|,|l-prev_c|) 的14日均值，与 compute_indicators 同求和序逐位相等（需 high/low 输入）"},
+    # ===== 第65轮 G25续：TSMOM 多窗口时序动量 z 表达式化（波动标准化趋势） =====
+    # z{L}=ret{L}/(窗口日简单收益样本std*sqrt(ann))；ts_std(close/delay(close,1)-1,L) 与 _window_std 同求和序逐位相等
+    {"key": "expr_tsmom63",
+     "expr": "(close/delay(close,63)-1)/(ts_std(close/delay(close,1)-1,63)*15.874507866387544)",
+     "direction": 0, "name": "TSMOM63 z(表达式版)",
+     "note": "63日波动调整动量，与 futures_data.tsmom_at 的 tsmom63 逐位相等"},
+    {"key": "expr_tsmom126",
+     "expr": "(close/delay(close,126)-1)/(ts_std(close/delay(close,1)-1,126)*15.874507866387544)",
+     "direction": 0, "name": "TSMOM126 z(表达式版)",
+     "note": "126日波动调整动量，与 futures_data.tsmom_at 的 tsmom126 逐位相等"},
+    {"key": "expr_tsmom252",
+     "expr": "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)",
+     "direction": 0, "name": "TSMOM252 z(表达式版)",
+     "note": "252日波动调整动量，与 futures_data.tsmom_at 的 tsmom252 逐位相等"},
 )
 
 
