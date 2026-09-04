@@ -9,6 +9,12 @@
 - **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
 - pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
+## [0.67.0] — 2026-09-05 · 第67轮 G22续 掩码前后对照模式接到 xsmom_eval
+- **xsmom_eval 新增 `--mask-compare`**：掩码前后截面多空绩效对照表（与 carry_eval 第66轮同思路，主因子 z{main_l}）。
+- 新增纯函数 `_xs_ls_summary` / `compare_mask_xs` / `render_mask_compare_xs`（可复用、只读、零网络）。
+- 真实验证（24品种，L=252 H=20）：原始 12期/净t1.36/净均收2.35%/单调75% vs 掩码后 6期/净t0.95/净均收3.30%/单调50%；剔除 5952→2807 点。诚实结论：掩码后样本减半、净t略降、净均收反升但单调性大降，印证"临近交割剔除主要降样本量而非改善信号"。
+- selftest 14→15组（fake_mask 剔除统计 + 渲染结构）；pytest 740 全绿；研究侧单文件增量、隔离合规。
+
 ## [0.66.0] — 2026-09-05 · 第66轮 G22续 掩码前后截面多空绩效对照表
 - **carry_eval 新增 `--mask-compare`**：同一输入分别跑无掩码/有掩码截面多空，输出并列绩效对照表（口径/期数/净t/净均收/胜率/单调/Q5-Q1）。
 - 新增纯函数 `_load_panel_mask` / `_ls_summary` / `compare_mask` / `render_mask_compare`（可复用、只读、零网络）。
