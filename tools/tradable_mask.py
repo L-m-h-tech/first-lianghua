@@ -138,6 +138,63 @@ def summarize(mask, sector_of=None):
             "by_sector": {s: dict(v) for s, v in sorted(by_sec.items())}}
 
 
+# ---- 名字->sym 映射（复用 config.VARIETIES） ----
+_NAME_TO_SYM = None
+
+
+def _name_to_sym():
+    """懒加载中文名->sym代码映射：{中文名: sym}。"""
+    global _NAME_TO_SYM
+    if _NAME_TO_SYM is None:
+        try:
+            import config
+            _NAME_TO_SYM = {}
+            for name, info in (getattr(config, "VARIETIES", {}) or {}).items():
+                _NAME_TO_SYM[name] = info.get("sym", "")
+        except Exception:
+            _NAME_TO_SYM = {}
+    return _NAME_TO_SYM
+
+
+def _resolve_sym(val, name_to_sym):
+    """将 point/sym 字段值（可能是中文名或代码）映射到 sym 代码。"""
+    if val in name_to_sym:
+        return name_to_sym[val]
+    v = str(val).upper()
+    if v.isascii() and len(v) <= 5:
+        return v
+    return val
+
+
+def filter_points(points, mask, name_to_sym=None):
+    """将不可交易掩码应用到 carry/xsmom 的 points 列表。
+
+    points: [{"sym":name_or_code,"date":"YYYY-MM-DD",...}, ...]
+    mask: mask_for_panel() 返回的 {sym_code: {date: {"tradable":bool}}}
+    返回剔除后的新列表（不修改原列表）。
+    """
+    name_map = name_to_sym or _name_to_sym()
+    locked = 0
+    near = 0
+    out = []
+    for p in points:
+        sym = _resolve_sym(p.get("sym", ""), name_map)
+        d = p.get("date", "")
+        entry = (mask.get(sym) or {}).get(d)
+        if entry is None:
+            out.append(p)
+            continue
+        if entry.get("locked"):
+            locked += 1
+            continue
+        if entry.get("near_delivery"):
+            near += 1
+            continue
+        out.append(p)
+    return {"points": out, "original": len(points), "filtered": len(out),
+            "removed_locked": locked, "removed_near": near}
+
+
 def build_report(mask, summary, rows_by_date, db):
     L = ["=" * 104,
          " G22续 可交易性掩码（涨跌停/交割日历）  生成于 " + __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

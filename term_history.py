@@ -216,7 +216,7 @@ def build_term_series(contract_bars, roll_buffer_days=ROLL_BUFFER_DAYS, min_oi=M
     out = []
     for d in sorted(all_dates):
         on = date(int(d[:4]), int(d[5:7]), int(d[8:10]))
-        live, oi_sum = [], 0
+        live, oi_sum, vol_sum = [], 0, 0
         for code, (yy, mm, day_map) in parsed.items():
             b = day_map.get(d)
             if b is None:
@@ -226,6 +226,7 @@ def build_term_series(contract_bars, roll_buffer_days=ROLL_BUFFER_DAYS, min_oi=M
             vol = int(futures_data._f(b.get("v")) or 0)
             if oi > 0:
                 oi_sum += oi
+            vol_sum += vol
             live.append({"code": code, "yy": yy, "mm": mm,
                          "settle": settle, "oi": oi, "vol": vol})
         n_live = len(live)
@@ -234,9 +235,11 @@ def build_term_series(contract_bars, roll_buffer_days=ROLL_BUFFER_DAYS, min_oi=M
                "near_s": None, "next_s": None, "far_s": None,
                "carry_far": None, "carry_nn": None,
                "level": None, "slope": None, "curv": None,
-               "oi_sum": oi_sum, "oi_near": None, "n_live": n_live}
+               "oi_sum": oi_sum, "oi_near": None, "vol_sum": vol_sum,
+               "near_vol": None, "n_live": n_live}
         if near:
-            row.update(near=near["code"], near_s=near["settle"], oi_near=near["oi"])
+            row.update(near=near["code"], near_s=near["settle"], oi_near=near["oi"],
+                       near_vol=near["vol"])
         if nxt:
             row.update(next=nxt["code"], next_s=nxt["settle"])
         if far:
@@ -442,6 +445,8 @@ def _selftest():
     r0 = ser[0]
     assert r0["near"] == "X2501" and r0["next"] == "X2502" and r0["far"] == "X2503"
     assert r0["oi_sum"] == 240 and r0["oi_near"] == 100
+    # G23续：合约级成交量汇总（vol_sum=当日存续合约总成交量，near_vol=近月合约成交量）
+    assert r0["vol_sum"] == 15 and r0["near_vol"] == 5
     assert r0["carry_far"] is not None and r0["carry_far"] > 0  # 近100>远98 => Back 正carry
     assert r0["slope"] > 0
 

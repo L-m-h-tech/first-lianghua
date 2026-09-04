@@ -753,6 +753,7 @@ def run(argv=None):
                     help="档内加权：equal 等权（默认）；ivol 反波动率加权（AQR口径）")
     ap.add_argument("--workers", type=int, default=config.XSMOM_EVAL_WORKERS)
     ap.add_argument("--out", default=config.XSMOM_EVAL_FILE)
+    ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码（锁板/交割）并剔除不可交易点后重做截面")
     ap.add_argument("--panel", action="store_true",
                     help="G21续：优先读 cache/research_panel.db 已复权面板（缺省仍联网现拉，结果一致）")
     ap.add_argument("--selftest", action="store_true")
@@ -775,6 +776,33 @@ def run(argv=None):
     main_dates = truncate_dates(long_dates, args.main_days)
     main_set = set(main_dates)
     main_points = [p for p in points if p["date"] in main_set]
+    # G22续：可交易性掩码
+    mask_notes = ""
+    if args.mask:
+        try:
+            import tradable_mask as tmask
+            from collections import defaultdict as _dd
+            db_p = str(ROOT / "cache" / "research_panel.db")
+            if os.path.exists(db_p):
+                import sqlite3 as _sq
+                con = _sq.connect(db_p)
+                rows_by_date = _dd(dict)
+                for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
+                    rows_by_date[row[1]][row[0]] = {"c": row[2], "h": row[3], "l": row[4]}
+                con.close()
+                mask = tmask.mask_for_panel(rows_by_date)
+                # 主窗与长窗同步剔除不可交易点（同一 mask），保证双样本窗口口径一致
+                fm = tmask.filter_points(points, mask)
+                pts_filtered = fm["points"]
+                main_set = set(main_dates)
+                main_points = [p for p in pts_filtered if p["date"] in main_set]
+                long_dates, long_by = build_panel(pts_filtered)
+                mask_notes = ("；G22续掩码：原%d点→剔锁板%d+临近交割%d→剩%d点" %
+                              (fm["original"], fm["removed_locked"], fm["removed_near"], fm["filtered"]))
+            else:
+                mask_notes = "；G22续掩码：research_panel.db 不存在"
+        except Exception as e:
+            mask_notes = "；G22续掩码失败: %s" % type(e).__name__
     candidates = None if args.no_conditional else tuple(config.XSMOM_COND_CANDIDATES)
     text, sidecar, verdict = build_report(
         main_points, errors, main_dates, long_by, lookbacks, horizons, main_l, main_h,
@@ -791,8 +819,8 @@ def run(argv=None):
         f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
     print(text)
     n_robust = sum(1 for c in (sidecar.get("conditional") or {}).values() if c.get("robust"))
-    print("品种时点 %d、覆盖品种 %d；主组合裁决 ok=%s；双样本稳健候选 %d 个；报告 -> %s；JSON -> %s"
-          % (len(main_points), sidecar["n_symbols"], verdict["ok"], n_robust,
+    print("品种时点 %d、覆盖品种 %d；主组合裁决 ok=%s；双样本稳健候选 %d 个%s；报告 -> %s；JSON -> %s"
+          % (len(main_points), sidecar["n_symbols"], verdict["ok"], n_robust, mask_notes,
              args.out, config.XSMOM_EVAL_JSON))
     return 0
 

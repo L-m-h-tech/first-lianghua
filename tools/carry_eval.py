@@ -44,6 +44,7 @@ import backtest  # noqa: E402
 import term_history as th  # noqa: E402
 import panel_builder as pb  # noqa: E402  G21续：--panel 主连读已复权面板（期限序列仍走 term_history）
 import xsmom_eval as xs  # noqa: E402  复用截面/绩效/双样本全套纯函数
+import tradable_mask as tmask  # noqa: E402  G22续：可交易性掩码(锁板/交割)截面剔除
 
 # 因子族：(point键, 中文名, 方向+1=因子越大未来收益越高)
 CARRY_FACTORS = [
@@ -104,6 +105,8 @@ def carry_points_from_adjusted(name, sector, bars, term_series, horizons,
             if near_nav[t] is None:
                 fwdn[H][t] = None
     fmaps = _term_maps(term_series, smooth, mom_k)
+    # G23续（第65轮）：合约级成交量/结算价对齐表（按交易日轴，与 main bars 对齐）
+    term_vol_map = {r["date"]: r for r in term_series}
     pts = []
     for t in range(vol_lb, len(closes)):
         d = dates[t]
@@ -120,6 +123,11 @@ def carry_points_from_adjusted(name, sector, bars, term_series, horizons,
         p["oi"] = futures_data._f(b.get("p") if b.get("p") is not None else b.get("oi"))
         p["vol_turn"] = (p["v"] / p["oi"]) if (p["v"] and p["oi"] and p["oi"] > 0) else None
         p["amount"] = (closes[t] * p["v"]) if (p["v"] and closes[t] > 0) else None
+        # G23续（第65轮）：真实逐合约成交额——近月合约成交量×结算价（term_history 合约级 vol/结算）
+        tr = term_vol_map.get(d) or {}
+        p["near_vol"] = tr.get("near_vol")
+        p["vol_sum"] = tr.get("vol_sum")
+        p["near_amount"] = (tr.get("near_s") * p["near_vol"]) if (tr.get("near_s") and p.get("near_vol")) else None
         ok = True
         for H in horizons:
             p["fwd%d" % H] = fwd[H][t]
@@ -419,15 +427,26 @@ def build_report(points, errors, long_panel, main_dates, factor, horizons, main_
             syms_all = [s for s in (p.get("long_syms") or []) + (p.get("short_syms") or [])]
             amt_by_sym = {q["sym"]: (q.get("amount") or 0.0) for q in points
                           if q.get("date") == p.get("date") and q.get("sym") in syms_all}
+            namt_by_sym = {q["sym"]: (q.get("near_amount") or 0.0) for q in points
+                           if q.get("date") == p.get("date") and q.get("sym") in syms_all}
             total_amt = sum(amt_by_sym.values())
+            total_namt = sum(namt_by_sym.values())
             cap_infos.append({"date": p.get("date"), "long_syms": p.get("long_syms") or [],
-                              "short_syms": p.get("short_syms") or [], "total_amount": total_amt})
+                              "short_syms": p.get("short_syms") or [], "total_amount": total_amt,
+                              "total_near_amount": total_namt})
         if cap_infos:
             amts = [c["total_amount"] for c in cap_infos if c["total_amount"] > 0]
             if amts:
                 med_amt = sorted(amts)[len(amts) // 2]
-                L.append("  每调仓日多空腿成交额合计：中位%.0f万元；按参与率1%%估算单期容量=中位成交额×1%%≈%.0f万元"
+                L.append("  每调仓日多空腿【主连代理】成交额合计：中位%.0f万元；按参与率1%%估算单期容量=%.0f万元"
                          % (med_amt / 1e4, med_amt * 0.01 / 1e4))
+            # G23续（第65轮）：真实逐合约口径（近月合约结算价×近月成交量，term_history 合约级 vol）
+            namts = [c["total_near_amount"] for c in cap_infos if c["total_near_amount"] > 0]
+            if namts:
+                med_namt = sorted(namts)[len(namts) // 2]
+                L.append("  每调仓日多空腿【真实逐合约】成交额合计：中位%.0f万元；按参与率1%%估算单期容量=%.0f万元"
+                         "（近月结算×近月成交量；精确逐笔容量仍待 G14 一档盘口）"
+                         % (med_namt / 1e4, med_namt * 0.01 / 1e4))
             # 换手代理：多空腿成员的相对持仓集中度（腿内等权=1/n，n 越少越集中）
             n_lens = [len(c["long_syms"]) + len(c["short_syms"]) for c in cap_infos if c["long_syms"] and c["short_syms"]]
             if n_lens:
@@ -492,6 +511,7 @@ def run(argv=None):
     ap.add_argument("--out", default="reports/carry_eval.txt")
     ap.add_argument("--json", default="reports/carry_eval.json")
     ap.add_argument("--panel", action="store_true", help="G21续：主连读已复权面板（期限仍走term_history；面板约1023日，长2500样本请用缺省网络）")
+    ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码（疑似锁板/距交割月1号≤15天）并剔除不可交易点后重做截面多空对照")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -513,6 +533,31 @@ def run(argv=None):
         return 2
     points_main = retarget(points, "main")
     points_near = retarget(points, "near")
+    # G22续：可交易性掩码剔除（--mask；只读 research_panel.db，零网络）
+    mask_notes = ""
+    if args.mask:
+        try:
+            from collections import defaultdict as _dd
+            db_p = str(ROOT / "cache" / "research_panel.db")
+            if os.path.exists(db_p):
+                import sqlite3 as _sq
+                con = _sq.connect(db_p)
+                rows_by_date = _dd(dict)
+                for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
+                    rows_by_date[row[1]][row[0]] = {"c": row[2], "h": row[3], "l": row[4]}
+                con.close()
+                mask = tmask.mask_for_panel(rows_by_date)
+                fm_main = tmask.filter_points(points_main, mask)
+                fm_near = tmask.filter_points(points_near, mask)
+                points_main = fm_main["points"]
+                points_near = fm_near["points"]
+                mask_notes = ("；G22续掩码：原%d点→剔锁板%d+临近交割%d→剩%d点" %
+                              (fm_main["original"], fm_main["removed_locked"],
+                               fm_main["removed_near"], fm_main["filtered"]))
+            else:
+                mask_notes = "；G22续掩码：research_panel.db 不存在，跳过"
+        except Exception as e:
+            mask_notes = "；G22续掩码计算失败（不影响主流程）: %s" % type(e).__name__
     long_dates, long_by = xs.build_panel(points_main)
     _, near_by = xs.build_panel(points_near)   # 交易日历与 main 相同，只 fwd 值不同（含 roll）
     main_dates = xs.truncate_dates(long_dates, args.main_days)
@@ -531,9 +576,9 @@ def run(argv=None):
     with open(args.json, "w", encoding="utf-8") as f:
         f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
     print(text)
-    print("品种时点 %d、覆盖品种 %d；主裁决 ok=%s；双样本稳健候选 %d；报告 -> %s；JSON -> %s"
+    print("品种时点 %d、覆盖品种 %d；主裁决 ok=%s；双样本稳健候选 %d%s；报告 -> %s；JSON -> %s"
           % (len(main_points), sidecar["n_symbols"], verdict["ok"],
-             sidecar["verdict"]["n_robust"], args.out, args.json))
+             sidecar["verdict"]["n_robust"], mask_notes, args.out, args.json))
     return 0
 
 
