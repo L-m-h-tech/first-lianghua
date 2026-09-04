@@ -9,6 +9,12 @@
 - **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
 - pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
+## [0.65.0] — 2026-09-05 · 第65轮 G25续 TSMOM 表达式化 + G22续 掩码接入截面剔除 + G23续 真实逐合约成交额容量
+- **G25续 TSMOM 家族 z 表达式化**：tsmom_z_expr(z=ret/(窗口日收益样本std×sqrt252))，单窗口 z63/126/252 对 futures_data.tsmom_at **逐位相等**（357/294/168 对 float.hex 全一致）；blend 因 CPython sum() pairwise vs DSL 左结合的求和序差异 1~2 ULP（已钉死 BLEND_REL_TOL=1e-14，暖机期动态分母单独计数）；LIBRARY 23→26、catalog 44→47；selftest 12→13组。
+- **G22续 tradable_mask 接入截面剔除**：新增 filter_points（按 sym+date 剔除锁板/临近交割）+ _name_to_sym（中文名↔代码映射）；carry_eval/xsmom_eval 均加 `--mask`（读面板→剔不可交易→主窗长窗同步重建→重做截面）；真实24品种 carry 8862→4173 点、xsmom 5952→2807 点；验证锁板影响可忽略。
+- **G23续 carry 容量接真实逐合约成交额**：term_history 增 vol_sum/near_vol 字段；carry points 增 near_vol/vol_sum/near_amount（近月结算×近月成交量）；报告七·补新增"真实逐合约"容量行（24品种 4835 万元 vs 主连代理 12567 万元）；精确容量仍待 G14。
+- pytest 740 全绿；研究侧零改动主链（隔离 grep 合规）。
+
 ## [0.64.0] — 2026-09-04 · 第64轮 G25续 按H对齐非重叠再平衡+ATR14表达式化 + G22续 可交易性掩码 + G23续 carry 换手/容量
 - **G25续(a) 分层组合按H对齐非重叠再平衡**：orthogonal_blend_oos 新增 evaluate_ls_books_aligned——每 H 个交易日调仓一次、期不重叠、净收益可真实复利；H20 正交净年化+24.90%/净夏普0.99（消除重叠虚高）。
 - **G25续(b) ATR14/TR 表达式化**：ATR14_EXPR（嵌套 max 二元、吃 high/low/前收）对 compute_indicators 过程式 float.hex 逐位 parity；LIBRARY+expr_atr14、catalog 43→44。
