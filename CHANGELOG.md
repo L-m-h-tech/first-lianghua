@@ -9,6 +9,12 @@
 - **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
 - pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
+## [0.66.0] — 2026-09-05 · 第66轮 G22续 掩码前后截面多空绩效对照表
+- **carry_eval 新增 `--mask-compare`**：同一输入分别跑无掩码/有掩码截面多空，输出并列绩效对照表（口径/期数/净t/净均收/胜率/单调/Q5-Q1）。
+- 新增纯函数 `_load_panel_mask` / `_ls_summary` / `compare_mask` / `render_mask_compare`（可复用、只读、零网络）。
+- 真实验证（24品种）：原始 19期/净t-0.13/单调25% vs 掩码后 9期/净t-1.04/单调50%；剔除 8862→4173 点。诚实结论：临近交割剔除砍半样本、主窗下掩码后仅9期绩效波动大，掩码价值在日线级（锁板罕见）。
+- selftest 5→6组（fake_mask 剔除统计非零 + 渲染结构）；pytest 740 全绿；研究侧单文件增量、隔离合规。
+
 ## [0.65.0] — 2026-09-05 · 第65轮 G25续 TSMOM 表达式化 + G22续 掩码接入截面剔除 + G23续 真实逐合约成交额容量
 - **G25续 TSMOM 家族 z 表达式化**：tsmom_z_expr(z=ret/(窗口日收益样本std×sqrt252))，单窗口 z63/126/252 对 futures_data.tsmom_at **逐位相等**（357/294/168 对 float.hex 全一致）；blend 因 CPython sum() pairwise vs DSL 左结合的求和序差异 1~2 ULP（已钉死 BLEND_REL_TOL=1e-14，暖机期动态分母单独计数）；LIBRARY 23→26、catalog 44→47；selftest 12→13组。
 - **G22续 tradable_mask 接入截面剔除**：新增 filter_points（按 sym+date 剔除锁板/临近交割）+ _name_to_sym（中文名↔代码映射）；carry_eval/xsmom_eval 均加 `--mask`（读面板→剔不可交易→主窗长窗同步重建→重做截面）；真实24品种 carry 8862→4173 点、xsmom 5952→2807 点；验证锁板影响可忽略。
