@@ -190,6 +190,95 @@ def parity_boll_std(closes, p=20):
 _SQRT252 = 15.874507866387544
 HV20_EXPR = "ts_std(log(close/delay(close,1)),20)*%r" % _SQRT252
 
+# ===== 第61轮：状态量 MACD/RSI 的声明式复刻（依赖 DSL 新增 ts_ema/ts_rma 状态递推算子） =====
+# 周期取自 config（TECH_MACD_FAST/SLOW/SIGNAL=12/26/9，TECH_RSI_PERIOD=14）；表达式内用字面量、逐字对齐运算序。
+MACD_DIF_EXPR = "ts_ema(close,12)-ts_ema(close,26)"
+MACD_DEA_EXPR = "ts_ema(ts_ema(close,12)-ts_ema(close,26),9)"
+MACD_HIST_EXPR = ("(ts_ema(close,12)-ts_ema(close,26)"
+                  "-ts_ema(ts_ema(close,12)-ts_ema(close,26),9))*2.0")
+# Wilder RSI：g/l 用 ts_rma（=avg_gain/avg_loss 平滑），外层运算序与 _rsi_series 完全一致
+RSI14_EXPR = ("100.0-100.0/(1.0+ts_rma(max(close-delay(close,1),0.0),14)"
+              "/ts_rma(max(delay(close,1)-close,0.0),14))")
+
+
+def _procedural_macd(closes):
+    """逐字复刻 futures_data.technical_profile 的 MACD 块（dif/dea/hist 三条序列）。"""
+    import futures_data
+    import config
+    ema_fast = futures_data._ema_series(closes, config.TECH_MACD_FAST)
+    ema_slow = futures_data._ema_series(closes, config.TECH_MACD_SLOW)
+    n = len(closes)
+    dif_s, dea_s, hist_s = [None] * n, [None] * n, [None] * n
+    dif_values = []
+    for i in range(n):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            dif_values.append((i, ema_fast[i] - ema_slow[i]))
+    if dif_values:
+        dea_only = futures_data._ema_series([v for _, v in dif_values], config.TECH_MACD_SIGNAL)
+        for (i, d), e in zip(dif_values, dea_only):
+            dif_s[i] = d
+            dea_s[i] = e
+            hist_s[i] = None if e is None else (d - e) * 2.0
+    return {"dif": dif_s, "dea": dea_s, "hist": hist_s}
+
+
+def _bit_cmp(name, got, want):
+    n_pair = n_hex = 0
+    max_diff = 0.0
+    mismatches = []
+    for a, b in zip(got, want):
+        if a is None and b is None:
+            continue
+        n_pair += 1
+        if _isnum(a) and _isnum(b) and float.hex(a) == float.hex(b):
+            n_hex += 1
+        else:
+            mismatches.append((a, b))
+        if _isnum(a) and _isnum(b):
+            max_diff = max(max_diff, abs(a - b))
+    return {"factor": name, "n_pair": n_pair, "n_hex": n_hex, "max_diff": max_diff,
+            "mismatches": mismatches[:5], "bit_exact": n_pair == n_hex and max_diff == 0.0}
+
+
+def parity_macd(closes):
+    """MACD dif/dea/hist：声明式 vs 过程式，三条序列均要求**逐位相等**（嵌套 ts_ema 复刻对 dif 连续子序列再EMA）。"""
+    dif = fe.compute_ts(MACD_DIF_EXPR, {"close": list(closes)})
+    dea = fe.compute_ts(MACD_DEA_EXPR, {"close": list(closes)})
+    hist = fe.compute_ts(MACD_HIST_EXPR, {"close": list(closes)})
+    want = _procedural_macd(closes)
+    return {k: _bit_cmp("macd_" + k, got, want[k]) for k, got in
+            (("dif", dif), ("dea", dea), ("hist", hist))}
+
+
+def parity_rsi(closes, period=14):
+    """Wilder RSI：声明式 vs futures_data._rsi_series。
+
+    非平盘分支（avg_loss>1e-12）要求**逐位相等**；过程式在 avg_loss<=1e-12 时强制返回 100（平盘/单边），
+    表达式 g/l 安全除法在 l≈0 处给 None——这一分支单独计数 n_flat，是唯一允许的、已钉死的口径差异。
+    """
+    import futures_data
+    got = fe.compute_ts(RSI14_EXPR, {"close": list(closes)})
+    want = futures_data._rsi_series(list(closes), period)
+    n_pair = n_hex = n_flat = 0
+    max_diff = 0.0
+    mismatches = []
+    for a, b in zip(got, want):
+        if a is None and b is None:
+            continue
+        if b == 100.0:                    # 过程式平盘/单边强制分支
+            n_flat += 1
+            continue
+        n_pair += 1
+        if _isnum(a) and _isnum(b) and float.hex(a) == float.hex(b):
+            n_hex += 1
+        else:
+            mismatches.append((a, b))
+        if _isnum(a) and _isnum(b):
+            max_diff = max(max_diff, abs(a - b))
+    return {"factor": "rsi%d" % period, "n_pair": n_pair, "n_hex": n_hex, "n_flat": n_flat,
+            "max_diff": max_diff, "mismatches": mismatches[:5],
+            "bit_exact_nonflat": n_pair == n_hex and max_diff == 0.0}
+
 
 def parity_hv20(closes, window=20):
     """20日历史波动率年化：表达式 log收益样本std*sqrt252 vs futures_data._hv_at，同运算序要求**逐位相等**。"""
@@ -248,6 +337,8 @@ def parity_report(closes=None):
            "sma": {p: parity_sma(closes, p) for p in SMA_PERIODS},
            "boll_std": parity_boll_std(closes),
            "hv20": parity_hv20(closes),
+           "macd": parity_macd(closes),
+           "rsi": parity_rsi(closes),
            "daily_momentum": parity_daily_momentum()}
     return rep
 
@@ -291,7 +382,8 @@ def selftest():
     # 7) 表达式因子均已在 factors_catalog 登记（唯一注册表），且引擎因子库可编译
     import factors_catalog as catalog
     for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
-              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20"):
+              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20",
+              "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14"):
         assert catalog.by_key(k) is not None, k
     assert catalog.validate() == []
     for f in fe.LIBRARY:
@@ -319,11 +411,27 @@ def selftest():
     # 单因子退化：正交无基底时残差=原序列、权重=1
     ob1 = orthogonal_ic_blend([f1], [0.4])
     assert ob1["weights"] == [1.0] and ob1["residuals"][0] == f1
+    # 10) 第61轮：MACD 三序列嵌套 ts_ema 逐位、RSI 非平盘逐位（平盘强制100分支单独计数）
+    for k, mr in parity_macd(closes).items():
+        assert mr["n_pair"] > 300 and mr["bit_exact"], (k, mr["mismatches"][:3])
+    rr = parity_rsi(closes)
+    assert rr["n_pair"] > 300 and rr["bit_exact_nonflat"], rr["mismatches"][:3]
+    # 构造单边上涨序列触发 RSI 平盘/单边强制分支：非平盘处仍逐位、且确实数到 n_flat
+    up = [100.0 + i for i in range(60)]
+    rr_up = parity_rsi(up)
+    assert rr_up["bit_exact_nonflat"] and rr_up["n_flat"] >= 1
+    # ts_ema/ts_rma 无未来：改最后一根不影响之前
+    for expr in ("ts_ema(close,12)", MACD_DEA_EXPR, RSI14_EXPR):
+        b0 = fe.compute_ts(expr, {"close": list(closes)})
+        pp = list(closes); pp[-1] += 500.0
+        b1 = fe.compute_ts(expr, {"close": pp})
+        assert all(b0[t] == b1[t] for t in range(len(closes) - 1))
     rep = parity_report(closes)
-    print("factor_legacy_expr selftest ALL PASS（9组：ret1/5/20逐字节镜像/运算序反例/手算、"
-          "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记9条、"
-          "boll_std/hv20同求和序逐位 n=%d/%d、正交IC加权去共线；SMA最大相对差 ma20=%.2e）"
-          % (dm["n_pair"], rb["n_pair"], rh["n_pair"],
+    print("factor_legacy_expr selftest ALL PASS（10组：ret1/5/20逐字节镜像/运算序反例/手算、"
+          "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记、"
+          "boll/hv同求和序逐位 n=%d/%d、正交IC去共线、MACD三序列嵌套ts_ema逐位/RSI非平盘逐位(平盘分支n=%d)；"
+          "SMA最大相对差 ma20=%.2e）"
+          % (dm["n_pair"], rb["n_pair"], rh["n_pair"], rr["n_flat"],
              max(rep["sma"][p]["max_rel_diff"] for p in SMA_PERIODS)))
     return 0
 

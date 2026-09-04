@@ -14,7 +14,8 @@ panel 各接一次，口径只靠"调用同一函数"口头保证。本模块用
 因子保持原过程式实现、综合分逐字节不变（G25 回退铁律），本模块不被 main 实时链路 import。**
 
 算子白名单：
-  时序（尾窗 n、无未来）：delay/delta/ts_sum/ts_mean/ts_std/ts_min/ts_max/ts_rank/ts_minmax/decay_linear/corr
+  时序（尾窗 n、无未来）：delay/delta/ts_sum/ts_mean/ts_std/ts_min/ts_max/ts_rank/ts_minmax/decay_linear/corr；
+  状态递推（全序列因果、SMA播种）：ts_ema（标准EMA alpha=2/(n+1)）/ts_rma（Wilder RMA，RSI用）
   截面（同一时点跨品种）：cross_rank/scale/zscore
   逐元素/数学：abs/sign/log/tanh/max/min（二元）、四则与一元负号
 因子治理（纯标准库，自含不依赖 tools）：pearson/spearman、高斯消元 _solve、orthogonalize 正交残差、
@@ -27,6 +28,9 @@ _TS_OPS = {
     "delay": (2, "ts"), "delta": (2, "ts"), "ts_sum": (2, "ts"), "ts_mean": (2, "ts"),
     "ts_std": (2, "ts"), "ts_min": (2, "ts"), "ts_max": (2, "ts"), "ts_rank": (2, "ts"),
     "ts_minmax": (2, "ts"), "decay_linear": (2, "ts"), "corr": (3, "ts"),
+    # 第61轮：状态型递推时序算子（全序列因果递推、无未来；跳过前导非有限值，前 n 个有限值SMA播种）
+    "ts_ema": (2, "ts"),   # 标准EMA：alpha=2/(n+1)，逐字对齐 futures_data._ema_series
+    "ts_rma": (2, "ts"),   # Wilder RMA：((n-1)*prev+x)/n，逐字对齐 RSI 的 avg_gain/avg_loss 平滑
 }
 _CS_OPS = {"cross_rank": (1, "cs"), "scale": (1, "cs"), "zscore": (1, "cs")}
 _EL_OPS = {"abs": 1, "sign": 1, "log": 1, "tanh": 1, "max": 2, "min": 2}
@@ -302,6 +306,35 @@ def _sample_std(vals):
     return math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1))
 
 
+def _seeded_recurrence(x, n, mode):
+    """全序列因果递推（无未来）：跳过前导非有限值，前 n 个有限值用 SMA 播种，其后递推。
+
+    mode="ema"：标准 EMA，alpha=2/(n+1)，递推 alpha*v+(1-alpha)*prev（逐字对齐 futures_data._ema_series）；
+    mode="rma"：Wilder RMA，递推 ((n-1)*prev+v)/n（逐字对齐 _rsi_series 的 avg_gain/avg_loss 平滑）。
+    输入中段的非有限值不会"重置"递推（只取有限子序列），这正好对齐 MACD 对 dif 非None连续子序列再 EMA 的口径。
+    """
+    out = [None] * len(x)
+    finite = [(t, x[t]) for t in range(len(x)) if _isnum(x[t])]
+    if len(finite) < n:
+        return out
+    prev = sum(v for _, v in finite[:n]) / n
+    out[finite[n - 1][0]] = prev
+    if mode == "ema":
+        alpha = 2.0 / (n + 1.0)
+        for k in range(n, len(finite)):
+            t, v = finite[k]
+            prev = alpha * v + (1.0 - alpha) * prev
+            out[t] = prev
+    elif mode == "rma":
+        for k in range(n, len(finite)):
+            t, v = finite[k]
+            prev = ((n - 1) * prev + v) / n
+            out[t] = prev
+    else:
+        raise ExprError("未知递推模式 %r" % mode)
+    return out
+
+
 def _ts_op(fn, args):
     x = args[0]
     n = args[-1]
@@ -333,6 +366,8 @@ def _ts_op(fn, args):
             w = _window(x, t, n)
             out[t] = _sample_std(w) if len(w) >= n else None
         return out
+    if fn in ("ts_ema", "ts_rma"):
+        return _seeded_recurrence(x, n, "ema" if fn == "ts_ema" else "rma")
     if fn in ("ts_min", "ts_max"):
         for t in range(len(x)):
             w = _window(x, t, n)
@@ -620,6 +655,18 @@ LIBRARY = (
      "name": "20日样本标准差(表达式版)", "note": "与 _sample_std(close[-20:]) 同求和序，float.hex 逐位相等（布林带宽用）"},
     {"key": "expr_hv20", "expr": "ts_std(log(close/delay(close,1)),20)*15.874507866387544", "direction": 0,
      "name": "20日历史波动率年化(表达式版)", "note": "log收益样本std*sqrt252(=15.874507866387544)，与 _hv_at(.,20) 同运算序逐位相等"},
+    # ===== G25续（第61轮）状态量表达式化：ts_ema/ts_rma 状态递推算子，MACD/RSI 与过程式逐位一致 =====
+    {"key": "expr_macd_dif", "expr": "ts_ema(close,12)-ts_ema(close,26)", "direction": 0,
+     "name": "MACD-DIF(表达式版)", "note": "12/26 EMA之差，SMA播种，与 technical_profile dif 逐位相等"},
+    {"key": "expr_macd_dea", "expr": "ts_ema(ts_ema(close,12)-ts_ema(close,26),9)", "direction": 0,
+     "name": "MACD-DEA(表达式版)", "note": "对DIF连续子序列再做9日EMA（嵌套ts_ema），与 dea 逐位相等"},
+    {"key": "expr_macd_hist",
+     "expr": "(ts_ema(close,12)-ts_ema(close,26)-ts_ema(ts_ema(close,12)-ts_ema(close,26),9))*2.0", "direction": 0,
+     "name": "MACD柱(表达式版)", "note": "(DIF-DEA)*2，与 macd_hist 逐位相等"},
+    {"key": "expr_rsi14",
+     "expr": "100.0-100.0/(1.0+ts_rma(max(close-delay(close,1),0.0),14)/ts_rma(max(delay(close,1)-close,0.0),14))",
+     "direction": 0, "name": "Wilder RSI14(表达式版)",
+     "note": "ts_rma=Wilder平滑；非平盘分支与 _rsi_series 逐位相等，avg_loss≈0 的平盘强制100分支口径差异已在parity钉死"},
 )
 
 
@@ -678,6 +725,18 @@ def selftest():
     assert mmflat[2] == 0.5
     dlw = compute_ts("decay_linear(close,3)", {"close": [1.0, 2.0, 3.0]})
     assert abs(dlw[2] - (1 * 1 + 2 * 2 + 3 * 3) / 6) < 1e-12
+    # 4b) ts_ema/ts_rma 状态递推手算：前 n 个有限值 SMA 播种、其后递推（跳过前导 None）
+    es = compute_ts("ts_ema(close,3)", {"close": [1.0, 2.0, 3.0, 5.0]})
+    seed = (1 + 2 + 3) / 3.0
+    a = 2.0 / 4.0
+    assert es[0] is None and es[1] is None and float.hex(es[2]) == float.hex(seed)
+    assert float.hex(es[3]) == float.hex(a * 5.0 + (1 - a) * seed)
+    rm = compute_ts("ts_rma(close,3)", {"close": [1.0, 2.0, 3.0, 6.0]})
+    assert float.hex(rm[2]) == float.hex(seed)
+    assert float.hex(rm[3]) == float.hex((2 * seed + 6.0) / 3.0)
+    lead = compute_ts("ts_ema(close,2)", {"close": [None, None, 4.0, 6.0]})  # 前导 None 不影响播种
+    assert lead[0] is None and lead[1] is None and lead[2] is None
+    assert float.hex(lead[3]) == float.hex((4.0 + 6.0) / 2.0)   # 前2个有限值(4,6)SMA播种于idx3
 
     # 5) corr 与嵌套表达式、无未来（末根之外不依赖未来）
     x = [1.0, 2.0, 3.0, 4.0, 5.0]

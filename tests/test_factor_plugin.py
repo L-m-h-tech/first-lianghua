@@ -112,6 +112,6 @@ def test_main_chain_plugin_boundary():
     for line in az.splitlines():
         if line.startswith(("import ", "from ")):
             assert "factor_plugin" not in line and "factor_parts" not in line
-    # 最后一切片必须有默认关开关与回退 helper
+    # 最后一切片必须有开关（第61轮起默认开）与回退 helper
     import config
-    assert config.PLUGIN_PARTS_ENABLED is False and "_parts_via_plugins" in az
+    assert config.PLUGIN_PARTS_ENABLED is True and "_parts_via_plugins" in az

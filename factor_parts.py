@@ -396,6 +396,23 @@ def part_parity_cases(key, seed=20260904, n_random=160):
     return cases
 
 
+import contextlib
+
+
+@contextlib.contextmanager
+def _force_inline_analyzer():
+    """parity 专用：驱动真 analyzer 取**内联**真值期间，强制关掉注册表取分（第61轮起默认开），结束还原。
+
+    parity 的语义是"内联公式 vs 插件适配器"，若 analyzer 自身也走注册表，真值就不再是内联，会自引用。"""
+    import config
+    saved = getattr(config, "PLUGIN_PARTS_ENABLED", False)
+    config.PLUGIN_PARTS_ENABLED = False
+    try:
+        yield
+    finally:
+        config.PLUGIN_PARTS_ENABLED = saved
+
+
 def _drive_main(key, ctx):
     """把插件 context 映射为 analyze_variety 最小桩入参，隔离出目标 part（其余 part 置空/关门）。"""
     import analyzer
@@ -428,9 +445,10 @@ def _drive_main(key, ctx):
     elif key == "基本面":
         contract = ctx.get("contract")
         fund_raw = ctx.get("fund_raw")
-    return analyzer.analyze_variety(
-        "parity", dict(meta), quote, ind, kline_ok, news_score, news_hits,
-        oil_score, tick_mom, contract=contract, inst=inst, flow=flow, fund_raw=fund_raw)
+    with _force_inline_analyzer():
+        return analyzer.analyze_variety(
+            "parity", dict(meta), quote, ind, kline_ok, news_score, news_hits,
+            oil_score, tick_mom, contract=contract, inst=inst, flow=flow, fund_raw=fund_raw)
 
 
 def _main_value(row, key):
@@ -585,6 +603,9 @@ def parity_against_analyzer(cases=None, meta=None):
     base_meta.update(meta or {})
     fp.clear()
     fp.register(daily_momentum_plugin(), replace=True)
+    import config as _cfg
+    _saved_flag = getattr(_cfg, "PLUGIN_PARTS_ENABLED", False)
+    _cfg.PLUGIN_PARTS_ENABLED = False     # parity 真值必须取内联路径（第61轮起默认开注册表）
     n_open = n_closed = 0
     max_diff = 0.0
     mismatches = []
@@ -617,6 +638,7 @@ def parity_against_analyzer(cases=None, meta=None):
                 max_diff = max(max_diff, abs(got - main_val))
     finally:
         fp.clear()
+        _cfg.PLUGIN_PARTS_ENABLED = _saved_flag
     return {"n_open": n_open, "n_closed": n_closed, "max_diff": max_diff,
             "mismatches": mismatches}
 
@@ -718,6 +740,9 @@ def selftest():
     #     **逐键逐位一致**（含原油动态键、PART_KEYS 插入序），从而 sum 顺序相同、综合分逐字节相等
     import contracts as _ct
     register_builtin_parts(replace=True)
+    import config as _cfg2
+    _saved2 = getattr(_cfg2, "PLUGIN_PARTS_ENABLED", False)
+    _cfg2.PLUGIN_PARTS_ENABLED = False      # 真值取内联，与 assemble 逐键逐位对照
     asm_ok = 0
     for _ in range(240):
         rr = random.Random(20260904 + asm_ok)
@@ -763,6 +788,7 @@ def selftest():
         assert _bits(row["score"]) == _bits(max(-10.0, min(10.0, sum(assembled.values()))))
         asm_ok += 1
     fp.clear()
+    _cfg2.PLUGIN_PARTS_ENABLED = _saved2
     print("factor_parts selftest ALL PASS（11组：日线元数据/门控/手算/公式parity/真analyzer parity；"
           "注册9part一致性/异常隔离/无副作用；第三切片7+基本面元数据+门控手算+对真analyzer逐位parity；"
           "宿主装配9part同时在场逐键逐位一致 asm=%d例；日线 n_open=%d n_closed=%d；"

@@ -75,6 +75,26 @@ def test_ts_rank_minmax_decay():
     assert dl[2] == pytest.approx((1 * 1 + 2 * 2 + 3 * 3) / 6)
 
 
+def test_ts_ema_ts_rma_recurrence():
+    # ts_ema：前 n 个有限值 SMA 播种，其后 alpha=2/(n+1) 递推；前导 None 不影响播种
+    es = compute_ts("ts_ema(close,3)", {"close": [1.0, 2.0, 3.0, 5.0]})
+    seed = (1 + 2 + 3) / 3.0
+    assert es[:2] == [None, None]
+    assert float.hex(es[2]) == float.hex(seed)
+    assert float.hex(es[3]) == float.hex(0.5 * 5.0 + 0.5 * seed)
+    # ts_rma：Wilder 平滑 ((n-1)*prev+x)/n
+    rm = compute_ts("ts_rma(close,3)", {"close": [1.0, 2.0, 3.0, 6.0]})
+    assert float.hex(rm[2]) == float.hex(seed)
+    assert float.hex(rm[3]) == float.hex((2 * seed + 6.0) / 3.0)
+    # 前导 None：前2个有限值(4,6)在 idx3 播种
+    lead = compute_ts("ts_ema(close,2)", {"close": [None, None, 4.0, 6.0]})
+    assert lead[:3] == [None, None, None] and float.hex(lead[3]) == float.hex(5.0)
+    # 嵌套状态算子（MACD DEA 形态）可求值、长度对齐且在慢线暖机前全 None
+    longc = [100.0 + i * 0.3 + (i % 5) for i in range(120)]
+    dea = compute_ts("ts_ema(ts_ema(close,12)-ts_ema(close,26),9)", {"close": longc})
+    assert len(dea) == len(longc) and dea[:25] == [None] * 25 and dea[-1] is not None
+
+
 def test_corr_and_nested():
     x = [1.0, 2.0, 3.0, 4.0, 5.0]
     out = compute_ts("corr(close,y,3)", {"close": x, "y": [2 * v for v in x]})

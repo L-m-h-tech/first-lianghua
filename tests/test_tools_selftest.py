@@ -32,6 +32,7 @@ import db_backup
 import portfolio_risk
 import portfolio_risk_lab
 import circuit_breaker
+import orthogonal_blend_oos
 
 
 def test_factor_eval_selftest():
@@ -186,3 +187,8 @@ def test_portfolio_risk_lab_selftest():
 def test_circuit_breaker_selftest():
     """G5④（第48轮）组合层单日浮亏熔断：日切/粘性/动作模式/委托过滤 11组零网络自测。"""
     assert circuit_breaker.selftest() == 0
+
+
+def test_orthogonal_blend_oos_selftest():
+    """G25续/G16前置（第61轮）正交IC接真实面板样本外 --selftest：截面秩/三角残差化/walk-forward无未来。"""
+    assert orthogonal_blend_oos.selftest() == 0

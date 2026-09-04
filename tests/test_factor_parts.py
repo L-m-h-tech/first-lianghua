@@ -210,6 +210,8 @@ def test_assemble_live_parts_matches_inline_analyzer():
     import random
     import analyzer
     factor_parts.register_builtin_parts(replace=True)
+    saved = config.PLUGIN_PARTS_ENABLED
+    config.PLUGIN_PARTS_ENABLED = False     # 对照真值取内联路径，避免 analyzer helper 清空外部注册表
     try:
         rng = random.Random(20260904)
         for _ in range(200):
@@ -229,13 +231,14 @@ def test_assemble_live_parts_matches_inline_analyzer():
                 assert float.hex(v) == float.hex(mp[k]), (k, v, mp[k])
     finally:
         fp.clear()
+        config.PLUGIN_PARTS_ENABLED = saved
 
 
-def test_analyzer_plugin_switch_default_off_and_byte_identical():
+def test_analyzer_plugin_switch_default_on_and_byte_identical():
     import random
     import analyzer
-    # 默认必须关闭（旧内联路径为基线、可回退）
-    assert config.PLUGIN_PARTS_ENABLED is False
+    # 第61轮起默认**开启**注册表取分（双路已证逐字节等价；内联路径仍保留、可把开关置 False 回退）
+    assert config.PLUGIN_PARTS_ENABLED is True
     rng = random.Random(4242)
     saved = config.PLUGIN_PARTS_ENABLED
     try:
@@ -262,9 +265,9 @@ def test_main_chain_plugin_boundary():
     main_src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
     for banned in ("factor_plugin", "factor_parts"):
         assert banned not in main_src, "main.py 不得提及 %s" % banned
-    # analyzer 只允许函数内**惰性** import（行首有缩进），不得有模块顶层 import；且开关默认关
+    # analyzer 只允许函数内**惰性** import（行首有缩进），不得有模块顶层 import；第61轮起开关默认开
     az = open(os.path.join(ROOT, "analyzer.py"), encoding="utf-8").read()
     for line in az.splitlines():
         if line.startswith(("import ", "from ")):
             assert "factor_plugin" not in line and "factor_parts" not in line, "analyzer 顶层不得 import 插件层: " + line
-    assert "PLUGIN_PARTS_ENABLED" in az and config.PLUGIN_PARTS_ENABLED is False
+    assert "PLUGIN_PARTS_ENABLED" in az and config.PLUGIN_PARTS_ENABLED is True

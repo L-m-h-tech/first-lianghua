@@ -109,6 +109,22 @@ def test_orthogonal_ic_blend():
         fle.orthogonal_ic_blend([f1, f2], [0.1])
 
 
+def test_macd_stateful_bit_exact():
+    c = _closes(n=420)
+    for k, r in fle.parity_macd(c).items():
+        assert r["bit_exact"] and r["n_pair"] == r["n_hex"] > 300, (k, r["mismatches"][:2])
+
+
+def test_rsi_nonflat_bit_exact_and_flat_branch():
+    c = _closes(n=420)
+    r = fle.parity_rsi(c)
+    assert r["bit_exact_nonflat"] and r["n_pair"] == r["n_hex"] > 300
+    # 单边上涨触发过程式 avg_loss≈0 强制 100 分支：非平盘处仍逐位、且数到平盘分支
+    up = [100.0 + i for i in range(60)]
+    ru = fle.parity_rsi(up)
+    assert ru["bit_exact_nonflat"] and ru["n_flat"] >= 1
+
+
 def test_parity_report_and_catalog():
     rep = fle.parity_report(_closes())
     assert set(rep["ret"]) == {1, 5, 20} and set(rep["sma"]) == {5, 10, 20, 60}
@@ -116,9 +132,12 @@ def test_parity_report_and_catalog():
     assert all(r["within_tol"] for r in rep["sma"].values())
     assert rep["boll_std"]["bit_exact"] and rep["hv20"]["bit_exact"]
     assert rep["daily_momentum"]["bit_exact"]
+    assert all(r["bit_exact"] for r in rep["macd"].values())
+    assert rep["rsi"]["bit_exact_nonflat"]
     import factors_catalog as catalog
     for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
-              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20"):
+              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20",
+              "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14"):
         assert catalog.by_key(k) is not None and catalog.by_key(k)["status"] == "research"
     assert catalog.validate() == []
 

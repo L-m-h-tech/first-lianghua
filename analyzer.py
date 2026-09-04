@@ -111,9 +111,9 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
     if fund_pack and abs(fund_pack["score"]) > 0.01:
         parts["基本面"] = fund_pack["score"]
 
-    # G2 最后一切片（默认关，config.PLUGIN_PARTS_ENABLED）：用 factor_parts 注册表重建 parts。
+    # G2 最后一切片（第61轮起默认开，config.PLUGIN_PARTS_ENABLED）：用 factor_parts 注册表重建 parts。
     # 9 个 part 已逐位 parity，重建结果与上面内联一致；任何异常都由 helper 回退内联 parts，主链不受影响。
-    if getattr(config, "PLUGIN_PARTS_ENABLED", False):
+    if getattr(config, "PLUGIN_PARTS_ENABLED", True):
         parts = _parts_via_plugins(
             parts, meta.get("oil_w", 0.0), news_score, oil_score, inst, ind, kline_ok, price,
             tick_mom, flow, term, fund_raw)
