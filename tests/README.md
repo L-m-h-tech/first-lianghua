@@ -11,7 +11,7 @@ D:\Python\python.exe -m pytest tests/test_portfolio.py -v   # 单文件
 D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 ```
 
-当前规模：39 个 `test_*.py` + `conftest.py`，共 **623** 个用例，全绿约 8 秒。
+当前规模：47 个 `test_*.py` + `conftest.py`，共 **733** 个用例，全绿约 11 秒。
 
 ## 设计纪律（必须保持）
 
@@ -58,3 +58,5 @@ D:\Python\python.exe -m pytest -k liquidate                # 按用例名筛选
 | test_wf_cost_lab.py | 第45轮 G27②③ WF稳定性+成本曲面/换手容量：笔统计与复利、成本曲面沿fee/slip单调与基准格定位、break-even 转负/全程为正/基准已亏三态、WF 稳定-漂移-越界chosen防御与评级、combo名解析、容量手算（市场日均名义/单手名义/参与率上限手数/年换手/空与零乘数降级/字符串日期）、成稿与JSON无NaN（注入假runner零DB） |
 | test_factor_expr.py | 第38轮 G25 表达式引擎：21个危险/畸形解析反向用例（未知算子/dunder/属性点/语句拼接/非常量窗口/元数）、delay-delta-窗口统计-ts_rank-minmax-decay_linear-corr嵌套手算、无未来扰动、截面cross_rank/scale/zscore、pearson-spearman/OLS正交恢复β/IC·ICIR加权、实时离线结构性parity、表达式因子必登记且validate干净 |
 | test_compileall.py | 参数化编译全部生产 .py，语法损坏即变红（防“假全绿”） |
+| test_backtest_rigor.py | 第26轮 G4：next_open晚一根/close等价/末根不虚构/锁板顺延/反手、冲击成本、bootstrap、IS-OOS、留档（17例） |
+| test_wf_benchmark.py | 第62轮 G4续：backtest_rigor 因果切窗、买入持有基准/超额/跑赢、滚动walk-forward折划分/选参/OOS严格样本外（14例） |

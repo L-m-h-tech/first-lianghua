@@ -625,6 +625,13 @@ BACKTEST_BOOTSTRAP_MIN_TRADES = 20  # 净交易笔数少于该值不给区间(�
 BACKTEST_OOS_RATIO = 0.0            # 样本外占比：0=关闭(旧口径)；如0.3=按时间排序后30%交易为OOS、与前70%IS并列对照
 BACKTEST_VALIDATION_JSON = os.path.join(BASE_DIR, "reports", "backtest_validation.json")  # DSR/PBO sidecar(研究工具产出)
 BACKTEST_RUNS_RETENTION_DAYS = 3650  # backtest_runs 回测留档保留天数(约10年，体积极小)
+# ---- G4 续（第62轮）：滚动 walk-forward 样本外 + 对照基准 ----
+BACKTEST_BENCHMARK = True          # 报告默认给"买入持有主连/等权篮子"对照基准与超额；--no-benchmark 关
+BACKTEST_WF_ENABLED = False        # 滚动walk-forward默认关闭（重算，--walk-forward 开），缺省等价旧版
+BACKTEST_WF_TRAIN_BARS = 120       # 每折样本内(IS)训练窗：交易日根数
+BACKTEST_WF_TEST_BARS = 40         # 每折样本外(OOS)测试窗：交易日根数（折间不重叠、逐折向后滚动）
+BACKTEST_WF_MIN_IS_TRADES = 3      # IS窗某参数交易少于该值视为样本不足、不参与选参（防1笔定参数）
+BACKTEST_WARMUP_BARS = 60          # 指标预热根数（与 prepare_symbol 的 series 起点一致，基准也从此起算）
 
 # ---------------- G1 纸面交易引擎（第27轮；默认影子独立，不接入主链/不改任何现有输出；第28轮接报告/看板） ----------------
 PAPER_ENABLED = False             # 总开关：False=纸面引擎完全休眠（默认；第28轮接入 main 后再评估默认开影子）

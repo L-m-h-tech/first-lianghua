@@ -32,6 +32,7 @@ from datetime import datetime
 import config
 import futures_data
 import metrics
+import backtest_rigor as br
 
 
 def _pct(x):
@@ -530,6 +531,28 @@ def fetch_and_run(item, args):
             result["stability"] = stability
         else:
             result["stability"] = []
+        # G4续：对照基准——同区间一直买入持有主连（主连已比例复权），供报告算超额
+        result["buy_hold"] = br.benchmark_for_prepared(prepared)
+        # G4续：滚动 walk-forward（默认关，--walk-forward 开）。每折只在前段IS选参、用于后段OOS。
+        if getattr(args, "walk_forward", False):
+            grid = [(h, e) for h in config.BACKTEST_STABLE_HOLDS
+                    for e in config.BACKTEST_STABLE_ENTRIES]
+            limit = None if args.no_limit_filter else args.limit_move
+
+            def _sim(sub, hold, entry):
+                return simulate_prepared(name, code, sub, hold, entry,
+                                         args.fee_rate, args.slip_rate, limit,
+                                         collect_signals=False, fee_table=fee_table,
+                                         use_real_fees=not args.no_real_fees,
+                                         fill_mode=args.fill, impact_rate=args.impact_rate)
+
+            result["wf"] = br.walk_forward_symbol(
+                prepared, _sim, grid, (args.hold, args.entry),
+                train_bars=args.wf_train, test_bars=args.wf_test,
+                min_is_trades=config.BACKTEST_WF_MIN_IS_TRADES,
+                warmup=config.BACKTEST_WARMUP_BARS)
+        else:
+            result["wf"] = None
         return name, result, ""
     except Exception as e:
         return name, None, f"{type(e).__name__}: {e}"
@@ -714,6 +737,39 @@ def build_report(results, errors, args):
             L.append(f"    IS/OOS {direction}头："
                      + _fmt_metrics(metrics_from_returns(iv, args.hold)) + " ｜ "
                      + _fmt_metrics(metrics_from_returns(ov, args.hold)))
+    # ---- G4续：对照基准（买入持有主连 / 等权篮子 / 超额） ----
+    if not getattr(args, "no_benchmark", False):
+        pairs = []
+        for r in results:
+            tm = r.get("trade_metrics")
+            pairs.append((r["code"], tm["cumulative"] if tm else None, r.get("buy_hold")))
+        beat, n_valid, brows = br.beat_benchmark_pairs(pairs)
+        pool_bh = br.pooled_buy_hold([p[2] for p in pairs])
+        if n_valid and net_metrics and pool_bh is not None:
+            ex = br.excess(net_metrics["cumulative"], pool_bh)
+            L.append("  对照基准（同区间一直买入持有主连，主连已比例复权；策略仅信号时持仓、基准全程持仓）：")
+            L.append(f"    等权{n_valid}品种篮子买入持有累计 {pool_bh*100:+.1f}%；策略净累计 "
+                     f"{net_metrics['cumulative']*100:+.1f}%；超额(算术差) {ex*100:+.1f}个百分点")
+            L.append(f"    逐品种跑赢买入持有基准 {beat}/{n_valid}，跑输/持平 {n_valid-beat}/{n_valid}")
+    # ---- G4续：滚动 walk-forward 纯样本外 ----
+    wf_symbols = [r for r in results if r.get("wf")]
+    if wf_symbols:
+        all_oos = [t for r in wf_symbols for t in r["wf"]["oos_trades"]]
+        all_folds = [f for r in wf_symbols for f in r["wf"]["folds"]]
+        L.append("  滚动walk-forward纯样本外（每折只在前段IS的3×3网格选参、用于后段互不重叠OOS；选参不含本段未来）：")
+        L.append("    OOS拼接全部：" + _fmt_metrics(metrics_from_returns(
+            [t["ret"] for t in all_oos], args.hold)))
+        for direction in ("多", "空"):
+            dv = [t["ret"] for t in all_oos if t["direction"] == direction]
+            L.append(f"    OOS拼接{direction}头：" + _fmt_metrics(metrics_from_returns(dv, args.hold)))
+        is_avg, oos_avg = br.is_vs_oos_avg(all_folds)
+        usage = br.param_usage(all_folds)
+        fb = sum(1 for f in all_folds if f["fallback"])
+        if is_avg is not None:
+            L.append(f"    共{len(wf_symbols)}品种/{len(all_folds)}折（其中{fb}折IS样本不足回退默认参数）；"
+                     f"折级IS均收{is_avg*100:+.2f}%→OOS均收{oos_avg*100:+.2f}%；选参分布 {usage}")
+        else:
+            L.append(f"    共{len(wf_symbols)}品种/{len(all_folds)}折；IS/OOS均有交易的折不足，无法比较衰减；选参分布 {usage}")
     L.append("")
     L.append("二、信号发出后固定持有 1/5/20 个交易日的方向收益（允许样本重叠，用于观察衰减）")
     for h in (1, 5, 20):
@@ -865,6 +921,14 @@ def main(argv=None):
                         help="不向 storage.backtest_runs 落本次留档")
     parser.add_argument("--no-validation-ref", action="store_true",
                         help="报告抬头不引用 backtest_validation 的 DSR/PBO sidecar")
+    parser.add_argument("--no-benchmark", action="store_true",
+                        help="关闭买入持有/等权篮子对照基准与超额（默认给基准）")
+    parser.add_argument("--walk-forward", action="store_true",
+                        help="开启滚动walk-forward：每折只在前段IS选参、用于后段OOS，拼接纯样本外轨迹")
+    parser.add_argument("--wf-train", type=int, default=config.BACKTEST_WF_TRAIN_BARS,
+                        help="walk-forward 每折IS训练窗交易日根数（默认%d）" % config.BACKTEST_WF_TRAIN_BARS)
+    parser.add_argument("--wf-test", type=int, default=config.BACKTEST_WF_TEST_BARS,
+                        help="walk-forward 每折OOS测试窗交易日根数（默认%d，折间不重叠）" % config.BACKTEST_WF_TEST_BARS)
     args = parser.parse_args(argv)
     if args.no_cost:
         args.fee_rate = 0.0

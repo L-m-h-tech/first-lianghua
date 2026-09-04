@@ -61,6 +61,10 @@ D:\Python\python.exe backtest.py --all --oos-ratio 0.3         # 后30%交易为
 D:\Python\python.exe backtest.py --all --impact-rate 0.00005   # 另计单边万0.5冲击成本(往返两次,默认0)
 D:\Python\python.exe backtest.py --all --no-bootstrap --no-archive --no-validation-ref  # 关区间/留档/DSR引用
 # 每次运行默认落 backtest_runs 留档表并在抬头标注历史百分位；bootstrap固定种子(可--seed)可复现，交易<20笔不给区间
+# G4 续 严谨性补齐（第62轮 backtest_rigor.py）：
+D:\Python\python.exe backtest.py --all --walk-forward          # 滚动walk-forward：每折前段IS选参→后段互不重叠OOS，拼接纯样本外(默认关,--wf-train/--wf-test调窗)
+D:\Python\python.exe backtest.py --all --no-benchmark          # 关闭"等权篮子买入持有"对照基准与超额（默认给基准）
+# 报告默认给【对照基准】(同区间买入持有主连累计 vs 策略净累计、超额百分点、逐品种跑赢数)；多空分桶/费+滑点+冲击/静态IS-OOS默认即有
 ```
 
 单独运行日内/平今回测（读常驻自采的分钟库，不联网）：
