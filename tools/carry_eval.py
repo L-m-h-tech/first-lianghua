@@ -114,6 +114,12 @@ def carry_points_from_adjusted(name, sector, bars, term_series, horizons,
         for fk, _lab, _dir in CARRY_FACTORS:
             p[fk] = fm.get(fk)
         p["vol%d" % vol_lb] = futures_data._window_std(closes, t, vol_lb)
+        # G23续（第64轮）换手/容量：v=当日成交量(手)、oi=总持仓(手)、vol_turn=换手率代理、amount=成交额代理(元)
+        b = bars[t]
+        p["v"] = futures_data._f(b.get("v"))
+        p["oi"] = futures_data._f(b.get("p") if b.get("p") is not None else b.get("oi"))
+        p["vol_turn"] = (p["v"] / p["oi"]) if (p["v"] and p["oi"] and p["oi"] > 0) else None
+        p["amount"] = (closes[t] * p["v"]) if (p["v"] and closes[t] > 0) else None
         ok = True
         for H in horizons:
             p["fwd%d" % H] = fwd[H][t]
@@ -404,6 +410,31 @@ def build_report(points, errors, long_panel, main_dates, factor, horizons, main_
         reading = ("两口径均未过双样本门槛：主连t=%+.2f、近月短窗t=%+.2f/长窗t=%+.2f，按负结果归档，不进分。"
                    % (main_t, near_t_s, near_t_l))
     L.append("  · 判读：" + reading)
+
+    # ---------- 七·补、G23续 换手/容量检验（研究边缘：capacity 数量级精确仍待 G14 一档盘口） ----------
+    L.append("\n七·补、换手与容量（G23续；容量=多空腿成交额日合计×参与率/名义，参与率 1% 数量级估算，精确待 G14）")
+    try:
+        cap_infos = []
+        for p in pers or []:
+            syms_all = [s for s in (p.get("long_syms") or []) + (p.get("short_syms") or [])]
+            amt_by_sym = {q["sym"]: (q.get("amount") or 0.0) for q in points
+                          if q.get("date") == p.get("date") and q.get("sym") in syms_all}
+            total_amt = sum(amt_by_sym.values())
+            cap_infos.append({"date": p.get("date"), "long_syms": p.get("long_syms") or [],
+                              "short_syms": p.get("short_syms") or [], "total_amount": total_amt})
+        if cap_infos:
+            amts = [c["total_amount"] for c in cap_infos if c["total_amount"] > 0]
+            if amts:
+                med_amt = sorted(amts)[len(amts) // 2]
+                L.append("  每调仓日多空腿成交额合计：中位%.0f万元；按参与率1%%估算单期容量=中位成交额×1%%≈%.0f万元"
+                         % (med_amt / 1e4, med_amt * 0.01 / 1e4))
+            # 换手代理：多空腿成员的相对持仓集中度（腿内等权=1/n，n 越少越集中）
+            n_lens = [len(c["long_syms"]) + len(c["short_syms"]) for c in cap_infos if c["long_syms"] and c["short_syms"]]
+            if n_lens:
+                L.append("  多空腿总成员数：平均%.0f个/期（腿数越少换手越敏感；日频多空持仓换手须 G14 盘口精确）"
+                         % (sum(n_lens) / len(n_lens)))
+    except Exception:
+        L.append("  容量/换手代理计算异常（无 v/oi 时跳过）——不阻断主报告")
     L.append("=" * 108)
     text = "\n".join(L)
 
@@ -533,7 +564,10 @@ def _synthetic_carry_panel(n_sym=20, n_days=320, seed=7):
                  "carry": carry_path[t], "carry_nn": carry_path[t],
                  "carry_mom": carry_path[t] - carry_path[t - 20],
                  "slope": carry_path[t], "curv": 0.0,
-                 "doi": rng.gauss(0, 0.01), "vol63": 0.01}
+                 "doi": rng.gauss(0, 0.01), "vol63": 0.01,
+                 "v": 1000 + si * 10, "oi": 5000 + si * 20,
+                 "vol_turn": (1000 + si * 10) / (5000 + si * 20),
+                 "amount": price * (1000 + si * 10)}
             ok = True
             for H in Hs:
                 p["fwd%d" % H] = fwd[H][t]

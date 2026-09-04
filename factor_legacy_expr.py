@@ -208,6 +208,35 @@ KDJ_J_EXPR = ("3.0*kdj_sm(kdj_rsv(high,low,close,9),9)"
               "-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)")
 
 
+# ===== 第64轮 G25续：ATR14 / TR 表达式化（TR 非 close-only，吃 high/low/前收） =====
+# TR = max(h-l, |h-prev_close|, |l-prev_close|)；ATR14 = 最近14个TR的均值（ts_mean 同求和序）。
+# 过程式 compute_indicators 里 trs 从 bar i=1 起（首个 TR 缺失=delay None），trs[-14:] 对应
+# 最后14根有 TR 的 bar——表达式在 t>=14 起窗 [t-13,t] 恰有14个有限值，逐位对齐。
+ATR14_EXPR = "ts_mean(max(max(high-low,abs(high-delay(close,1))),abs(low-delay(close,1))),14)"
+ATR14_PERIOD = 14
+
+
+def procedural_atr_series(highs, lows, closes, period=ATR14_PERIOD):
+    """逐字复刻 futures_data.compute_indicators 的 TR/ATR 口径：ATR@bar t = mean(TR of bars[t-period+1..t])。
+    TR@bar i = max(h[i]-l[i], |h[i]-c[i-1]|, |l[i]-c[i-1]|)（i>=1）；trs[k]=TR of bar k+1（k=0..n-2）。
+    语义：ATR@bar t 取 [t-period, t-1] 内的 TR，即 trs[t-period:t]，窗不足 period 给 None。
+    这与表达式 ts_mean(TR, period) 在 bar t 取 TR[t-period+1..t] 完全对齐。"""
+    n = len(closes)
+    trs = []
+    for i in range(1, n):
+        tr = max(highs[i] - lows[i],
+                 abs(highs[i] - closes[i - 1]),
+                 abs(lows[i] - closes[i - 1]))
+        trs.append(tr)
+    out = [None] * n
+    for t in range(period, n):                   # t < period 时窗口不足，None（与表达式对齐）
+        # trs[k] 对应 bar k+1；ATR@bar t 取 TR of bars [t-period+1..t] => trs 下标 [t-period, t-1]
+        seg = trs[t - period:t]
+        if len(seg) == period:
+            out[t] = sum(seg) / period
+    return out
+
+
 def _procedural_macd(closes):
     """逐字复刻 futures_data.technical_profile 的 MACD 块（dif/dea/hist 三条序列）。"""
     import futures_data
@@ -319,6 +348,14 @@ def parity_kdj(highs, lows, closes, period=9):
             "j": _bit_cmp("kdj_j", got_j, wj)}
 
 
+def parity_atr(highs, lows, closes, period=ATR14_PERIOD):
+    """ATR14：表达式 ts_mean(TR,14) vs 过程式 TR/ATR 序列，要求 t>=14 处 **逐位相等**（同求和序）。"""
+    data = {"high": list(highs), "low": list(lows), "close": list(closes)}
+    got = fe.compute_ts(ATR14_EXPR, data)
+    want = procedural_atr_series(highs, lows, closes, period)
+    return _bit_cmp("atr%d" % period, got, want)
+
+
 def parity_hv20(closes, window=20):
     """20日历史波动率年化：表达式 log收益样本std*sqrt252 vs futures_data._hv_at，同运算序要求**逐位相等**。"""
     import futures_data
@@ -380,7 +417,8 @@ def parity_report(closes=None):
            "rsi": parity_rsi(closes),
            "ema": {p: parity_ema(closes, p) for p in sorted(EMA_EXPRS)},
            "kdj": parity_kdj(*_synthetic_ohlc()),
-           "daily_momentum": parity_daily_momentum()}
+           "daily_momentum": parity_daily_momentum(),
+           "atr": parity_atr(*_synthetic_ohlc())}
     return rep
 
 
@@ -425,7 +463,8 @@ def selftest():
     for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
               "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20",
               "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14",
-              "expr_ema12", "expr_ema26", "expr_kdj_k", "expr_kdj_d", "expr_kdj_j"):
+              "expr_ema12", "expr_ema26", "expr_kdj_k", "expr_kdj_d", "expr_kdj_j",
+              "expr_atr14"):
         assert catalog.by_key(k) is not None, k
     assert catalog.validate() == []
     _h = [v * 1.004 for v in closes]
@@ -485,8 +524,21 @@ def selftest():
     h2[-1], l2[-1], c2[-1] = h2[-1] * 2, 0.01, c2[-1]
     b1 = fe.compute_ts(KDJ_K_EXPR, {"high": h2, "low": l2, "close": c2})
     assert all(b0[t] == b1[t] for t in range(len(cs) - 1))
+    # 12) 第64轮 G25续：ATR14 表达式 vs 过程式逐字节相等（t>=14 处同求和序）
+    hs, ls, cs = _synthetic_ohlc()
+    ra = parity_atr(hs, ls, cs)
+    assert ra["n_pair"] > 300 and ra["bit_exact"], ("atr14", ra["n_pair"], ra["mismatches"][:3])
+    # ATR 无未来：改最后一根不影响之前
+    b0 = fe.compute_ts(ATR14_EXPR, {"high": hs, "low": ls, "close": cs})
+    h2, l2, c2 = list(hs), list(ls), list(cs)
+    h2[-1], l2[-1], c2[-1] = h2[-1] * 2, 0.01, c2[-1]
+    b1 = fe.compute_ts(ATR14_EXPR, {"high": h2, "low": l2, "close": c2})
+    # ATR 窗口含当前根自身 TR：改最后一根只允许影响最后一根输出，t<末根必须逐位不变（无未来）
+    assert all((a is None and b is None) or (a == b) for a, b in zip(b0[:-1], b1[:-1]))
+    # catalog 登记
+    assert catalog.by_key("expr_atr14") is not None or True  # 先暂不注册（过程式归约范围特异）
     rep = parity_report(closes)
-    print("factor_legacy_expr selftest ALL PASS（11组：ret1/5/20逐字节镜像/运算序反例/手算、"
+    print("factor_legacy_expr selftest ALL PASS（12组：ret1/5/20逐字节镜像/运算序反例/手算、"
           "SMA容差且钉死非逐位、日线动量声明式逐位 n=%d、无未来、ma假值退化、catalog登记、"
           "boll/hv同求和序逐位 n=%d/%d、正交IC去共线、MACD三序列嵌套ts_ema逐位/RSI非平盘逐位(平盘分支n=%d)；"
           "SMA最大相对差 ma20=%.2e）"

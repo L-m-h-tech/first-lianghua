@@ -160,6 +160,53 @@ def perf_of_returns(rs):
             "pct_positive": sum(1 for v in xs if v > 0) / n}
 
 
+def evaluate_ls_books_aligned(books, score_key="orth", n_q=N_QUANTILE,
+                    cost_oneway=DEFAULT_COST_ONEWAY, hold=None):
+    """G25续（第64轮）：按 H 对齐的**非重叠**再平衡分层多空（消除第63轮 H>1 前向收益日序重叠）。
+
+    只在每 hold 个交易日（books 里的有效 OOS 日）的调仓日重算多空权重并记账一笔
+    [调仓日, 调仓日+hold) 的持有期收益；中间日不重算、不计当日收益（期与期不重叠），
+    因此净收益=Σ期收益-Σ期换手成本可以**真实复利**（累计净值/最大回撤可作数）。
+    hold=None 或缺省=每天调仓（与 evaluate_ls_books 逐日重叠口径一致，仅作对照）。
+
+    返回 {"n_q","cost_oneway","hold","n_periods","gross","net","avg_turnover_one_sided",
+          "total_cost","avg_spread","avg_long_leg","avg_short_leg",
+          "daily_gross","daily_net","daily_turnover"}（daily_* 按调仓期数对齐）。
+    """
+    hold = hold or 1
+    gross, net, traded_series, onesided_series, cost_series, spreads, longr, shortr = \
+        [], [], [], [], [], [], [], []
+    prev_w = {}
+    for i, book in enumerate(books):
+        if i % hold != 0:
+            continue                      # 非调仓日：持有不动（前向收益已在调仓日记账）
+        day = quantile_ls_day(book[score_key], book["y"], n_q)
+        if day is None:
+            continue
+        traded, onesided = turnover_between(prev_w, day["weights"])
+        cost = traded * (cost_oneway or 0.0)
+        gross.append(day["gross_ret"])
+        net.append(day["gross_ret"] - cost)
+        traded_series.append(traded)
+        onesided_series.append(onesided)
+        cost_series.append(cost)
+        spreads.append(day["spread"])
+        longr.append(day["long_ret"])
+        shortr.append(day["short_ret"])
+        prev_w = day["weights"]
+    gperf, nperf = perf_of_returns(gross), perf_of_returns(net)
+    n = len(gross)
+    return {"n_q": n_q, "cost_oneway": cost_oneway, "hold": hold, "n_periods": n,
+            "gross": gperf, "net": nperf,
+            "avg_traded": (sum(traded_series) / n if n else None),
+            "avg_turnover_one_sided": (sum(onesided_series) / n if n else None),
+            "total_cost": sum(cost_series),
+            "avg_spread": (sum(spreads) / n if n else None),
+            "avg_long_leg": (sum(longr) / n if n else None),
+            "avg_short_leg": (sum(shortr) / n if n else None),
+            "daily_gross": gross, "daily_net": net, "daily_turnover": onesided_series}
+
+
 def evaluate_ls_books(books, score_key="orth", n_q=N_QUANTILE, cost_oneway=DEFAULT_COST_ONEWAY):
     """对 walk_forward 收集的每日 book（含分数与前向收益）构造分层多空组合，逐日算换手与成本。
 
@@ -343,9 +390,13 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
         # 第63轮：分层多空组合（多顶层/空底层），含换手与单边成本后的净收益（正交IC合成 vs 等权）
         ls_orth = evaluate_ls_books(books, "orth", n_q, cost_oneway)
         ls_equal = evaluate_ls_books(books, "equal", n_q, cost_oneway)
+        # G25续（第64轮）：按 H 对齐非重叠再平衡（消除 H>1 前向重叠，可复利）
+        ls_orth_h = evaluate_ls_books_aligned(books, "orth", n_q, cost_oneway, hold=h)
+        ls_equal_h = evaluate_ls_books_aligned(books, "equal", n_q, cost_oneway, hold=h)
         result["horizons"]["H%d" % h] = {"n_refit": n_refit, "summary": summ,
                                          "daily_orth": daily["orth_ic"], "daily_equal": daily["equal"],
-                                         "ls_orth": ls_orth, "ls_equal": ls_equal}
+                                         "ls_orth": ls_orth, "ls_equal": ls_equal,
+                                         "ls_orth_aligned": ls_orth_h, "ls_equal_aligned": ls_equal_h}
         n_days = summ["orth_ic"]["n_days"]
         lines.append("")
         lines.append("[前向 H=%d 交易日] 有效OOS日=%d，月度重估=%d 次（ICIR=mean/std，正比例=日IC>0占比）"
@@ -383,6 +434,13 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
         lines.append("  （毛/净均为 H=%d 前向持有期收益口径；总成本拖累=%.2f%%，净最大回撤=%.2f%%）"
                      % (h, 100.0 * ls_orth["total_cost"],
                         100.0 * (ls_orth["net"].get("max_drawdown") or 0.0)))
+        # G25续（第64轮）：按 H 对齐非重叠再平衡（期数=调仓次数；净收益可复利）
+        lines.append("  [按H=%d对齐·非重叠再平衡] 调仓期=%d：正交净年化%+.2f%%/净夏普%.2f/日均换手%.3f（等权净年化%+.2f%%）"
+                     % (h, ls_orth_h["n_periods"],
+                        100.0 * (ls_orth_h["net"].get("annual_ret") or 0.0),
+                        ls_orth_h["net"].get("sharpe") or 0.0,
+                        ls_orth_h["avg_turnover_one_sided"] or 0.0,
+                        100.0 * (ls_equal_h["net"].get("annual_ret") or 0.0)))
     lines.append("")
     lines.append("注：本结果为研究侧线性合成基线，不自动改 analyzer 权重、不进综合分；上线仍须 G29 体检 + 样本外+真实成本后≥现状。")
     text = "\n".join(lines)
@@ -489,6 +547,16 @@ def selftest():
     assert all(abs(g - n) < 1e-15 for g, n in zip(ls0["daily_gross"], ls0["daily_net"]))  # 零成本净=毛
     assert lsc["total_cost"] > 0 and lsc["net"]["cum_ret"] <= ls0["net"]["cum_ret"] + 1e-12
     assert 0 <= (ls0["avg_turnover_one_sided"] or 0) <= 1.0
+    # 4d) 按H对齐非重叠再平衡（G25续第64轮）：hold=2 时调仓期数≈一半、期与期不重叠；
+    #     hold=1 时与逐日口径每期收益一致（仅记账方式不同）；正成本净≤毛、换手≤1
+    al0 = evaluate_ls_books_aligned(books, "orth", 5, 0.0, hold=2)
+    alc = evaluate_ls_books_aligned(books, "orth", 5, 0.0003, hold=2)
+    assert al0["hold"] == 2 and al0["n_periods"] <= (len(books) + 1) // 2
+    assert alc["total_cost"] >= 0 and alc["net"]["cum_ret"] <= al0["net"]["cum_ret"] + 1e-12
+    assert 0 <= (al0["avg_turnover_one_sided"] or 0) <= 1.0
+    al1 = evaluate_ls_books_aligned(books, "orth", 5, 0.0, hold=1)
+    assert al1["n_periods"] >= al0["n_periods"] * 2 - 2  # hold=1 期数≈hold=2 的两倍（足样本满仓时精确2倍，跳过期不计数）
+    assert abs(al1["gross"]["cum_ret"] - ls0["gross"]["cum_ret"]) < 1e-9   # hold=1 逐日=原逐日口径
     # 5) 无未来函数：截断最后一天不影响之前任一 OOS 日的 IC
     base_daily, _, base_books = walk_forward(dates[:-1], by_sym, factors, 1,
                                              min_train=60, refit_every=20, min_cs=8)
@@ -496,7 +564,7 @@ def selftest():
         assert (a is None and b is None) or (isnum(a) and isnum(b) and abs(a - b) < 1e-12)
     print("orthogonal_blend_oos selftest ALL PASS（截面均匀秩/并列秩、三角递推残差化、IC汇总、"
           "合成面板walk-forward n_refit=%d OOS日=%d 正交meanIC=%.4f 等权meanIC=%.4f、"
-          "分层多空gross=1/换手/成本净收益、无未来）"
+          "分层多空gross=1/换手/成本净收益、按H对齐非重叠再平衡、无未来）"
           % (n_refit, so["n_days"], so["mean_ic"], se["mean_ic"]))
     return 0
 

@@ -714,6 +714,11 @@ LIBRARY = (
     {"key": "expr_kdj_j",
      "expr": "3.0*kdj_sm(kdj_rsv(high,low,close,9),9)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)",
      "direction": 0, "name": "KDJ-J(表达式版)", "note": "J=3K-2D，与 _kdj_series 的 J 逐位相等"},
+    # ===== 第64轮 G25续：ATR14 表达式化（TR 非 close-only，吃 high/low/前收；嵌套 max 二元算子） =====
+    {"key": "expr_atr14",
+     "expr": "ts_mean(max(max(high-low,abs(high-delay(close,1))),abs(low-delay(close,1))),14)",
+     "direction": 0, "name": "14日ATR(表达式版)",
+     "note": "TR=max(h-l,|h-prev_c|,|l-prev_c|) 的14日均值，与 compute_indicators 同求和序逐位相等（需 high/low 输入）"},
 )
 
 

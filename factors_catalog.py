@@ -201,6 +201,11 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 63,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
      "formula": "3K-2D，与 _kdj_series J 逐位相等"},
+    # ===== 第64轮 G25续：ATR14 表达式化（TR 非 close-only，吃 high/low/前收；嵌套 max 二元） =====
+    {"key": "expr_atr14", "name": "14日ATR(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 64,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
+     "formula": "ts_mean(max(max(h-l,|h-prev_c|),|l-prev_c|),14)，与 compute_indicators 的 TR/ATR 同求和序逐位相等"},
 )
 
 _BY_KEY = None
