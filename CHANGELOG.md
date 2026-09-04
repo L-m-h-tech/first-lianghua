@@ -3,6 +3,20 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.63.0] — 2026-09-04 · 第63轮 G1 纸面引擎补 OMS/成交回报/持仓对账 + G25续 KDJ/EMA 表达式化 + OOS 分层多空/换手/成本
+- **G1 paper_broker 补 OMS/成交回报/持仓对账**：纯函数 reconcile_position_sets（五类 break）/aggregate_fills；内存级 _orders_by_id/fill_ledger；新方法 orders_view（全状态台账）/cancel_order（主动撤单）/fills_view/fill_report/reconcile_positions/reconcile_against_db；restore 跨进程回填。
+- **G25续 KDJ/EMA 表达式化**：DSL 加 kdj_rsv/kdj_sm 算子；EMA12/26、KDJ K/D/J 对过程式 float.hex 逐位 parity；LIBRARY+5、catalog 38→43。
+- **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
+- pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
+
+## [0.64.0] — 2026-09-04 · 第64轮 G25续 按H对齐非重叠再平衡+ATR14表达式化 + G22续 可交易性掩码 + G23续 carry 换手/容量
+- **G25续(a) 分层组合按H对齐非重叠再平衡**：orthogonal_blend_oos 新增 evaluate_ls_books_aligned——每 H 个交易日调仓一次、期不重叠、净收益可真实复利；H20 正交净年化+24.90%/净夏普0.99（消除重叠虚高）。
+- **G25续(b) ATR14/TR 表达式化**：ATR14_EXPR（嵌套 max 二元、吃 high/low/前收）对 compute_indicators 过程式 float.hex 逐位 parity；LIBRARY+expr_atr14、catalog 43→44。
+- **G22续 可交易性掩码**：新增 tools/tradable_mask.py——locked_flags（疑似锁板）+ nearest_delivery_days（交割日历）+ mask_for_panel/summarize；真实64品种锁板仅3例、距交割≤15天占46.8%；真HP/SP仍待G22分类持仓。
+- **G23续 carry 换手/容量**：carry points 增 v/oi/vol_turn/amount；报告新增"七·补 换手与容量"（多空腿成交额、1%参与率容量估算，精确待G14）。
+- **G5④ 核实**：circuit_breaker 三动作模式已在第51轮清账，本轮不重复开发。
+- pytest 738→742 全绿；研究侧零改动主链（隔离 grep 合规）。
+
 ## [0.62.0] — 2026-09-04 · 第62轮 G4 续：滚动 walk-forward 样本外 + 对照基准（回测严谨性补齐）
 - **缺口审计**：第26轮 G4 已落地 next-bar 双档成交、交易级 bootstrap 置信区间（含多空）、单次 IS/OOS 静态切分、真实费率+滑点+冲击成本分列、3×3 参数网格、backtest_runs 留档、DSR/PBO 引用。本轮对照用户五要素（walk-forward/费+滑点+冲击/样本外/多空分桶/对照基准），确认**真正缺口只有"滚动 walk-forward"与"对照基准"**，其余已具备，不重复造。
 - **新增 `backtest_rigor.py`（纯标准库、零网络、模拟器可注入便于单测）**：slice_prepared 因果切窗（series 全局 i 重映射为窗内局部，指标沿用全局因果结果、无未来函数）；buy_hold_window/benchmark_for_prepared/pooled_buy_hold/excess/beat_benchmark_pairs 买入持有基准与超额；wf_folds 折划分（首折 OOS 起点=预热+训练窗、折间 OOS 不重叠、尾折不足2根丢弃）；select_best_param 只在 IS 段 3×3 网格按净均收选参（最小交易数门槛、并列取先者保确定性）；walk_forward_symbol 逐折"前段 IS 选参→后段 OOS 交易"拼接纯样本外轨迹并标注 wf_fold/wf_hold/wf_entry；param_usage/is_vs_oos_avg 选参分布与 IS→OOS 衰减。
