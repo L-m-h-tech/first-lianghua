@@ -46,3 +46,6 @@ reports/*.log
 backup/*.db
 backup/*.db.json
 backup/*.before_restore_*
+
+# ===== 隐私：券商原始导出（含投资者账号），本地保留不入库 =====
+data/*.xlsx
