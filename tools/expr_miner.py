@@ -168,6 +168,10 @@ def candidate_pool():
     add("oi_surge_5", "oi/ts_mean(oi,20)", 0, "持仓突增5", "当日持仓/20日均持仓")
     add("ret_vol_ratio_20", "ts_mean(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,20)+0.000001)",
         +1, "20日收益波动比", "均值/波动，风险调整动量")
+    # --- 第81轮：偏度族（ts_skew 白名单新算子，收益分布不对称性）---
+    for n in (20, 60):
+        add("ret_skew_%d" % n, "ts_skew(close/delay(close,1)-1,%d)" % n, 0,
+            "%d日收益偏度" % n, "尾窗收益标准化三阶矩（g1）；负偏=左尾更肥（崩尾风险代理）")
     # --- 第74轮扩容：振幅/影线/K线结构/涨跌天数/Amihud/波动结构/跳期动量（仍全白名单、量纲无关） ---
     for n in (5, 20):
         add("range_pct_%d" % n, "ts_mean((high-low)/close,%d)" % n, 0,

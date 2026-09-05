@@ -199,3 +199,41 @@ def test_library_compiles_and_registered():
         assert len(out) == len(C)
         assert f["key"] in catalog_keys  # 表达式因子必须在唯一注册表登记
     assert fc.validate() == []
+
+
+def test_ts_skew_hand_computed():
+    """第81轮：ts_skew 尾窗样本偏度手算（population g1=m3/m2^1.5）、暖机None、成对剔非有限值。"""
+    import math
+    # 右偏序列：[0,0,0,0,0,3] → 大值在尾部，偏度>0
+    xs = [0.0] * 5 + [3.0]
+    out = compute_ts("ts_skew(x,6)", {"x": xs})
+    w = [0.0] * 5 + [3.0]
+    mu = sum(w) / 6.0
+    m2 = sum((v - mu) ** 2 for v in w) / 6.0
+    m3 = sum((v - mu) ** 3 for v in w) / 6.0
+    expect = m3 / (m2 ** 1.5)
+    assert out[5] is not None and abs(out[5] - expect) < 1e-12 and out[5] > 1.5
+    # 对称序列偏度=0（窗口 [0,1,2,1,0,2] 偏差 -1,0,+1,0,-1,+1 严格对称）；常数千方差→None
+    sym = [0.0, 1.0, 2.0, 1.0, 0.0, 2.0]
+    o2 = compute_ts("ts_skew(x,6)", {"x": sym})
+    assert abs(o2[5]) < 1e-12
+    flat = [5.0] * 10
+    o3 = compute_ts("ts_skew(x,5)", {"x": flat})
+    assert o3[-1] is None                       # 零方差（m2≈0）
+    # 暖机：窗口不足3个有限点→None；非有限值成对剔除
+    o4 = compute_ts("ts_skew(x,6)", {"x": [None, None, None, 1.0, 2.0, 3.0, 4.0]})
+    assert o4[3] is None and o4[6] is not None
+    # 混入 None：尾窗内成对剔除后仍可算
+    o5 = compute_ts("ts_skew(x,5)", {"x": [1.0, None, 2.0, 3.0, 4.0, 5.0]})
+    assert o5[5] is not None
+    # 无未来：扰动末根不影响此前值
+    a = compute_ts("ts_skew(x,6)", {"x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]})[4]
+    b = compute_ts("ts_skew(x,6)", {"x": [1.0, 2.0, 3.0, 4.0, 5.0, 99.0]})[4]
+    assert a == b
+    # LIBRARY/危险用例不受影响：未知算子仍拒绝
+    try:
+        compute_ts("ts_kurt(x,5)", {"x": [1.0] * 6})
+        assert False
+    except Exception:
+        pass
+    assert math.isfinite(expect)

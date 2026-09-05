@@ -249,6 +249,26 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 76,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
      "formula": "ts_mean((high-low)/close,20)；同 expr_range_pct5 的 20 日窗（H20 截面 -0.066/t-9.2）；不进综合分"},
+    {"key": "expr_day_chg_exact", "name": "日涨跌幅(过程式逐位镜像)", "layer": "表达式研究(精确镜像)", "direction": 0,
+     "bound": None, "status": "research", "introduced": 81,
+     "live_at": "factor_expr(镜像,analyzer默认不换)", "archive": "research_panel",
+     "formula": "close/delay(close,1)-1；与 compute_indicators.day_chg 逐位 parity"},
+    {"key": "expr_ret63_exact", "name": "63日累计收益(过程式逐位镜像)", "layer": "表达式研究(精确镜像)", "direction": 0,
+     "bound": None, "status": "research", "introduced": 81,
+     "live_at": "factor_expr(镜像,analyzer默认不换)", "archive": "research_panel",
+     "formula": "close/delay(close,63)-1；与 tsmom_at.ret63 逐位 parity"},
+    {"key": "expr_ret126_exact", "name": "126日累计收益(过程式逐位镜像)", "layer": "表达式研究(精确镜像)", "direction": 0,
+     "bound": None, "status": "research", "introduced": 81,
+     "live_at": "factor_expr(镜像,analyzer默认不换)", "archive": "research_panel",
+     "formula": "close/delay(close,126)-1；regime 趋势字段镜像"},
+    {"key": "expr_ret252_exact", "name": "252日累计收益(过程式逐位镜像)", "layer": "表达式研究(精确镜像)", "direction": 0,
+     "bound": None, "status": "research", "introduced": 81,
+     "live_at": "factor_expr(镜像,analyzer默认不换)", "archive": "research_panel",
+     "formula": "close/delay(close,252)-1"},
+    {"key": "expr_hv60_exact", "name": "60日历史波动率年化(过程式逐位镜像)", "layer": "表达式研究(精确镜像)", "direction": 0,
+     "bound": None, "status": "research", "introduced": 81,
+     "live_at": "factor_expr(镜像,analyzer默认不换)", "archive": "research_panel",
+     "formula": "ts_std(log(close/delay(close,1)),60)*sqrt252；regime 波动字段镜像"},
 )
 
 _BY_KEY = None
@@ -294,11 +314,13 @@ HEALTH_SNAPSHOT = {
                 "verdict": "时段性（同 expr_range_pct5 降级）",
                 "note": "与 expr_range_pct5 同族 20 日窗；第80轮 term 长窗复检同样≈0，口径/时段敏感"},
             "expr_tsmom252": {
-                "cs_mean_ic": "H1 +0.024 / H5 +0.034 / H20 +0.081（t+11.0，日频重叠口径）",
-                "verdict": "待复核（条件化不成立）",
-                "note": "第78轮 regime_cond_lab 复核：非重叠调仓口径 t 仅+2.0（慢信号日间自相关虚高），"
-                        "全样本截面正IC跨H稳定（+0.034~+0.113）；placebo 未过（伪低波+4.88%≈全样本+4.69%，"
-                        "真实低波+8.84%仅略高）——第39轮'低波增强'的条件化部分大部分为分桶假象，维持不晋升"},
+                "cs_mean_ic": "面板口径 H20 +0.081（t+11.0重叠）；term 长窗口径 87期非重叠 +0.083（t+3.8）",
+                "verdict": "健康(正向·截面)（研究候选，不进综合分）",
+                "note": "第81轮 term 长窗复核通过：2019-2025 年度截面IC 7/7 全为正（+0.028~+0.138）、"
+                        "非重叠口径 t+3.8、净年化+8.17%/夏普1.00——252日截面动量延续（与 Koijen 等跨资产"
+                        "截面动量一致；'动量证伪'为时序策略口径、不矛盾）。低波条件化未过 placebo"
+                        "（+0.113 在8种子分布 max+0.139 内）——全样本方向本身才是稳健部分。"
+                        "升级影子前还须：G29 常驻体检+成本后组合检验+与 tsmom 证伪口径的显式区分"},
             "expr_hv20": {
                 "cs_mean_ic": "面板口径 H1 -0.008 / H5 -0.030 / H20 -0.058（t-8.8）",
                 "verdict": "时段性（随 range_pct 降级）",
@@ -309,7 +331,9 @@ HEALTH_SNAPSHOT = {
                 "note": "hv20+range_pct5+range_pct20 逐日截面秩等权平均（--compose）。第79轮4种子placebo边缘通过"
                         "（4年面板）；第80轮 term 长窗复检：全样本IC≈0、低波条件化仅-0.051（微弱真效应、"
                         "略超8种子placebo下界-0.044，但≈0.3%/年无交易价值）——第78-79轮结论在长样本上不成立，"
-                        "降级为时段性现象；面板口径与 term 口径同期差异本身说明对价格构建方法敏感"},
+                        "降级为时段性现象；面板口径与 term 口径同期差异本身说明对价格构建方法敏感。"
+                        "第81轮年度归因（长窗）：2021/2022 +0.092/+0.100（牛市动量延续）vs 2024-2026 "
+                        "-0.033~-0.069（高振幅跑输）——逐年符号翻转=牛市/熊震市 regime 切换，非稳定异象"},
         },
     },
 }

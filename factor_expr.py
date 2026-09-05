@@ -34,6 +34,9 @@ _TS_OPS = {
     # 第63轮 G25续：KDJ 专用算子（非 close-only，吃 high/low）
     "kdj_rsv": (4, "ts"),  # 未成熟随机值 (high,low,close,n)：尾窗 hh/ll，(c-ll)/(hh-ll)*100，平盘给50
     "kdj_sm": (2, "ts"),   # K/D 固定初值50、α=1/3 的递推 (2prev+x)/3（首个有限值即起递推，区别于 ts_ema 的SMA播种）
+    # 第81轮：偏度（收益分布不对称性，低波异象/波动族研究用）——域专用算子而非通用 pow：
+    # 通用 pow/条件聚合会把溢出/类型/元数审计面扩大，ts_skew 限定尾窗标准化三阶矩、审计面最小
+    "ts_skew": (2, "ts"),  # 尾窗样本偏度（成对剔非有限值，n_eff≥3；population g1=m3/m2^1.5，平窗None）
 }
 _CS_OPS = {"cross_rank": (1, "cs"), "scale": (1, "cs"), "zscore": (1, "cs")}
 _EL_OPS = {"abs": 1, "sign": 1, "log": 1, "tanh": 1, "max": 2, "min": 2}
@@ -441,6 +444,17 @@ def _ts_op(fn, args):
                     xs.append(x[k]); ys.append(y[k])
             out[t] = pearson(xs, ys) if len(xs) >= 3 else None
         return out
+    if fn == "ts_skew":
+        for t in range(len(x)):
+            w = _window(x, t, n)
+            if len(w) < 3:
+                continue
+            mu = sum(w) / len(w)
+            m2 = sum((v - mu) ** 2 for v in w) / len(w)
+            m3 = sum((v - mu) ** 3 for v in w) / len(w)
+            if m2 > 1e-20:
+                out[t] = m3 / (m2 ** 1.5)      # population 偏度 g1
+        return out
     raise ExprError("未实现的时序算子 %r" % fn)
 
 
@@ -759,6 +773,24 @@ LIBRARY = (
     {"key": "expr_range_pct20", "expr": "ts_mean((high-low)/close,20)", "direction": 0,
      "name": "20日日均振幅(表达式版)",
      "note": "日内振幅20日均值；低波状态反向结构见 regime_cond_lab（第75轮），研究侧登记"},
+    # ===== 第81轮 #7 收尾：剩余旧特征精确镜像（day_chg/ret63/126/252/hv60，逐位 parity 对面板列验证；
+    # tsmom_blend 因动态 n_valid 分母+条件聚合在当前 DSL 不可表达，单独记录（见 expr_research 报告注记）。
+    # 仅登记研究侧定义、analyzer 默认不换（综合分逐字节不变）。
+    {"key": "expr_day_chg_exact", "expr": "close/delay(close,1)-1", "direction": 0,
+     "name": "日涨跌幅(过程式逐位镜像)",
+     "note": "与 compute_indicators.day_chg 同式；逐位 parity 见 expr_research 报告"},
+    {"key": "expr_ret63_exact", "expr": "close/delay(close,63)-1", "direction": 0,
+     "name": "63日累计收益(过程式逐位镜像)",
+     "note": "与 tsmom_at.ret63 同式（_lookback_return=closes[end]/closes[end-L]-1）"},
+    {"key": "expr_ret126_exact", "expr": "close/delay(close,126)-1", "direction": 0,
+     "name": "126日累计收益(过程式逐位镜像)",
+     "note": "同上 126 日窗；regime 趋势字段（REGIME_TREND_FIELD）的镜像"},
+    {"key": "expr_ret252_exact", "expr": "close/delay(close,252)-1", "direction": 0,
+     "name": "252日累计收益(过程式逐位镜像)",
+     "note": "同上 252 日窗"},
+    {"key": "expr_hv60_exact", "expr": "ts_std(log(close/delay(close,1)),60)*15.874507866387544",
+     "direction": 0, "name": "60日历史波动率年化(过程式逐位镜像)",
+     "note": "与 _hv_at(60)=_sample_std(log收益)*sqrt252 同式（hv20 同形已逐位验证）；regime 波动字段镜像"},
 )
 
 

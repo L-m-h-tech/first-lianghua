@@ -119,6 +119,37 @@ def symbol_factor_ic(expr, series, close, horizons=HORIZONS):
     return out
 
 
+# 第81轮：剩余旧特征精确镜像的 parity 交叉核对（表达式 vs 面板已落库列，逐位比对）
+MIRROR_KEYS = (("expr_day_chg_exact", "day_chg"), ("expr_ret63_exact", "ret63"),
+               ("expr_ret126_exact", "ret126"), ("expr_ret252_exact", "ret252"),
+               ("expr_hv60_exact", "hv60"))
+
+
+def feature_crosscheck(rows, min_warmup=252):
+    """5 个精确镜像表达式 vs 面板已落库特征列：逐值 float 比较。
+
+    只比对行序 t>=min_warmup（最大回看窗252）之后的位置：面板列由全程前缀过程式算出，
+    而表达式只见 warmup 截断后的行序列，开头处两者历史深度不同属对齐伪差（非表达式错误）。
+    返回 (maxAbsDiff, 比对点数, 不一致数)。"""
+    s = series_from_rows(rows)
+    max_diff, n, mismatch = 0.0, 0, 0
+    for expr_key, col in MIRROR_KEYS:
+        fac = fe.compute_ts(next(f["expr"] for f in fe.LIBRARY if f["key"] == expr_key), s)
+        stored = [r.get(col) for r in rows]
+        for t in range(min_warmup, len(fac)):
+            x, y = fac[t], stored[t]
+            if fe._isnum(x) or fe._isnum(y):
+                n += 1
+                if not (fe._isnum(x) and fe._isnum(y)):
+                    mismatch += 1
+                else:
+                    d = abs(x - y)
+                    max_diff = max(max_diff, d)
+                    if d > 0.0:
+                        mismatch += 1
+    return max_diff, n, mismatch
+
+
 def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbose=True, min_cs=None):
     store = pb.PanelStore(db_path)
     syms = sorted(store.symbols())
@@ -129,6 +160,9 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
     glob_parity_mis = 0
     glob_xcheck_diff = 0.0
     glob_xcheck_n = 0
+    glob_mirror_diff = 0.0
+    glob_mirror_pts = 0
+    glob_mirror_mis = 0
     # per factor per horizon: 逐品种 ic 列表 + 池化 (x,y)
     per = {f["key"]: {h: {"ics": [], "px": [], "py": []} for h in HORIZONS} for f in lib}
     fac_bd = {f["key"]: {} for f in lib}     # 第77轮：逐日截面层 {key: {sym: {date: val}}}
@@ -147,6 +181,10 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
         xd, xn = indicator_crosscheck(rows)
         glob_xcheck_diff = max(glob_xcheck_diff, xd)
         glob_xcheck_n += xn
+        md, mn, mmis = feature_crosscheck(rows)
+        glob_mirror_diff = max(glob_mirror_diff, md)
+        glob_mirror_pts += mn
+        glob_mirror_mis += mmis
         series = series_from_rows(rows)
         close = series["close"]
         dates_sym = [r["date"] for r in rows]
@@ -197,6 +235,8 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
         "n_symbols": len(syms), "horizons": list(HORIZONS),
         "parity": {"max_abs_diff": glob_parity_diff, "points": glob_parity_pts, "mismatch": glob_parity_mis},
         "indicator_crosscheck_ret5": {"max_abs_diff": glob_xcheck_diff, "points": glob_xcheck_n},
+        "mirror_crosscheck": {"max_abs_diff": glob_mirror_diff, "points": glob_mirror_pts,
+                              "mismatch": glob_mirror_mis, "keys": [k for k, _ in MIRROR_KEYS]},
         "factors": summary,
         "cs_demo_ma_ratio_bottom": finite_cs[:3], "cs_demo_ma_ratio_top": finite_cs[-3:],
     }
@@ -211,6 +251,9 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
                  % (glob_parity_diff, glob_parity_pts, glob_parity_mis))
     lines.append("  表达式5日动量 vs 实时管线落库 ret5：maxAbsDiff=%.3e，比对点=%d（须≈0）"
                  % (glob_xcheck_diff, glob_xcheck_n))
+    lines.append("  第81轮 剩余旧特征镜像(day_chg/ret63/126/252/hv60) vs 落库列：maxAbsDiff=%.3e，比对点=%d，不一致=%d（须0；"
+                 "tsmom_blend 因动态n_valid分母+条件聚合在当前DSL不可表达，单独记录不硬做）"
+                 % (glob_mirror_diff, glob_mirror_pts, glob_mirror_mis))
     lines.append("-" * 92)
     lines.append("[表达式因子 前向 RankIC]（严格未来收益；meanIC=逐品种IC均值，pooledIC=全样本池化）")
     lines.append("  %-18s %-8s | %-22s | %-22s | %-22s" % ("key", "方向", "H=1", "H=5", "H=20"))

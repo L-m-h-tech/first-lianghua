@@ -212,7 +212,7 @@ def robust_chain(bysym_rows, fac_map, reg_map, h, n_q, min_names, cost,
     3) placebo：regime 标签日期重排后低波视图应退化到≈全样本（证明增益来自 regime 对齐）。
        第79轮：placebo_seeds>1 时跑多种子并给出分布（min/median/max），单种子结论不稳
        （第78轮复合因子曾用4种子人工验证，此处常设化）。"""
-    out = {"h_grid": [], "sub_periods": [], "placebo": None, "placebos": []}
+    out = {"h_grid": [], "sub_periods": [], "placebo": None, "placebos": [], "yearly": []}
     for hh in grid:
         _d, summ, ics, n_books = evaluate_views(bysym_rows, fac_map, reg_map, hh, n_q, min_names, cost)
         out["h_grid"].append({
@@ -225,6 +225,15 @@ def robust_chain(bysym_rows, fac_map, reg_map, h, n_q, min_names, cost,
     # 子期分段（用主 h）
     fwd_map = forward_maps(bysym_rows, h)
     dates = sorted({d for m in fac_map.values() for d in m})
+    # 第81轮：年度分层（长窗归因）——各日历年 all/low 视图的截面IC/天数
+    books_y, cs_ics_y = build_books(dates, fac_map, fwd_map, reg_map, h, n_q, min_names)
+    for y in sorted({d[:4] for d in dates}):
+        a = em.cs_summary([(d, ic, n) for d, v, ic, n in cs_ics_y
+                           if v == "all" and d.startswith(y)])
+        l = em.cs_summary([(d, ic, n) for d, v, ic, n in cs_ics_y
+                           if v == "low" and d.startswith(y)])
+        out["yearly"].append({"year": y, "all_ic": a["mean_ic"], "all_days": a["n_days"],
+                              "low_ic": l["mean_ic"], "low_days": l["n_days"]})
     half = len(dates) // 2
     for label, sub in (("前半", dates[:half]), ("后半", dates[half:])):
         books, cs_ics = build_books(sub, fac_map, fwd_map, reg_map, h, n_q, min_names)
@@ -288,6 +297,16 @@ def render_robust(rb):
                     ("%+.3f" % r["all_ic"]) if r["all_ic"] is not None else "--",
                     ("%+.3f" % r["low_ic"]) if r["low_ic"] is not None else "--",
                     ("%+.3f" % r["high_ic"]) if r["high_ic"] is not None else "--"))
+    if rb.get("yearly"):
+        L.append("  年度分层（长窗归因，逐日历年截面IC）：")
+        L.append("    %-6s %10s %8s %10s %8s" % ("年份", "全样本IC", "天数", "低波IC", "天数"))
+        for r in rb["yearly"]:
+            L.append("    %-6s %10s %8d %10s %8d"
+                     % (r["year"],
+                        ("%+.3f" % r["all_ic"]) if r["all_ic"] is not None else "--",
+                        r["all_days"],
+                        ("%+.3f" % r["low_ic"]) if r["low_ic"] is not None else "--",
+                        r["low_days"]))
     L.append("  子期分段（前/后半各重建账本，低波视图）：")
     for r in rb["sub_periods"]:
         L.append("    %s（%s ~ %s）：低波净年化 %s / IC %s（全样本 %s / %s，低波有效天数 %d）"
@@ -540,6 +559,8 @@ def selftest():
     assert len(rb7["placebos"]) == 3 and rb7["placebo"]["seeds"] == 3
     assert rb7["placebo"]["low_ic_min"] is not None and rb7["placebo"]["low_ic_median"] is not None \
         and rb7["placebo"]["low_ic_max"] is not None
+    # 第81轮：年度分层结构齐（每个出现年份一行）
+    assert rb7["yearly"] and all("all_ic" in r and "low_days" in r for r in rb7["yearly"])
     text6 = "\n".join(render_robust(rb6))
     assert "H网格" in text6 and "placebo" in text6
     # 7) 第78轮 复合截面因子：逐日等权秩平均手算（两成员反向排序→共识0；同向→极值；缺失成对剔除）
