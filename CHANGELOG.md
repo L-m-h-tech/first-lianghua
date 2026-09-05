@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.76.0] — 2026-09-05 · 第76轮 placebo 证伪第75轮条件化解读（诚实撤回） + range_pct 晋升 LIBRARY 研究卡 + carry roll口径条件化不增益
+- **⚠️ 诚实撤回（元方法生效）**：regime_cond_lab 新增 `--robust` 稳健链（H网格/子期分段/placebo标签重排，判定标准先于结果写死）——**placebo（确定性种子把"日期→标签向量"整体重排）后的"伪低波"视图 净年化 -12.40%/IC -0.149，与真实低波口径 -11.03%/-0.148 几乎相同** ⇒ 第75轮"低波条件化把 |IC| 放大到 0.148"是**分桶/样本构成假象，不是 regime 效应**，"低波反向≈+11%年化"的解读撤回（幸好第75轮已标注"仅相对命题、不进综合分、阈值不调参"）。真正的教训写进报告：placebo 是因子×regime 研究的必要门槛。
+- **稳健链中依然成立的**：range_pct 全样本截面负 IC 跨 H 稳定（H5/10/20/40 = -0.039/-0.071/-0.082/-0.079）且跨子期方向一致（前半 -0.111/后半 -0.061）——因子本身的"高振幅品种未来跑输"是稳健负结果（研究卡合法），条件化增强不成立。
+- **② range_pct5/20 晋升 LIBRARY+catalog（人工复核路径）**：factor_expr LIBRARY 31→33（expr_range_pct5/expr_range_pct20，白名单 DSL、仅用 high/low/close）、factors_catalog 52→54（introduced=76，layer=表达式研究，status=research 不进综合分；登记链=第74轮 expr_miner 全池体检上榜 → 第75轮 regime 实验 → 第76轮 placebo+跨H/子期复核）；LIBRARY 遍历/parity 循环无需新字段（high/low 已有）。expr_research 重跑刷新研究卡 IC。
+- **④ G23续 compare_regime 加近月含roll口径**（points_near 关键字参数+渲染近月子截面块）：**近月含roll 全样本 52期/净t+1.39 → 仅低波 33期/+0.74 → 仅高波 24期/+1.36**——展期收益不依赖低波状态，与主连口径（低波 t-0.14）一致确认 **regime 条件化对 carry 两口径均无增益**。
+- **③ 偏度算子评估收口（不硬做）**：真偏度需乘方/条件聚合算子（ts_count_if、pow），涉及白名单 DSL 安全审计扩面（元数/溢出/类型），收益存疑（振幅族已部分覆盖），维持搁置并记录。
+- selftest：regime_cond_lab 5→6组（placebo 确定性/保量、robust_chain 结构、渲染含 H网格/placebo）；pytest 746 全绿；研究侧零改动主链（隔离 grep 合规）。
+
 ## [0.75.0] — 2026-09-05 · 第75轮 G25/G29续 regime条件化实验台（低波振幅反转确认） + 对齐口径年化bug修正 + G23续 carry条件化对照
 - **⚠️ 修正（审计诚实）**：`evaluate_ls_books_aligned`（第64轮）把 H>1 的**期收益当"日收益"年化**（annual=mean×252、sharpe=×√252）——对齐口径的年化/夏普被 **×h 虚高**（H=20 时"正交净年化+24.90%"实为 +1.24%/夏普0.22，等权+0.24%、反转+0.13%）。新增 `period_days` 参数按真实持有期折算（annualize=252/period_days），同 h 内相对排序不受影响；第64-74轮 CHANGELOG/摘要中引用的对齐口径绝对年化数字应按此更正读取（H=1 逐日口径不受影响）。selftest 增年化折算断言（hold=1×252 / hold=2,period_days=2×126 / 常数收益期折算夏普一致）。
 - **新增 tools/regime_cond_lab.py（G25/G29续① regime条件化分层多空实验台，研究侧红线门控）**：对【面板列或白名单表达式因子】（G25引擎求值，expr_miner 同口径装配）按 PIT regime 标签（复用 factor_regime.compute_labels：vol=hv60过去120日ts_rank三分位）筛当日截面，做按 H 对齐非重叠分层多空（复用 orthogonal_blend_oos 分档/换手/成本原语），输出【全样本/仅低波/仅高波】三口径对照（净绩效+逐日截面IC）；诚实边界写死=因子定义有全样本选择偏差、只回答"条件化是否增强"相对命题、regime 阈值沿用 config.REGIME_* 不调参。
