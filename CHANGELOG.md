@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.81.0] — 2026-09-05 · 第81轮 五项无阻塞清账：ts_skew 算子 + 长面板回填 + 年度归因 + tsmom252 长窗复核通过 + 旧因子改写清零
+- **#9 G25续 DSL 加 `ts_skew` 偏度算子**：尾窗标准化三阶矩（population g1=m3/m2^1.5，成对剔非有限值、n_eff≥3、平窗 None）——**选域专用而非通用 pow/ts_count_if**（通用乘方/条件聚合会把溢出/类型/元数审计面扩大，审计面最小化）。test_factor_expr 增手算断言（右偏/严格对称零/零方差None/暖机/成对剔除/无未来/未知算子仍拒绝）。expr_miner 池 +2 偏度候选（ret_skew_20/60），真实验证：截面 H20 -0.035/t-7.6、-0.028/t-6.1（负偏=左尾肥品种跑输，同属崩尾风险族，未达0.05门槛照实记录）。
+- **#8 G21 面板长期化：新增 tools/long_panel_builder.py**：term 近月复权长序列 → 与 G21 同 schema 的长面板 `cache/research_panel_long.db`（v/oi/其余特征列 None，消费端容错）。**真实回填：64品种/109,803行/2017-11-20~2026-09-02（8.8年=面板2.2倍）**。selftest 5组（拼接连续/ret126+hv60现算/schema兼容回读/缺列容错）。
+- **#5 regime_cond_lab 稳健链加年度分层归因**：逐年 all/low 截面IC 分解（--robust 自动输出）。**长面板年度归因（复合低波族）**：2021 +0.092 / 2022 +0.100（牛市动量延续）vs 2024 -0.069 / 2025 -0.033 / 2026 -0.055（高振幅跑输）、2018-2020≈0——**逐年符号翻转=牛熊 regime 切换，非稳定异象**（第80轮"时段性"的机制证据）。
+- **#6 tsmom252 term 长窗复核通过（catalog 卡升级）**：term 长窗 87期非重叠截面IC **+0.083/t+3.8**（净年化+8.17%/夏普1.00），**2019-2025 年度 7/7 全为正**（+0.028~+0.138）；低波条件化 +0.113 落在8种子placebo分布内（max+0.139）仍未通过——**全样本方向稳健、条件化不成立**。catalog 判定"待复核"→"健康(正向·截面)（研究候选，不进综合分；'动量证伪'为时序策略口径不矛盾）"。
+- **#7 旧因子改写清零**：审计发现剩余未迁移 6 项 → 5 项精确镜像入 LIBRARY（expr_day_chg_exact/ret63/ret126/ret252/hv60_exact，LIBRARY 33→38、catalog 59→59条含镜像层）+ expr_research 增 mirror_crosscheck：**226,125 比对点 maxAbsDiff=0.000e+00、不一致=0（逐位相等）**；tsmom_blend 因动态 n_valid 分母+条件聚合在当前 DSL 不可表达（唯一遗留，已记录；通用 pow/ts_count_if 维持拒绝以守住审计面）。analyzer 默认不换（综合分逐字节不变）。
+- selftest：expr_research 6组、term_history 10组、regime_cond_lab 7组、expr_miner 10组全过；pytest 746→748 全绿（+ts_skew 测试、+long_panel_builder compileall）；研究侧零改动主链（隔离 grep 合规）。
+
 ## [0.80.0] — 2026-09-05 · 第80轮 长样本链落地（term 近月复权OHLC） + 低波异象诚实降级（长窗复检≈0，口径/时段敏感）
 - **term_history 新增 `adjusted_near_ohlc`（G25续长样本链第①块）**：用 build_term_series 的逐日 near 选择（换月缓冲/剔除临交割），对近月合约 o/h/l/c 做**比例复权拼接**（换月日系数×=旧近月收/新近月收，序列连续、与 G21 面板 ratio_adjusted 同口径），并现算 ret126/hv60 供 regime 标签。selftest 9→10组（合成三合约换月拼接连续性：max|日收益|<0.02）。
 - **regime_cond_lab 加 `--source term`**：price 源可切 panel（G21 面板≈4年）/ term（term_history 近月复权长序列，2018 起），`--codes` 品种过滤；三口径评估+稳健链全部复用。
