@@ -760,11 +760,11 @@ def _sector_of(name):
     return meta.get("cat", "其他")
 
 
-def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False):
+def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False, panel_db=None):
     name, code = item
     try:
         if prefer_panel:
-            bars, _src = pb.load_adjusted_bars(code, days, prefer_panel=True)
+            bars, _src = pb.load_adjusted_bars(code, days, prefer_panel=True, db_path=panel_db)
             pts = points_from_adjusted(name, _sector_of(name), bars, lookbacks, horizons)
         else:
             raw = futures_data.fetch_daily_kline(code)
@@ -776,10 +776,11 @@ def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False):
         return name, [], "%s: %s" % (type(e).__name__, e)
 
 
-def collect_points(items, lookbacks, horizons, days, workers, prefer_panel=False):
+def collect_points(items, lookbacks, horizons, days, workers, prefer_panel=False, panel_db=None):
     points, errors = [], []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days, prefer_panel) for it in items]
+        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days, prefer_panel, panel_db)
+                for it in items]
         for fut in as_completed(futs):
             name, pts, err = fut.result()
             if pts:
@@ -794,6 +795,8 @@ def run(argv=None):
     ap = argparse.ArgumentParser(description="G7 截面动量多空 XSMOM 离线评估（研究侧）")
     ap.add_argument("--codes", default="", help="逗号分隔品种/主连，缺省=全品种")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--panel-db", default=None,
+                    help="G21续(第82轮)：--panel 时读哪个面板库（缺省 G21 主面板；可指 cache/research_panel_long.db 长面板）")
     ap.add_argument("--days", type=int, default=config.XSMOM_ROBUST_DAYS,
                     help="拉取/长样本日K根数（默认2500≈9.9年，供双样本稳健对照）")
     ap.add_argument("--main-days", type=int, default=config.XSMOM_EVAL_DAYS,
@@ -838,7 +841,8 @@ def run(argv=None):
     main_scope = tuple(s.strip() for s in args.scope.split(",") if s.strip()) or None
     items = backtest.resolve_codes(args.codes, args.limit if args.limit > 0 else None)
     # 一次拉满长样本（--days），主样本=全局日历最近 main_days 个交易日，两窗口同源可比
-    points, errors = collect_points(items, lookbacks, horizons, args.days, args.workers, getattr(args, 'panel', False))
+    points, errors = collect_points(items, lookbacks, horizons, args.days, args.workers,
+                                    getattr(args, 'panel', False), panel_db=args.panel_db)
     if not points:
         print("无可用样本（全部品种取数失败或暖机不足），错误示例：%s" % errors[:3])
         return 2

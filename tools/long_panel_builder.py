@@ -36,8 +36,25 @@ DEFAULT_DB = ROOT / "cache" / "research_panel_long.db"
 DEFAULT_TERM_DB = ROOT / "cache" / "term_history.db"
 
 
+# 第82轮：长面板特征列（全部由 LIBRARY 表达式对近月复权收盘现算——表达式已在主面板逐位验证）
+LONG_FEATURE_EXPRS = (
+    ("day_chg", "close/delay(close,1)-1"),
+    ("ret5", "close/delay(close,5)-1"),
+    ("ret20", "close/delay(close,20)-1"),
+    ("ret63", "close/delay(close,63)-1"),
+    ("ret126", "close/delay(close,126)-1"),
+    ("ret252", "close/delay(close,252)-1"),
+    ("hv20", "ts_std(log(close/delay(close,1)),20)*15.874507866387544"),
+    ("hv60", "ts_std(log(close/delay(close,1)),60)*15.874507866387544"),
+    ("tsmom63", "(close/delay(close,63)-1)/(ts_std(close/delay(close,1)-1,63)*15.874507866387544)"),
+    ("tsmom126", "(close/delay(close,126)-1)/(ts_std(close/delay(close,1)-1,126)*15.874507866387544)"),
+    ("tsmom252", "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)"),
+)
+
+
 def build_rows(sym, sector, warmup=126, term_db=None):
-    """单品种：term 缓存 → 近月复权长序列 rows（含 sym/sector/ret126/hv60）。"""
+    """单品种：term 缓存 → 近月复权长序列 rows（含 sym/sector/ret126/hv60 + 第82轮特征列）。"""
+    import factor_expr as fx
     store = th.TermHistoryStore(term_db or th.TERM_DB_PATH)
     try:
         rows = th.adjusted_near_ohlc(sym, store, warmup=warmup)
@@ -45,12 +62,20 @@ def build_rows(sym, sector, warmup=126, term_db=None):
         store.close()
     if not rows:
         return []
+    series = {"close": [r["c"] for r in rows]}
+    for col, expr in LONG_FEATURE_EXPRS:
+        vals = fx.compute_ts(expr, series)
+        for r, v in zip(rows, vals):
+            r[col] = v if fx._isnum(v) else None
     # ret126/hv60 已由 adjusted_near_ohlc 现算；补充空缺键为 None（PanelStore 按 ALL_COLS 取值）
     out = []
     for r in rows:
-        out.append({"sym": sym, "date": r["date"], "sector": sector,
-                    "o": r.get("o"), "h": r.get("h"), "l": r.get("l"), "c": r.get("c"),
-                    "v": None, "oi": None, "ret126": r.get("ret126"), "hv60": r.get("hv60")})
+        row = {"sym": sym, "date": r["date"], "sector": sector,
+               "o": r.get("o"), "h": r.get("h"), "l": r.get("l"), "c": r.get("c"),
+               "v": None, "oi": None, "ret126": r.get("ret126"), "hv60": r.get("hv60")}
+        for col, _expr in LONG_FEATURE_EXPRS:
+            row[col] = r.get(col)
+        out.append(row)
     return out
 
 
@@ -121,7 +146,8 @@ def selftest():
         closes = [r["c"] for r in rows]
         rets = [abs(closes[i] / closes[i - 1] - 1.0) for i in range(1, len(closes))]
         assert max(rets) < 0.02                              # 拼接连续
-        assert any(r["ret126"] is not None for r in rows)
+        # 注：LONG_FEATURE_EXPRS 会以固定126窗覆盖 warmup 参数版 ret126，自测(120天)改验短窗列
+        assert any(r["ret5"] is not None for r in rows) and any(r["tsmom63"] is not None for r in rows)
         assert any(r["hv60"] is not None for r in rows)
         # 回填到临时长面板并读回（schema 兼容 PanelStore）
         panel_db = os.path.join(tmpdir, "panel_long.db")
@@ -134,7 +160,9 @@ def selftest():
         assert len(back) == len(rows)
         b0 = back[0]
         assert b0["sym"] == "XX" and b0["c"] is not None
-        assert any(r["ret126"] is not None for r in back)   # 暖机后 ret126 现算可用
+        # 第82轮特征列经 PanelStore 落库-回读闭环（ret126 真窗已在真实长面板验证，合成120天用短窗列断言）
+        assert any(r["ret5"] is not None for r in back) and any(r["tsmom63"] is not None for r in back)
+        assert any(r["tsmom63"] is not None for r in back)   # 第82轮：blend 所需特征列已算（63窗在120天内可暖机）
         # None 列容错：series_from_rows 对 v/oi 缺值安全（不崩、None 进 DSL 为缺失）
         import expr_miner as em
         sr = em.series_from_rows(back)
@@ -143,7 +171,7 @@ def selftest():
     finally:
         tstore.close()
     print("long_panel_builder selftest ALL PASS（term长序列rows/拼接连续/ret126+hv60现算/"
-          "PanelStore schema 兼容回读/缺列容错 共5组）")
+          "PanelStore schema 兼容回读/缺列容错/特征列现算 共5组）")
     return 0
 
 

@@ -678,6 +678,8 @@ def main(argv=None):
                     help="单边交易成本率（费+滑点），默认复用回测口径万1.5")
     ap.add_argument("--rev-factor", default=DEFAULT_REV_FACTOR,
                     help="反转动量账本基准列（默认 ret63；传空串关闭）")
+    ap.add_argument("--out", default=str(DEFAULT_TXT), help="报告输出路径（对照变体请用独立文件，勿覆盖基准）")
+    ap.add_argument("--json", dest="json_path", default=str(DEFAULT_JSON))
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -686,7 +688,8 @@ def main(argv=None):
     horizons = tuple(int(x) for x in args.horizons.split(",") if x.strip())
     rev = args.rev_factor.strip() or None
     run(db_path=args.db, factors=factors, horizons=horizons, n_q=args.quantiles,
-        cost_oneway=args.cost_oneway, rev_factor=rev)
+        cost_oneway=args.cost_oneway, rev_factor=rev, txt_path=args.out,
+        json_path=args.json_path)
     return 0
 
 
