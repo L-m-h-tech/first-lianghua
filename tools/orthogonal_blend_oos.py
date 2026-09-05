@@ -460,7 +460,7 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
              "min_train": MIN_TRAIN, "refit_every": REFIT_EVERY},
             {k: v for k, v in head.items()} if head else None,
             inputs={"panel": str(db_path), "n_sym": len(by_sym), "n_dates": len(dates)},
-            artifacts={"txt": str(txt_path), "json": str(json_path)},
+            artifacts=[str(txt_path), str(json_path)],
             conclusion="真实面板walk-forward：正交IC合成与等权/单因子的样本外RankIC对照，负结果照实记录",
             reproduce="D:\\Python\\python.exe tools/orthogonal_blend_oos.py")
     except Exception:

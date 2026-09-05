@@ -35,6 +35,7 @@ import circuit_breaker
 import orthogonal_blend_oos
 import tradable_mask
 import mask_compare_summary
+import expr_miner
 
 
 def test_factor_eval_selftest():
@@ -204,3 +205,8 @@ def test_tradable_mask_selftest():
 def test_orthogonal_blend_oos_selftest():
     """G25续/G16前置（第61轮）正交IC接真实面板样本外 --selftest：截面秩/三角残差化/walk-forward无未来。"""
     assert orthogonal_blend_oos.selftest() == 0
+
+
+def test_expr_miner_selftest():
+    """G25续（第72轮）表达式因子自动挖掘 --selftest：候选池全编译/前向IC严格未来/单因子手算/报告结构/排序/上榜动态判定/max_abs_ic 共7组。"""
+    assert expr_miner.selftest() == 0
