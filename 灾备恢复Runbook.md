@@ -56,6 +56,20 @@ D:\Python\python.exe db_backup.py --emit-bat --emit-task-xml --daily 16:30
 - 不想用任务计划：把 `run_backup.bat` 的快捷方式放进
   `Win+R` → `shell:startup` 打开的启动文件夹，即"开机登录后补一次"（无每日定时）。
 
+### 3.3 期限结构缓存增量补K线（G22续④，第78轮并入本 Runbook）
+
+term_history 的逐合约缓存"有缓存即跳过"，已缓存合约的末根会停在最初下载日。第77轮起提供增量补K线：
+
+  D:\Python\python.exe term_history.py --topup                 # 全品种近6个月：无缓存下载/仍挂牌且末根落后10天重拉合并
+  D:\Python\python.exe term_history.py --topup --codes 螺纹钢,铜 --months-back 3   # 只补指定品种/缩短窗口
+
+- 规则（纯函数 topup_decide）：无缓存→new；**仍挂牌**（合约月≥上个日历月）且末根落后 `--stale-days`（默认10天）→stale 重拉（INSERT OR REPLACE 幂等合并）；已退市合约不补。
+- 已退市/未挂牌合约被新浪拒绝会软降级登记 error 留待下次重试，不阻断其余合约。
+- 任务模板：`backup/futures_monitor_term_topup_task.xml`（每日 18:00 盘后、需网络；**只生成不自动注册**），导入任选其一：
+  1) 图形界面：taskschd.msc → 导入任务 → 选 `backup/futures_monitor_term_topup_task.xml` → 确定。
+  2) 命令行：`schtasks /Create /TN "FuturesMonitor_TermTopup" /XML "backup\futures_monitor_term_topup_task.xml" /F`；卸载：`schtasks /Delete /TN "FuturesMonitor_TermTopup" /F`。
+- 建议排在每日备份（16:30）之后、盘后复盘前执行；与 main 常驻采集互不影响（本命令只读 cache/term_history.db 单表 upsert + 新浪日K）。
+
 ## 4. 库损坏 / 误操作后的恢复
 
 ### 4.1 先识别症状
