@@ -209,6 +209,24 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
         lines.append("  %-18s %+d      | %-22s | %-22s | %-22s" %
                      (f["key"], f["direction"], cells[0], cells[1], cells[2]))
     lines.append("-" * 92)
+    # G25续（第68/69轮）：量仓类表达式因子前向 IC 小结（自动识别 vol/oi/amount 系 key）
+    vol_keys = [f["key"] for f in lib
+                if f["key"].startswith("expr_vol") or f["key"].startswith("expr_oi")
+                or f["key"].startswith("expr_amount")]
+    if vol_keys:
+        lines.append("[量仓类表达式因子前向 IC 小结]（|IC|<0.05 视为无稳定预测力；研究侧不进综合分）")
+        for k in vol_keys:
+            name = summary[k]["name"]
+            h1 = summary[k]["h"][1]; h5 = summary[k]["h"][5]
+            def _ic(r):
+                mi = r["mean_ic"]; pi = r["pooled_ic"]
+                if not (fe._isnum(mi) and fe._isnum(pi)):
+                    return "无样本"
+                return "H1 mean%+.3f/pool%+.3f(n%d)  H5 mean%+.3f/pool%+.3f(n%d)" % (mi, pi, r["n_pair"], h5["mean_ic"] if fe._isnum(h5["mean_ic"]) else 0.0, h5["pooled_ic"] if fe._isnum(h5["pooled_ic"]) else 0.0, h5["n_pair"])
+            lines.append("  %-22s %s" % (k, _ic(h1)))
+        lines.append("  注：量仓因子当前全部 |IC|<0.05 无稳定预测力（成交额/量仓比代理级），如实记录不进综合分；")
+        lines.append("      真实资金流向/持仓侧容量待 G14 一档盘口后深化。")
+        lines.append("-" * 92)
     if finite_cs:
         lines.append("[截面 cross_rank 演示·短长均线比 最近交易日] 最低3: %s；最高3: %s"
                      % (finite_cs[:3], finite_cs[-3:]))
