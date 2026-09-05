@@ -49,11 +49,12 @@ WINDOWS = (5, 10, 20, 60)
 
 # =========================== 输入装配（同 expr_research 口径） ===========================
 def series_from_rows(rows):
-    """面板列直读：close/volume/oi/high/low 与 expr_research 完全一致。"""
-    return {"close": [r["c"] for r in rows], "volume": [r["v"] for r in rows],
+    """面板列直读：close/volume/oi/high/low/open 与 expr_research 完全一致（缺键回退，合成夹具友好）。"""
+    return {"close": [r["c"] for r in rows], "volume": [r.get("v") for r in rows],
             "high": [r.get("h", r["c"]) for r in rows],
             "low": [r.get("l", r["c"]) for r in rows],
-            "oi": [r.get("oi", 0.0) for r in rows]}
+            "oi": [r.get("oi", 0.0) for r in rows],
+            "open": [r.get("o", r["c"]) for r in rows]}
 
 
 def forward_return(close, t, h):
@@ -167,6 +168,28 @@ def candidate_pool():
     add("oi_surge_5", "oi/ts_mean(oi,20)", 0, "持仓突增5", "当日持仓/20日均持仓")
     add("ret_vol_ratio_20", "ts_mean(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,20)+0.000001)",
         +1, "20日收益波动比", "均值/波动，风险调整动量")
+    # --- 第74轮扩容：振幅/影线/K线结构/涨跌天数/Amihud/波动结构/跳期动量（仍全白名单、量纲无关） ---
+    for n in (5, 20):
+        add("range_pct_%d" % n, "ts_mean((high-low)/close,%d)" % n, 0,
+            "%d日均振幅" % n, "日内振幅均值（波动/情绪代理）")
+    add("range_pos_60", "ts_minmax(close,60)", 0, "60日区间位置", "收盘在60日高低区间的位置")
+    add("upper_shadow", "(high-max(open,close))/(close+1)", 0, "上影线占比", "上影/(收盘)——冲高回落强度")
+    add("body_ratio", "(close-open)/(high-low+0.000001)", 0, "K线实体占比", "实体/振幅——方向坚定度")
+    for n in (5, 20):
+        add("updays_%d" % n, "ts_sum(sign(close/delay(close,1)-1),%d)/%d" % (n, n), 0,
+            "%d日净上行占比" % n, "上涨天数占比（sign 净和/窗宽，[-1,1]）")
+    add("amihud_20", "ts_mean(abs(close/delay(close,1)-1)/(close*volume+1),20)", 0,
+        "Amihud非流动性20", "|收益|/成交额代理（close×volume），每单位成交额的价格冲击")
+    add("vol_ratio_20_60", "ts_std(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,60)+0.000001)",
+        0, "短长波动比20/60", "波动短期扩张/收缩")
+    add("vol_oi_div", "volume/delay(volume,1)/(abs(oi/delay(oi,1)-1)+0.000001)", 0,
+        "量/持仓变动", "每单位持仓变动的成交量（换手冲击）")
+    add("oi_trend_5_20", "ts_mean(oi,5)/ts_mean(oi,20)-1", +1, "持仓短长均线比", "持仓5/20日均线比（增仓/减仓趋势）")
+    add("corr_oi_vol_20", "corr(oi,volume,20)", 0, "量仓相关20", "持仓与成交量的20日相关")
+    for (n, m) in ((12, 1), (36, 1)):
+        add("mom_skip_%d_%d" % (n, m),
+            "(close/delay(close,%d))/(close/delay(close,%d))-1" % (n, m), +1,
+            "%d-%d日跳期动量" % (n, m), "剔除近%d日的n日动量（学术 skip-momentum，规避短期反转污染）" % m)
     return cands
 
 
@@ -398,13 +421,14 @@ def _synth_series(n=200, seed=1):
     vol = [1000.0 + i for i in range(n)]
     oi = [500.0 + i * 0.5 for i in range(n)]
     return {"close": xs, "volume": vol, "high": [v * 1.01 for v in xs],
-            "low": [v * 0.99 for v in xs], "oi": oi}
+            "low": [v * 0.99 for v in xs], "oi": oi,
+            "open": [xs[0]] + xs[:-1]}   # 合成口径：开盘=前收
 
 
 def selftest():
     # 1) 候选池全部可编译、可求值（白名单 DSL 有效）
     pool = candidate_pool()
-    assert len(pool) > 10
+    assert len(pool) >= 40, len(pool)      # 第74轮扩容后 ≥43 条
     s = _synth_series()
     for c in pool:
         fac = fe.compute_ts(c["expr"], s)

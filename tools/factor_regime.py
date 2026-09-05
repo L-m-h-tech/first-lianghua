@@ -213,7 +213,42 @@ def analyze_factor(rows_by_sym, factor, horizons=None, decay_h=None, labels=None
     return rec
 
 
-def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
+# =========================== 第74轮：表达式因子注入（G25引擎 → G29体检） ===========================
+def parse_expr_specs(specs):
+    """CLI --expr 列表 → [(name, expr)]；每条 'EXPR[:名称]'，缺省名称=expr<i>。"""
+    out = []
+    for i, raw in enumerate(specs or []):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if ":" in raw:
+            expr, name = raw.rsplit(":", 1)
+            name = name.strip() or "expr%d" % i
+        else:
+            expr, name = raw, "expr%d" % i
+        out.append((name.strip(), expr.strip()))
+    return out
+
+
+def inject_expr_factors(rows_by_sym, specs):
+    """把表达式因子逐品种求值后注入行 dict（键 x_<name>），返回 [(name, key, expr)]。
+
+    求值序列与 expr_miner.series_from_rows 完全同口径（c/v/h/l/oi/o）；只改本进程内存
+    中的行 dict，不落库、不触碰面板存储。键必须为合法 DSL 标识符（持续性检查要拼 ts_rank(键,win)）。"""
+    from expr_miner import series_from_rows as _sfr      # 第72轮 G25续 同口径装配（研究侧互复用）
+    out = []
+    for name, expr in specs:
+        key = "x_" + ("".join(ch for ch in name if ch.isalnum() or ch == "_") or "expr")
+        for sym, rows in rows_by_sym.items():
+            rows_sorted = sorted(rows, key=lambda r: r["date"])
+            fac = fx.compute_ts(expr, _sfr(rows_sorted))
+            for r, v in zip(rows_sorted, fac):
+                r[key] = v if _isnum(v) else None
+        out.append((name, key, expr))
+    return out
+
+
+def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True, expr_specs=None):
     txt_path = txt_path or config.REGIME_FILE
     json_path = json_path or config.REGIME_JSON
     store = pb.PanelStore(db_path)
@@ -221,7 +256,8 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
     rows = store.load_all() if hasattr(store, "load_all") else _load_all(store, syms)
     bysym = fh.rows_by_symbol(rows)
     labels = compute_labels(bysym)     # 每品种 regime 标签只算一次（滚动 ts_rank 较贵）
-    factors = config.HEALTH_DAILY_FACTORS
+    injected = inject_expr_factors(bysym, parse_expr_specs(expr_specs)) if expr_specs else []
+    factors = list(config.HEALTH_DAILY_FACTORS) + [key for _, key, _ in injected]
     results = {f: analyze_factor(bysym, f, labels=labels) for f in factors}
 
     L = []
@@ -229,6 +265,9 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
     L.append("G29续 因子 regime 分层 / 换手稳定性 / 衰减形态 factor_regime（纯离线读 G21 面板，只研究不改权重）")
     L.append("品种=%d；趋势=面板ret126(±%.0f%%判震荡)，波动=hv60过去%d日ts_rank分低/中/高；分桶IC需n≥%d"
              % (len(syms), config.REGIME_TREND_FLAT * 100, config.REGIME_VOL_LOOKBACK, config.REGIME_MIN_N))
+    if injected:
+        L.append("注入表达式因子（--expr，G25引擎求值，仅本进程内存不落库）：%s"
+                 % "；".join("%s=%s" % (key, expr) for _, key, expr in injected))
     for f in factors:
         rec = results[f]
         L.append("-" * 100)
@@ -268,7 +307,8 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
     os.makedirs(os.path.dirname(txt_path), exist_ok=True)
     with open(txt_path, "w", encoding="utf-8", newline="\n") as fp:
         fp.write(text + "\n")
-    payload = {"n_symbols": len(syms), "factors": results}
+    payload = {"n_symbols": len(syms), "factors": results,
+               "injected": [{"name": n, "key": k, "expr": e} for n, k, e in injected]}
     with open(json_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, allow_nan=False, indent=1)
     return payload
@@ -343,19 +383,32 @@ def selftest():
     # 6) analyze_factor 端到端不崩、键齐
     rec = analyze_factor(bysym, "g", horizons=(20,), decay_h=(1, 5, 20, 40, 60))
     assert 20 in rec["regime_ic"] and "persistence" in rec
+    # 7) 第74轮 表达式因子注入：parse 规则/求值注入/与原生因子同一套体检可跑
+    specs = parse_expr_specs(["ts_minmax(close,20):rpos", "close/delay(close,5)-1", "  "])
+    assert specs[0] == ("rpos", "ts_minmax(close,20)") and specs[1][0] == "expr1" and len(specs) == 2
+    inj = inject_expr_factors(bysym, specs[:2])
+    assert inj[0][1] == "x_rpos" and inj[1][1] == "x_expr1"
+    n_inj = sum(1 for rows in bysym.values() for r in rows
+                if isinstance(r.get("x_rpos"), (int, float)) and math.isfinite(r["x_rpos"]))
+    assert n_inj > 0
+    rec_x = analyze_factor(bysym, "x_rpos", horizons=(20,), decay_h=(5, 20))
+    assert rec_x["persistence"]["5"]["n"] > 0 or rec_x["persistence"]["20"]["n"] > 0
     print("factor_regime selftest ALL PASS（trend/vol标签PIT边界、regime分层IC只在有效桶显著、"
-          "因子秩自相关/换手、指数vs幂律衰减形态择优与不衰减/样本不足安全降级、端到端 共6组）")
+          "因子秩自相关/换手、指数vs幂律衰减形态择优与不衰减/样本不足安全降级、端到端、表达式因子注入 共7组）")
     return 0
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="G29续 因子regime分层/换手/衰减形态（纯离线读面板）")
     ap.add_argument("--db", default=DEFAULT_DB)
+    ap.add_argument("--expr", action="append", default=[],
+                    help="第74轮：表达式因子体检（可多次）——'EXPR[:名称]'，G25引擎求值后做全套 regime/持续性/衰减体检；"
+                         "如 --expr 'ts_mean((high-low)/close,5):range_pct_5'")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
-    run(db_path=args.db)
+    run(db_path=args.db, expr_specs=args.expr or None)
     return 0
 
 
