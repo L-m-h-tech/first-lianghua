@@ -747,6 +747,23 @@ def run_cycle(state):
                              daemon=True).start()
     except Exception:
         LOG.error("G13 dispatch failed (swallowed)")
+    # 6.5 G22续/G7续 影子信号每日跟随（每交易日一次；触发时刻默认17:00后，daemon 零阻塞）：
+    #     term top-up → 长面板重建 → 记录当日影子信号（xsmom252基线/tsmom252/剔能化）+ 到期评估。
+    try:
+        import shadow_track
+        _owner = trade_owner_date(datetime.now()).strftime("%Y-%m-%d")
+        if shadow_track.daily_due(getattr(state, "shadow_done", None), datetime.now())                 and getattr(state, "shadow_done", None) != _owner:
+            state.shadow_done = _owner
+            def _shadow_daily_thread():
+                try:
+                    payload = shadow_track.daily(verbose=False)
+                    LOG.info("影子每日链完成: %s | %s",
+                             payload.get("logged"), payload.get("snapshot", {}).get("date"))
+                except Exception:
+                    LOG.error("影子每日链异常（已吞掉）: %s", e)
+            threading.Thread(target=_shadow_daily_thread, daemon=True).start()
+    except Exception:
+        LOG.error("影子跟随调度失败（已吞掉）: %s", traceback.format_exc())
     state.alerts.observe_cycle(state, fut_rows, strat_rows)
     LOG.info("第 %d 轮分析完成，报告已保存到 %s | %s | %s",
              state.cycle, config.REPORT_FILE,

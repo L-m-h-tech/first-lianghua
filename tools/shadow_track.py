@@ -30,7 +30,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime as _dt_now
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -253,7 +253,7 @@ def today_snapshot(panel_db):
 def render(result, snapshot):
     L = ["=" * 104,
          " 影子信号追踪 shadow_track（前向样本外证据链；只记录不改综合分）  生成于 %s"
-         % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+         % _dt_now.now().strftime("%Y-%m-%d %H:%M:%S"),
          "=" * 104]
     L.append("价格源=长面板（近月比例复权，与第82轮证据同口径）；H=%d 对齐非重叠、5层多顶空底、含单边成本" % H_DEFAULT)
     L.append("-" * 104)
@@ -303,7 +303,7 @@ def run(panel_db=None, shadow_db=None, txt_path=None, json_path=None,
     result = evaluate(panel_db, shadow_db, h=h, n_q=n_q, cost=cost, verbose=verbose)
     snapshot = today_snapshot(panel_db)
     payload = {"logged": logged, "signals": result, "snapshot": snapshot,
-               "h": h, "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+               "h": h, "generated_at": _dt_now.now().strftime("%Y-%m-%d %H:%M:%S")}
     text = render(result, snapshot)
     if verbose:
         print(text)
@@ -326,6 +326,19 @@ def run(panel_db=None, shadow_db=None, txt_path=None, json_path=None,
     return payload
 
 
+def daily_due(last_shadow_date, now=None, hour=None):
+    """main 跟随触发判定（纯函数）：工作日且已过触发时刻，且影子当天未记过 → True。
+
+    last_shadow_date：影子最近一次记录的日期（None=从未）；hour：触发时刻（默认
+    env FUTURES_MONITOR_SHADOW_HOUR，17=收盘后日K已可用）。纯函数、可合成断言。"""
+    import os as _os
+    now = now or _dt_now.now()
+    hour = int(_os.environ.get("FUTURES_MONITOR_SHADOW_HOUR", "17")) if hour is None else hour
+    if now.weekday() >= 5 or now.hour < hour:
+        return False
+    return last_shadow_date != now.strftime("%Y-%m-%d")
+
+
 def daily(panel_db=None, shadow_db=None, txt_path=None, json_path=None,
           h=H_DEFAULT, verbose=True):
     """全链（供计划任务单命令调用）：term top-up → 长面板重建 → 影子记录+评估+报告。"""
@@ -335,7 +348,7 @@ def daily(panel_db=None, shadow_db=None, txt_path=None, json_path=None,
     items = _bt.resolve_codes("", None)
     tstore = th.TermHistoryStore(th.TERM_DB_PATH)
     try:
-        stats = th.topup_varieties(items, tstore)
+        stats = th.topup_varieties(items, tstore, verbose=verbose)
     finally:
         tstore.close()
     if verbose:
@@ -428,7 +441,16 @@ def selftest():
     finally:
         SIGNAL_SPECS.clear()
         SIGNAL_SPECS.extend(old_spec)
-    print("shadow_track selftest ALL PASS（信号记录幂等/到期评估/合成强动量IC≈+1/快照/渲染 共5组）")
+    # 第85轮：daily_due 纯函数手算（周末/未到时刻/当天已记 → False；工作日17点后未记 → True）
+    from datetime import datetime as _dt2
+    tue_10 = _dt2(2026, 9, 8, 10, 0)
+    tue_18 = _dt2(2026, 9, 8, 18, 0)
+    sat_18 = _dt2(2026, 9, 12, 18, 0)
+    assert daily_due("2026-09-07", tue_18) is True and daily_due("2026-09-08", tue_18) is False
+    assert daily_due(None, tue_18) is True
+    assert daily_due("2026-09-07", tue_10) is False and daily_due("2026-09-07", sat_18) is False
+    print("shadow_track selftest ALL PASS（信号记录幂等/到期评估/合成强动量IC≈+1/快照/渲染/"
+          "daily_due判定 共6组）")
     return 0
 
 
