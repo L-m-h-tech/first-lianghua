@@ -250,10 +250,73 @@ def persist(result, txt_path=REPORT_TXT, jsonl_path=REPORT_JSONL):
                              "review": slim}, ensure_ascii=False) + "\n")
 
 
-def review_async(fut_rows, emergency=None, force=False, transport=None):
+# ---------------- 成本节流（第84轮补丁：每日上限 + 同品种同日去重） ----------------
+def max_per_day():
+    """每日 LLM 调用上限（env FUTURES_MONITOR_LLM_MAX_PER_DAY 可调，默认3）。--llm-force 不受限。"""
+    try:
+        return max(0, int(os.environ.get("FUTURES_MONITOR_LLM_MAX_PER_DAY", "3") or 3))
+    except ValueError:
+        return 3
+
+
+def _today_calls(jsonl_path=REPORT_JSONL):
+    """今天已发生的复核次数（从 history.jsonl 的 ts 统计，无独立状态文件）。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    n = 0
+    if os.path.exists(jsonl_path):
+        with open(jsonl_path, encoding="utf-8") as fp:
+            for line in fp:
+                try:
+                    if json.loads(line).get("ts", "").startswith(today):
+                        n += 1
+                except Exception:
+                    continue
+    return n
+
+
+def _reviewed_varieties_today(jsonl_path=REPORT_JSONL):
+    """今天已被复核过的品种集合（来自 history 的 context.signals）。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = set()
+    if os.path.exists(jsonl_path):
+        with open(jsonl_path, encoding="utf-8") as fp:
+            for line in fp:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not rec.get("ts", "").startswith(today):
+                    continue
+                for sig in (rec.get("review", {}).get("context", {}) or {}).get("signals", []) or []:
+                    if sig.get("variety"):
+                        out.add(str(sig["variety"]))
+    return out
+
+
+def throttle_reason(fut_rows, jsonl_path=REPORT_JSONL):
+    """返回节流原因字符串（应跳过）或 None（放行）。规则：
+    1) 今日调用数已达 max_per_day → cap；
+    2) 本轮 top 信号品种今天已全部被复核过 → dedup（同一强信号持续多轮不重复喂 LLM）。"""
+    cap = max_per_day()
+    if _today_calls(jsonl_path) >= cap:
+        return "cap(每日上限%d)" % cap
+    rows = [r for r in fut_rows if _isnum(r.get("score"))]
+    rows.sort(key=lambda r: -abs(r["score"]))
+    tops = {str(r.get("name")) for r in rows[:MAX_CONTEXT_SIGNALS] if r.get("name")}
+    if tops and tops <= _reviewed_varieties_today(jsonl_path):
+        return "dedup(top品种今日已复核)"
+    return None
+
+
+def review_async(fut_rows, emergency=None, force=False, transport=None, jsonl_path=None):
     """守护线程入口（main 在 report.save 后以 daemon 线程调用）：**全 try/except 包裹，绝不抛出**。"""
     _LAST_THREAD[0] = threading.current_thread()
     try:
+        if not force:
+            th = throttle_reason(fut_rows, jsonl_path=jsonl_path or REPORT_JSONL)
+            if th:
+                LOG.info("G13 节流跳过：%s", th)
+                return None
         r = review(fut_rows, emergency=emergency, transport=transport, force=force)
         if r is not None:
             persist(r)

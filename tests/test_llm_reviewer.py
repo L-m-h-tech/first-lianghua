@@ -88,6 +88,54 @@ def test_full_flow_writes_sidecar(with_key, tmp_path):
 def test_review_async_never_raises(with_key, tmp_path):
     def boom(url, payload, timeout):
         raise RuntimeError("x")
+    jsonl = str(tmp_path / "hist.jsonl")      # 用 tmp 文件，避免测试自身填满真实每日上限
     # 全 try/except 包裹：即便降级/写盘路径出错也不外溢
-    assert lr.review_async(ROWS, transport=boom) is None or True
-    assert lr.review_async(ROWS, transport=lambda u, p, t: (200, "bad")) is not None
+    assert lr.review_async(ROWS, transport=boom, jsonl_path=jsonl) is None or True
+    assert lr.review_async(ROWS, transport=lambda u, p, t: (200, "bad"),
+                           jsonl_path=jsonl) is not None
+
+
+def test_throttle_cap_and_dedup(with_key, tmp_path):
+    """第84轮补丁：每日上限与同品种去重（成本节流）。"""
+    import json as _json
+    from datetime import datetime
+    jsonl = tmp_path / "hist.jsonl"
+    today = datetime.now().strftime("%Y-%m-%d")
+    with open(jsonl, "w", encoding="utf-8") as fp:
+        for _ in range(3):
+            fp.write(_json.dumps({"ts": today + " 10:00:00", "review": {}}) + chr(10))
+    assert "cap" in lr.throttle_reason(ROWS, jsonl_path=str(jsonl))
+    with open(jsonl, "w", encoding="utf-8") as fp:
+        rec = {"ts": today + " 10:00:00", "review": {"context": {"signals": [
+            {"variety": "螺纹钢", "score": 7.2}, {"variety": "铜", "score": -3.0},
+            {"variety": "豆粕", "score": 1.0}]}}}
+        fp.write(_json.dumps(rec, ensure_ascii=False) + chr(10))
+    r = lr.throttle_reason(ROWS, jsonl_path=str(jsonl))
+    assert r is not None and "dedup" in r
+    with open(jsonl, "w", encoding="utf-8") as fp:
+        rec = {"ts": today + " 10:00:00", "review": {"context": {"signals": [
+            {"variety": "螺纹钢", "score": 7.2}]}}}
+        fp.write(_json.dumps(rec, ensure_ascii=False) + chr(10))
+    assert lr.throttle_reason(ROWS, jsonl_path=str(jsonl)) is None
+    with open(jsonl, "w", encoding="utf-8") as fp:
+        fp.write(_json.dumps({"ts": "2020-01-01 10:00:00", "review": {}}) + chr(10))
+    assert lr.throttle_reason(ROWS, jsonl_path=str(jsonl)) is None
+
+
+def test_review_async_respects_throttle(with_key, tmp_path):
+    """review_async 在 cap 满时零请求零写盘。"""
+    import json as _json
+    from datetime import datetime
+    jsonl = tmp_path / "hist.jsonl"
+    today = datetime.now().strftime("%Y-%m-%d")
+    with open(jsonl, "w", encoding="utf-8") as fp:
+        for _ in range(3):
+            fp.write(_json.dumps({"ts": today + " 10:00:00", "review": {}}) + chr(10))
+    called = {"n": 0}
+
+    def transport(url, payload, timeout):
+        called["n"] += 1
+        return 200, '{"choices":[{"message":{"content":"{\"direction\":\"多\"}"}}]}'
+
+    r = lr.review_async(ROWS, transport=transport, force=False, jsonl_path=str(jsonl))
+    assert r is None and called["n"] == 0
