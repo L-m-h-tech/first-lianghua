@@ -3,6 +3,13 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.77.0] — 2026-09-05 · 第77轮 expr_research 补逐日截面层（双工具口径统一） + catalog 研究卡体检回写 + term_history 增量补K线
+- **G25续② 体检管线统一：expr_research 补逐日截面IC层**：对全部 33 条 LIBRARY 因子输出【时序层 meanIC/pooledIC + 截面层 逐日跨品种 mean/ICIR/t/正比例】双口径（复用 expr_miner.cross_section_ics/cs_summary，同口径不再割裂）；报告新增每因子截面行+截面上榜区；`--min_cs` 参数可调（默认与 expr_miner 同为 10）。selftest 5→6组（临时面板端到端跑 run() 验 cs 结构/强截面健全性）。
+- **真实验证（64品种/33因子）**：**新发现 expr_tsmom252 截面正IC H20 +0.081/t+11.0**（252日动量全样本截面延续，与"动量证伪"策略口径不矛盾、与第39轮"低波有效/高波反转"regime 分层共存——判"待复核"，未过 placebo 不晋升）；**低波异象族互证**：expr_hv20 H20 -0.058/t-8.8 与 range_pct5/20（-0.068/-0.066）同向——高波动/高振幅品种系统性跑输；截面上榜共 4 条全量列出。
+- **G29续① catalog 体检卡回写**：factors_catalog.HEALTH_SNAPSHOT 新增 research_cards 段（asof 2026-09-05），登记 expr_range_pct5/20（健康·反向·纯截面，含第76轮 placebo 撤回注记）、expr_tsmom252（待复核）、expr_hv20（健康·反向·随族观察）四张卡——体检卡从 9-part 事件层扩展到研究因子日频面板层，结论脚本可刷新、key 由 CATALOG 钉死。
+- **G22续④ term_history 增量补K线（top-up，修"缓存不回补"缺口）**：第74轮探针发现 fetch_one_contract 对已缓存合约整体跳过、缓存永不回补——新增 Store.max_bar_date + topup_decide（纯函数：无缓存→new / 仍挂牌且末根落后 stale_days→stale / 已退市不补）+ topup_varieties（重拉按 INSERT OR REPLACE 幂等合并）+ CLI `--topup`（fetch_one_contract 加 force 参数）。**真实验证**：检查384个近月合约→49个在挂牌"末根落后"合约全部补拉成功（末根从≤08-26 前进到 09-02=新浪日K当前前沿，RB2701/RB2609 验证）；41个从未缓存的旧月份合约被新浪拒绝（RuntimeError，软降级登记留待重试）。
+- selftest：expr_research 5→6组、term_history 8→9组；pytest 746 全绿；研究侧零改动主链（隔离 grep 合规）。
+
 ## [0.76.0] — 2026-09-05 · 第76轮 placebo 证伪第75轮条件化解读（诚实撤回） + range_pct 晋升 LIBRARY 研究卡 + carry roll口径条件化不增益
 - **⚠️ 诚实撤回（元方法生效）**：regime_cond_lab 新增 `--robust` 稳健链（H网格/子期分段/placebo标签重排，判定标准先于结果写死）——**placebo（确定性种子把"日期→标签向量"整体重排）后的"伪低波"视图 净年化 -12.40%/IC -0.149，与真实低波口径 -11.03%/-0.148 几乎相同** ⇒ 第75轮"低波条件化把 |IC| 放大到 0.148"是**分桶/样本构成假象，不是 regime 效应**，"低波反向≈+11%年化"的解读撤回（幸好第75轮已标注"仅相对命题、不进综合分、阈值不调参"）。真正的教训写进报告：placebo 是因子×regime 研究的必要门槛。
 - **稳健链中依然成立的**：range_pct 全样本截面负 IC 跨 H 稳定（H5/10/20/40 = -0.039/-0.071/-0.082/-0.079）且跨子期方向一致（前半 -0.111/后半 -0.061）——因子本身的"高振幅品种未来跑输"是稳健负结果（研究卡合法），条件化增强不成立。
