@@ -37,6 +37,7 @@ for p in (str(ROOT), str(ROOT / "tools")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import config                               # noqa: E402  品种表（term 源 sym 解析）
 import factor_expr as fx                    # noqa: E402  G25 引擎（表达式因子求值）
 import factor_health as fh                  # noqa: E402  forward_map（严格未来收益）
 import factor_regime as frg                 # noqa: E402  compute_labels（PIT regime 标签）
@@ -319,19 +320,40 @@ def render_robust(rb):
 # =========================== 主流程 ===========================
 def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
         h=20, n_q=5, min_names=10, cost=None, verbose=True, robust=False, compose=None,
-        placebo_seeds=1):
+        placebo_seeds=1, source="panel", term_db=None, codes=""):
+    if source not in ("panel", "term"):
+        raise ValueError("source 须为 panel|term")
     db_path = str(db_path or DEFAULT_DB)
     txt_path = str(txt_path or DEFAULT_TXT)
     json_path = str(json_path or DEFAULT_JSON)
     cost = ob.DEFAULT_COST_ONEWAY if cost is None else cost
-    store = pb.PanelStore(db_path)
-    syms = sorted(store.symbols())
-    bysym = {}
-    for s in syms:
-        rows = store.load_rows(s)
-        if rows:
-            bysym[s] = rows
-    store.close()
+    if source == "term":
+        # 第80轮：长样本源=term_history 近月比例复权 OHLC（突破 G21 面板 4 年上限）
+        import backtest as _bt
+        import term_history as _th
+        _items = _bt.resolve_codes(codes, None)
+        tstore = _th.TermHistoryStore(term_db or _th.TERM_DB_PATH)
+        bysym = {}
+        for name, main_code in _items:
+            meta = config.VARIETIES.get(name, {})
+            sym = meta.get("sym") or main_code.rstrip("0")
+            try:
+                rows = _th.adjusted_near_ohlc(sym, tstore)
+            except Exception:
+                continue
+            if rows:
+                bysym[sym] = rows
+        tstore.close()
+        syms = sorted(bysym)
+    else:
+        store = pb.PanelStore(db_path)
+        syms = sorted(store.symbols())
+        bysym = {}
+        for s in syms:
+            rows = store.load_rows(s)
+            if rows:
+                bysym[s] = rows
+        store.close()
     if compose:
         specs = [x for x in (t.strip() for t in compose.split(";")) if x]
         members = [resolve_factor(bysym, expr=sp)[1] for sp in specs]
@@ -346,7 +368,7 @@ def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
     ics = {v: summarize_ics(cs_ics, v) for v in VIEWS}
     rb = (robust_chain(bysym, fac_map, reg_map, h, n_q, min_names, cost,
                        placebo_seeds=placebo_seeds) if robust else None)
-    result = {"factor": name, "expr": expr, "compose": compose,
+    result = {"factor": name, "expr": expr, "compose": compose, "source": source,
               "h": h, "n_q": n_q, "min_names": min_names,
               "cost_oneway": cost, "n_symbols": len(bysym), "n_dates": len(dates),
               "db": db_path,
@@ -399,9 +421,9 @@ def render_report(result, robust=None):
              % (result["factor"], "复合截面" if result.get("compose") else
                 ("表达式" if result["expr"] else "面板列"),
                 result["h"], result["n_q"], 10000.0 * result["cost_oneway"], result["min_names"]))
-    L.append("面板 %s：品种=%d 交易日=%d（%s ~ %s）；regime=vol(hv60过去120日ts_rank三分位,PIT)"
-             % (result.get("db"), result["n_symbols"], result["n_dates"],
-                result.get("date_min"), result.get("date_max")))
+    L.append("价格源=%s：%s；品种=%d 交易日=%d（%s ~ %s）；regime=vol(hv60过去120日ts_rank三分位,PIT)"
+             % (result.get("source", "panel"), result.get("db"), result["n_symbols"],
+                result["n_dates"], result.get("date_min"), result.get("date_max")))
     L.append("-" * 104)
     L.append("  %-16s %8s %10s %9s %10s %10s %9s %10s %11s"
              % ("口径", "调仓期", "净年化", "净夏普", "净回撤", "毛年化", "日均换手", "截面IC",
@@ -547,6 +569,10 @@ def main(argv=None):
     ap.add_argument("--min-names", type=int, default=10)
     ap.add_argument("--cost-oneway", type=float, default=None, help="单边成本率，默认回测口径万1.5")
     ap.add_argument("--robust", action="store_true", help="第76轮：稳健链（H网格/子期分段/placebo标签重排）")
+    ap.add_argument("--source", default="panel", choices=["panel", "term"],
+                    help="第80轮：price 源=panel(G21面板,约4年) 或 term(term_history 近月比例复权长序列)")
+    ap.add_argument("--term-db", default=None, help="term 源的缓存路径（默认 cache/term_history.db）")
+    ap.add_argument("--codes", default="", help="term 源品种过滤（逗号分隔中文名/主连，缺省全品种）")
     ap.add_argument("--placebo-seeds", type=int, default=1,
                     help="第79轮：placebo 重排种子数（>1 时报告 min/median/max 分布，判定更稳）")
     ap.add_argument("--compose", default=None,
@@ -558,7 +584,8 @@ def main(argv=None):
         return selftest()
     run(db_path=args.db, factor=args.factor, expr=(args.expr.strip() or None),
         h=args.h, n_q=args.quantiles, min_names=args.min_names, cost=args.cost_oneway,
-        robust=args.robust, compose=args.compose, placebo_seeds=args.placebo_seeds)
+        robust=args.robust, compose=args.compose, placebo_seeds=args.placebo_seeds,
+        source=args.source, term_db=args.term_db, codes=args.codes)
     return 0
 
 

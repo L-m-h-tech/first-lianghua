@@ -481,6 +481,53 @@ def term_series_for(sym, store, **kw):
     return build_term_series(bars, **kw)
 
 
+# =========================== 第80轮：近月比例复权 OHLC 长序列（G25续长样本链） ===========================
+def adjusted_near_ohlc(sym, store, warmup=126, roll_buffer_days=ROLL_BUFFER_DAYS,
+                       min_oi=MIN_OPEN_INTEREST):
+    """从逐合约缓存重建"近月合约比例复权"的 OHLC 长序列（第80轮，不联网）。
+
+    近月选择复用 build_term_series（换月缓冲/剔除临交割/无量剔除）；换月日调整系数
+    ×= 旧近月收/新近月收，使序列连续（换月日收益≈0，与 G21 面板 ratio_adjusted 同口径）。
+    另现算 ret126/hv60 两列（G25 引擎），供 regime 标签直接消费。
+    返回 rows=[{date,c,h,l,o,ret126,hv60}]（按日期升序；无数据返回 []）。"""
+    import factor_expr as _fx
+    bars = store.load_contract_bars(sym)
+    if not bars:
+        return []
+    day_bar = {}
+    for code, blist in bars.items():
+        for b in blist:
+            d = str(b.get("d", ""))
+            if d:
+                day_bar[(code, d)] = b
+    ts = build_term_series(bars, roll_buffer_days, min_oi)
+    rows, factor, prev_code, prev_close = [], 1.0, None, None
+    for r in ts:
+        code = r.get("near")
+        b = day_bar.get((code, r["date"])) if code else None
+        if b is None:
+            continue
+        c = futures_data._f(b.get("c"))
+        if not c or c <= 0:
+            continue
+        if prev_code is not None and code != prev_code and prev_close:
+            factor *= prev_close / c          # 换月拼接：新近月缩放到旧序列水平
+        rows.append({"date": r["date"], "c": c * factor,
+                     "h": futures_data._f(b.get("h")) * factor,
+                     "l": futures_data._f(b.get("l")) * factor,
+                     "o": futures_data._f(b.get("o")) * factor})
+        prev_code, prev_close = code, c
+    if not rows:
+        return []
+    series = {"close": [r["c"] for r in rows]}
+    ret126 = _fx.compute_ts("close/delay(close,%d)-1" % warmup, series)
+    hv60 = _fx.compute_ts("ts_std(log(close/delay(close,1)),60)*15.874507866387544", series)
+    for i, r in enumerate(rows):
+        r["ret126"] = ret126[i] if _fx._isnum(ret126[i]) else None
+        r["hv60"] = hv60[i] if _fx._isnum(hv60[i]) else None
+    return rows
+
+
 # =========================== 合成自测（零网络；被 tests 与 --selftest 复用） ===========================
 def _selftest():
     # 1) 月份枚举跨年、代码与解析互逆
@@ -574,8 +621,29 @@ def _selftest():
     ], stale_days=10)
     assert plan == {"RB2610": "new", "RB2609b": "stale"}, plan
     tstore.close()
+    # 10) 第80轮 近月比例复权 OHLC：换月拼接连续（换月日收益≈0）+ ret126/hv60 现算
+    tstore2 = TermHistoryStore(os.path.join(tmpdir, "th2.db"))
+    def _bars(code_price, d0, d1):
+        out = []
+        for d in range(d0, d1 + 1):
+            dt = date(2026, 1, 1) + timedelta(days=d)
+            c = code_price + d * 0.5
+            out.append({"d": dt.isoformat(), "c": c, "s": c, "v": 5, "p": 50,
+                        "h": c * 1.01, "l": c * 0.99, "o": c})
+        return out
+    tstore2.save_contract("XX", "XX2603", _bars(100.0, 0, 44))    # 前段近月（45天）
+    tstore2.save_contract("XX", "XX2604", _bars(200.0, 30, 74))   # 中段（价格跳高，拼接应连续）
+    tstore2.save_contract("XX", "XX2605", _bars(300.0, 60, 119))  # 后段（保证任一日都有非缓冲近月）
+    rows10 = adjusted_near_ohlc("XX", tstore2, warmup=5)
+    tstore2.close()
+    assert len(rows10) >= 100 and rows10[0]["date"] < rows10[-1]["date"]
+    closes10 = [r["c"] for r in rows10]
+    rets = [closes10[i] / closes10[i - 1] - 1.0 for i in range(1, len(closes10))]
+    assert max(abs(r) for r in rets) < 0.02, max(abs(r) for r in rets)   # 换月拼接后无跳空
+    assert any(r["ret126"] is not None for r in rows10) and any(r["hv60"] is not None for r in rows10)
     print("term_history selftest ALL PASS（月份代码/曲线选择换月缓冲/年化carry/NS载荷/"
-          "均值差分/期限序列重建与OI汇总/空输入/近月连续净值/top-up决策与max_bar_date 共9组）")
+          "均值差分/期限序列重建与OI汇总/空输入/近月连续净值/top-up决策与max_bar_date/"
+          "近月比例复权OHLC 共10组）")
     return 0
 
 
