@@ -25,6 +25,7 @@ _load_dotenv(_ENV_PATH)
 NEWS_INTERVAL = 60            # 新闻/消息刷新间隔（秒）—— 题目要求60s
 OIL_INTERVAL = 10             # 布伦特/纽约原油行情刷新间隔（秒）—— 题目要求10s
 REPORT_INTERVAL = 60          # 非交易时段主分析周期（秒）
+SHADOW_FOLLOW_HOUR = 17       # 第85轮：影子信号每日跟随的补跑时刻（17:00 后补当日收盘信号；首次周期即跑）
 KLINE_TTL = 30 * 60           # 日线指标（HV/ATR等）缓存时长（秒）
 INTRADAY_KLINE_TTL = 10 * 60  # 30/60分钟共振指标缓存时长（秒）
 INTRADAY_WORKERS = 6          # 每轮并发预热30分钟K线的线程数（标准库线程池）

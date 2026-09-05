@@ -8,6 +8,7 @@
 - shadow_track.py：新增 `daily_due` 纯函数（工作日/触发时刻/当日未记三判定，可合成断言）+ daily() 的 topup verbose 透传；selftest 5→6组。
 - **真实验证**：--once 冒烟 exit=0/零 Traceback（周六工作日守卫正确未触发——设计行为）；shadow 库状态正常（2026-09-02 三信号各56腿已记录）；长面板/term 缓存数据完好。
 - **用法变化**：跑 main（手动或 start_monitor.bat）即自动完成当日影子信号；Runbook §3.4 的计划任务降级为**可选兜底**（仅当 main 不运行到 17:00 后时才需要）；pytest 758 全绿；评分路径零改动（双哈希无需重跑）。
+- **[补丁·用户需求"启动 main 即跟随"]**：触发时机从"17:00 后"改为**"每交易日首次周期即跑"**（启动 main 立刻跟随执行影子全链）+ 17:00 后补当日收盘信号 + 失败小时级重试（state.shadow_fail）；config 新增 SHADOW_FOLLOW_HOUR=17；修 2 个真实集成 bug（tools/ 未进 main 的 sys.path → ModuleNotFoundError；_shadow_daily_thread except 引用不存在的 e）。真实验证：--once 启动即自动完成影子链（三信号 64/64/40 腿、快照日 2026-09-02）、exit=0 零 Traceback。
 
 ## [0.84.0] — 2026-09-06 · 第84轮 G13 解锁落地：LLM 第二意见复核适配层（llm_reviewer.py，无 key 休眠）
 - **解锁方式（比拍板更优）**：未注册 Groq——搜机发现 cc-switch 已存 **DeepSeek 官方 key**（is_current、健康正常、api.deepseek.com 国内直连）；实测 HTTP 200（deepseek-v4-flash）。G13 设计原文点名"DeepSeek 级云端"，直连免代理优于 Groq（免注册/免代理依赖）。

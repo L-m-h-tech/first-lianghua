@@ -747,23 +747,39 @@ def run_cycle(state):
                              daemon=True).start()
     except Exception:
         LOG.error("G13 dispatch failed (swallowed)")
-    # 6.5 G22续/G7续 影子信号每日跟随（每交易日一次；触发时刻默认17:00后，daemon 零阻塞）：
-    #     term top-up → 长面板重建 → 记录当日影子信号（xsmom252基线/tsmom252/剔能化）+ 到期评估。
+    # 6.5 G22续/G7续 影子信号跟随（用户需求：启动 main 即自动跑影子链，无需计划任务/手动命令）：
+    #     每交易日首次周期 + 每日17:00后（补当日收盘信号）+ 上次失败小时级重试；daemon 零阻塞；
+    #     链内容 = term top-up → 长面板重建 → 记录当日三影子信号 → 到期评估；当日成功后不再重复。
     try:
+        import sys as _sys
+        _tools_dir = os.path.join(config.BASE_DIR, "tools")
+        if _tools_dir not in _sys.path:
+            _sys.path.insert(0, _tools_dir)
         import shadow_track
-        _owner = trade_owner_date(datetime.now()).strftime("%Y-%m-%d")
-        if shadow_track.daily_due(getattr(state, "shadow_done", None), datetime.now())                 and getattr(state, "shadow_done", None) != _owner:
-            state.shadow_done = _owner
+        _now = datetime.now()
+        _owner = trade_owner_date(_now).strftime("%Y-%m-%d")
+        _seen = getattr(state, "shadow_seen_owner", None)
+        _done = getattr(state, "shadow_done_owner", None)
+        _slot = (_seen != _owner) or (_now.hour >= config.SHADOW_FOLLOW_HOUR)                 or getattr(state, "shadow_fail", False)
+        _attempted = getattr(state, "shadow_attempt", None) == "%s|%s" % (_owner, _now.hour)
+        if _slot and not _attempted and _done != _owner:
+            state.shadow_seen_owner = _owner
+            state.shadow_attempt = "%s|%s" % (_owner, _now.hour)
+            state.shadow_fail = False
             def _shadow_daily_thread():
                 try:
                     payload = shadow_track.daily(verbose=False)
-                    LOG.info("影子每日链完成: %s | %s",
+                    state.shadow_done_owner = _owner
+                    LOG.info("影子每日链完成: %s | 快照日 %s",
                              payload.get("logged"), payload.get("snapshot", {}).get("date"))
                 except Exception:
-                    LOG.error("影子每日链异常（已吞掉）: %s", e)
-            threading.Thread(target=_shadow_daily_thread, daemon=True).start()
+                    state.shadow_fail = True
+                    LOG.error("影子每日链异常（已吞掉）: %s", traceback.format_exc())
+            state.shadow_thread = threading.Thread(target=_shadow_daily_thread, daemon=True)
+            state.shadow_thread.start()
     except Exception:
         LOG.error("影子跟随调度失败（已吞掉）: %s", traceback.format_exc())
+    state.alerts.observe_cycle(state, fut_rows, strat_rows)
     state.alerts.observe_cycle(state, fut_rows, strat_rows)
     LOG.info("第 %d 轮分析完成，报告已保存到 %s | %s | %s",
              state.cycle, config.REPORT_FILE,
@@ -978,6 +994,10 @@ def main():
                     llm_reviewer.wait_last(timeout=90)
                 except Exception:
                     pass
+                # G22续：--once 退出前同样有界等待影子链线程（防 daemon 被杀）
+                _st = getattr(state, "shadow_thread", None)
+                if _st is not None and _st.is_alive():
+                    _st.join(timeout=300)
                 break
             # 计划下一轮时刻只计算一次；等待期间原油急动/全网高影响消息可"插队"出紧急轮，但该时刻不重算、不推移
             nxt = next_cycle_time(datetime.now())
