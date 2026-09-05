@@ -70,6 +70,20 @@ term_history 的逐合约缓存"有缓存即跳过"，已缓存合约的末根�
   2) 命令行：`schtasks /Create /TN "FuturesMonitor_TermTopup" /XML "backup\futures_monitor_term_topup_task.xml" /F`；卸载：`schtasks /Delete /TN "FuturesMonitor_TermTopup" /F`。
 - 建议排在每日备份（16:30）之后、盘后复盘前执行；与 main 常驻采集互不影响（本命令只读 cache/term_history.db 单表 upsert + 新浪日K）。
 
+### 3.4 影子信号每日追踪（G7/G25续，第83轮并入本 Runbook）
+
+第82轮拍板（路径A）：把"长窗动量排序 xsmom252 基线 / tsmom252 单因子 / 剔除能化对照"三个影子信号挂离线每日追踪——**只记录、不进综合分**，前向积累真正的样本外证据（回测再漂亮也可能是口径/时段幸存者偏差，影子是唯一干净的证据链）。
+
+  D:\Python\python.exe tools\shadow_track.py --daily    # 全链：term top-up → 长面板重建 → 记录当日信号 → 到期评估 → 报告
+  D:\Python\python.exe tools\shadow_track.py --report-only   # 只看报告
+
+- 信号登记表（改动=重置影子并在 shadow_meta 登记原因）：xsmom252_baseline / tsmom252_factor / xsmom252_ex_energy（对照列）。
+- 产出：`cache/shadow_signals.db`（信号库）+ `reports/shadow_track.txt/.json`（绩效+当日多空腿快照）。
+- 启动日守卫：首次运行写入 shadow_start_date，**生产环境永不回填历史**；第一个信号 H=20 交易日后到期（约1个月）。
+- 任务模板：`backup/futures_monitor_shadow_task.xml`（每日 18:15、需网络；**只生成不自动注册**）：
+  `schtasks /Create /TN "FuturesMonitor_ShadowTrack" /XML "backuputures_monitor_shadow_task.xml" /F`
+- 注意：--daily 已内置 top-up 与长面板重建；若同时注册了 §3.3 的 TermTopup 任务（18:00），18:15 的影子任务会重复一次 top-up（幂等无害、多花1-2分钟）。
+
 ## 4. 库损坏 / 误操作后的恢复
 
 ### 4.1 先识别症状
