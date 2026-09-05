@@ -736,6 +736,17 @@ def run_cycle(state):
     text = report.render(state, fut_rows, opt_rows, strat_rows, news_top)
     print(text, flush=True)
     report.save(state, text, fut_rows, opt_rows)
+    # 6.4 G13 LLM 第二意见（无 key 完全休眠；守护线程异步、只写独立 sidecar、绝不改综合分/不阻塞）
+    try:
+        import llm_reviewer
+        if llm_reviewer.enabled():
+            _em = getattr(state, "last_emergency", None)
+            threading.Thread(target=llm_reviewer.review_async,
+                             args=(fut_rows, dict(_em) if _em else None),
+                             kwargs={"force": bool(getattr(state, "llm_force", False))},
+                             daemon=True).start()
+    except Exception:
+        LOG.error("G13 dispatch failed (swallowed)")
     state.alerts.observe_cycle(state, fut_rows, strat_rows)
     LOG.info("第 %d 轮分析完成，报告已保存到 %s | %s | %s",
              state.cycle, config.REPORT_FILE,
@@ -843,6 +854,8 @@ def main():
                         help="（兼容保留）非交易时段分析周期；交易时段轮动节奏自动接管")
     parser.add_argument("--force-review", action="store_true",
                         help="立即生成当日复盘报告（测试用）")
+    parser.add_argument("--llm-force", action="store_true",
+                        help="G13：本轮强制触发一次 LLM 第二意见（无自然触发器也复核 top-3；测试/自检用）")
     parser.add_argument("--version", action="store_true",
                         help="打印版本号（读 VERSION）后退出，不启动监控（G19）")
     args = parser.parse_args()
@@ -874,6 +887,7 @@ def main():
     state = State(universe)
     state.universe_note = f"共{len(universe)}个品种（{note}）"
     state.force_review = args.force_review
+    state.llm_force = args.llm_force
     # --no-launch 同时抑制"同花顺自动打开"与"首轮报告浏览器自动打开"（测试/无界面场景）
     state.auto_open_report = not args.no_launch
 
@@ -941,6 +955,12 @@ def main():
                 LOG.error("本轮分析异常:\n%s", traceback.format_exc())
             if args.once:
                 state.stop.set()
+                # G13：--once 退出会杀掉 daemon 的 LLM 复核线程，退出前有界等待其完成
+                try:
+                    import llm_reviewer
+                    llm_reviewer.wait_last(timeout=90)
+                except Exception:
+                    pass
                 break
             # 计划下一轮时刻只计算一次；等待期间原油急动/全网高影响消息可"插队"出紧急轮，但该时刻不重算、不推移
             nxt = next_cycle_time(datetime.now())
