@@ -76,6 +76,31 @@ def resolve_factor(bysym_rows, factor=None, expr=None):
     return factor, fac_map
 
 
+def compose_factor(maps):
+    """复合截面因子（第78轮，纯函数）：逐日对各成员做截面均匀秩标准化后等权平均。
+
+    maps=[{sym:{date:val}}, ...]；逐日只保留"当日全部成员均有限"的品种（成对剔除）。
+    返回 {sym:{date:composite}}。成员方向须一致（本实验用于低波异象族：hv20/range_pct 全为
+    "值高→跑输"的负IC族，复合=族内共识强度）。"""
+    all_dates = set()
+    for m in maps:
+        for inner in m.values():
+            all_dates |= set(inner)
+    out = {}
+    for d in sorted(all_dates):
+        zs = [ob.cs_uniform({s: inner[d] for s, inner in m.items() if d in inner})
+              for m in maps]
+        common = None
+        for z in zs:
+            ks = set(z)
+            common = ks if common is None else (common & ks)
+        if not common:
+            continue
+        for s in common:
+            out.setdefault(s, {})[d] = sum(z[s] for z in zs) / float(len(zs))
+    return out
+
+
 def regime_map_of(bysym_rows):
     """复用 factor_regime.compute_labels → {sym:{date:vol_label}}（low/mid/high/None）。"""
     labels = frg.compute_labels(bysym_rows)
@@ -255,7 +280,7 @@ def render_robust(rb):
 
 # =========================== 主流程 ===========================
 def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
-        h=20, n_q=5, min_names=10, cost=None, verbose=True, robust=False):
+        h=20, n_q=5, min_names=10, cost=None, verbose=True, robust=False, compose=None):
     db_path = str(db_path or DEFAULT_DB)
     txt_path = str(txt_path or DEFAULT_TXT)
     json_path = str(json_path or DEFAULT_JSON)
@@ -268,7 +293,12 @@ def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
         if rows:
             bysym[s] = rows
     store.close()
-    name, fac_map = resolve_factor(bysym, factor=factor, expr=expr)
+    if compose:
+        specs = [x for x in (t.strip() for t in compose.split(";")) if x]
+        members = [resolve_factor(bysym, expr=sp)[1] for sp in specs]
+        name, fac_map = "composite(%d)" % len(members), compose_factor(members)
+    else:
+        name, fac_map = resolve_factor(bysym, factor=factor, expr=expr)
     reg_map = regime_map_of(bysym)
     fwd_map = forward_maps(bysym, h)
     dates = sorted({d for m in fac_map.values() for d in m})
@@ -276,7 +306,8 @@ def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
     summaries = {v: view_summary(books, v, n_q, cost, h=h) for v in VIEWS}
     ics = {v: summarize_ics(cs_ics, v) for v in VIEWS}
     rb = robust_chain(bysym, fac_map, reg_map, h, n_q, min_names, cost) if robust else None
-    result = {"factor": name, "expr": expr, "h": h, "n_q": n_q, "min_names": min_names,
+    result = {"factor": name, "expr": expr, "compose": compose,
+              "h": h, "n_q": n_q, "min_names": min_names,
               "cost_oneway": cost, "n_symbols": len(bysym), "n_dates": len(dates),
               "db": db_path,
               "date_min": dates[0] if dates else None, "date_max": dates[-1] if dates else None,
@@ -325,7 +356,8 @@ def render_report(result, robust=None):
          % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
          "=" * 104]
     L.append("因子=%s（%s）；H=%d 对齐非重叠再平衡；%d层多顶空底；单边成本万%.1f；截面最少%d品种"
-             % (result["factor"], "表达式" if result["expr"] else "面板列",
+             % (result["factor"], "复合截面" if result.get("compose") else
+                ("表达式" if result["expr"] else "面板列"),
                 result["h"], result["n_q"], 10000.0 * result["cost_oneway"], result["min_names"]))
     L.append("面板 %s：品种=%d 交易日=%d（%s ~ %s）；regime=vol(hv60过去120日ts_rank三分位,PIT)"
              % (result.get("db"), result["n_symbols"], result["n_dates"],
@@ -443,8 +475,19 @@ def selftest():
     assert rb6["placebo"]["low_ic"] is not None
     text6 = "\n".join(render_robust(rb6))
     assert "H网格" in text6 and "placebo" in text6
+    # 7) 第78轮 复合截面因子：逐日等权秩平均手算（两成员反向排序→共识0；同向→极值；缺失成对剔除）
+    m1 = {"A": {"d": 1.0}, "B": {"d": 2.0}, "C": {"d": 3.0}}
+    m2 = {"A": {"d": 30.0}, "B": {"d": 20.0}, "C": {"d": 10.0}}
+    comp = compose_factor([m1, m2])
+    assert abs(comp["A"]["d"]) < 1e-12 and abs(comp["B"]["d"]) < 1e-12 and abs(comp["C"]["d"]) < 1e-12
+    m3 = {"A": {"d": 1.0}, "B": {"d": 2.0}, "C": {"d": 3.0}}
+    comp2 = compose_factor([m1, m3])
+    assert abs(comp2["A"]["d"] + 1.0) < 1e-12 and abs(comp2["C"]["d"] - 1.0) < 1e-12
+    m4 = {"A": {"d": 5.0}, "B": {"d": 6.0}}
+    comp3 = compose_factor([m1, m4])
+    assert set(comp3) == {"A", "B"} and "C" not in comp3
     print("regime_cond_lab selftest ALL PASS（因子装配两路径/regime标签/build_books结构无未来/"
-          "三视图绩效与IC汇总/低波强信号健全性/稳健链与placebo 共6组）")
+          "三视图绩效与IC汇总/低波强信号健全性/稳健链与placebo/复合截面因子 共7组）")
     return 0
 
 
@@ -459,13 +502,16 @@ def main(argv=None):
     ap.add_argument("--min-names", type=int, default=10)
     ap.add_argument("--cost-oneway", type=float, default=None, help="单边成本率，默认回测口径万1.5")
     ap.add_argument("--robust", action="store_true", help="第76轮：稳健链（H网格/子期分段/placebo标签重排）")
+    ap.add_argument("--compose", default=None,
+                    help="第78轮：复合截面因子——';'分隔多条 'EXPR[:名称]'，逐日对各成员截面均匀秩"
+                         "标准化后等权平均（成员全有限的品种才保留）；配 --robust 同样适用")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     run(db_path=args.db, factor=args.factor, expr=(args.expr.strip() or None),
         h=args.h, n_q=args.quantiles, min_names=args.min_names, cost=args.cost_oneway,
-        robust=args.robust)
+        robust=args.robust, compose=args.compose)
     return 0
 
 
