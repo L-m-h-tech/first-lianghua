@@ -339,6 +339,59 @@ def load_events(db_path, horizons=(30, 120, 1440), days=None):
     return data
 
 
+# =========================== 可交易性掩码对照（G22续/G28续，第73轮） ===========================
+def split_events_by_mask(events, mask):
+    """按可交易性掩码拆分信号事件（纯函数、零IO）。
+
+    mask={sym:{date:{"locked":bool,"near_delivery":bool,"tradable":bool}}}
+    （tools/tradable_mask.mask_for_panel 口径，面板 sym×date）。事件用 e["sym"]+e["ts"] 前10位日期对齐。
+    返回 (kept, excluded, stats)：kept=有掩码覆盖且可交易日的事件；excluded=[(event, reason)]，
+    reason∈locked/near_delivery/no_mask（品种不在面板或日期无覆盖）；stats 汇总计数与覆盖率。"""
+    kept, excluded = [], []
+    stats = {"n_total": len(events), "n_locked": 0, "n_near_delivery": 0,
+             "n_no_mask": 0, "n_kept": 0, "n_excluded": 0, "coverage": None}
+    for e in events:
+        sym = e.get("sym") or ""
+        info = (mask or {}).get(sym, {}).get((e.get("ts") or "")[:10])
+        if info is None:
+            stats["n_no_mask"] += 1
+            excluded.append((e, "no_mask"))
+        elif info.get("locked"):
+            stats["n_locked"] += 1
+            excluded.append((e, "locked"))
+        elif info.get("near_delivery"):
+            stats["n_near_delivery"] += 1
+            excluded.append((e, "near_delivery"))
+        else:
+            kept.append(e)
+    stats["n_kept"] = len(kept)
+    stats["n_excluded"] = len(excluded)
+    stats["coverage"] = (stats["n_kept"] / len(events)) if events else None
+    return kept, excluded, stats
+
+
+def mask_compare_horizon(events, kept, keys, oos_ratio, x_eps, min_sample=40):
+    """全量 vs 仅可交易日事件的归因对照摘要（纯函数）：n/mean_y/α 与 β 符号一致率。"""
+    full = factor_attribution(events, keys, x_eps=x_eps)
+    out = {"n_total": len(events), "n_kept": len(kept),
+           "coverage": (len(kept) / len(events)) if events else None,
+           "mean_y_full": full.get("mean_y"), "alpha_full": full.get("alpha"),
+           "beta_full": {k: full["beta"][k] for k in full.get("used", [])}}
+    if len(kept) >= min_sample:
+        katt = factor_attribution(kept, keys, x_eps=x_eps)
+        out.update({"mean_y_kept": katt.get("mean_y"), "alpha_kept": katt.get("alpha"),
+                    "beta_kept": {k: katt["beta"][k] for k in katt.get("used", [])},
+                    "enough": True})
+        common = [k for k in out["beta_kept"] if k in out["beta_full"]]
+        out["beta_sign_agree"] = (sum(1 for k in common
+                                      if out["beta_full"][k] * out["beta_kept"][k] > 0) / len(common)
+                                  if common else None)
+    else:
+        out.update({"mean_y_kept": None, "alpha_kept": None, "beta_kept": {},
+                    "beta_sign_agree": None, "enough": False})
+    return out
+
+
 # =========================== 报告（txt + json sidecar） ===========================
 def _pct(x, d=2):
     return ("%+." + str(d) + "f%%") % (x * 100) if x is not None else "--"
@@ -383,7 +436,7 @@ def attribute_horizon(events, factor_keys, oos_ratio=0.3, x_eps=0.05):
     return attr
 
 
-def build_report(data, factor_keys, main_h, days=None):
+def build_report(data, factor_keys, main_h, days=None, mask_compare=None):
     L = []
     L.append("因子收益归因 + BHB 板块归因报告（G28 复盘）  生成于 %s" % _now())
     L.append("=" * 104)
@@ -488,6 +541,25 @@ def build_report(data, factor_keys, main_h, days=None):
             "by_dir": {str(k): v for k, v in a["by_dir"].items()},
             "by_band": a["by_band"]}
 
+    # ---- 六、可交易性掩码对照（G22续/G28续，第73轮：剔除锁板/临交割/无覆盖事件后的归因） ----
+    if mask_compare:
+        L.append("六、可交易性掩码对照（--mask-compare）：剔除锁板/临近交割/无掩码覆盖事件后重跑归因，")
+        L.append("   回答\"已实现盈亏归因是否被不可交易日的信号污染\"；掩码=tools/tradable_mask（research_panel 锁板+交割日历）。")
+        L.append("  %-10s %8s %8s %8s %10s %10s %10s %10s %12s"
+                 % ("周期", "全量n", "保留n", "覆盖率", "全量meanY", "掩码meanY", "全量α", "掩码α", "β符号一致率"))
+        sidecar["mask_compare"] = {}
+        for h in mask_compare.get("per_h", {}):
+            mc = mask_compare["per_h"][h]
+            st = mc["stats"]
+            L.append("  %-10s %8d %8d %8s %10s %10s %10s %10s %12s"
+                     % (HORIZON_LABEL.get(h, h), mc["n_total"], mc["n_kept"],
+                        _win(mc["coverage"]), _pct(mc["mean_y_full"]), _pct(mc["mean_y_kept"]),
+                        _num(mc["alpha_full"]), _num(mc["alpha_kept"]),
+                        _win(mc.get("beta_sign_agree"))))
+            L.append("    剔除明细：锁板%d / 临交割%d / 无掩码覆盖%d（无覆盖=品种不在面板或日期缺掩码，两类诚实分列）"
+                     % (st["n_locked"], st["n_near_delivery"], st["n_no_mask"]))
+            sidecar["mask_compare"][h] = mc
+        L.append("")
     L.append("诚实边界：①样本为实盘监控自 2026-08 起积累的信号事件，时段/品种分布有偏、非连续组合；")
     L.append("②OLS 为线性加法归因，不刻画因子交互/非线性，β 是相关而非因果；③BHB 基准为事件条件下的")
     L.append("板块无方向均涨，不是逐日连续基准，板块结论用于定位结构而非可交易收益；本报告不改任何线上权重。")
@@ -532,6 +604,8 @@ def run(argv=None):
     ap.add_argument("--out", default=config.ATTR_FILE)
     ap.add_argument("--json", dest="json_out", default=config.ATTR_JSON)
     ap.add_argument("--curve", default=config.ATTR_CURVE)
+    ap.add_argument("--mask-compare", action="store_true",
+                    help="第73轮：按 tools/tradable_mask 可交易性掩码剔除锁板/临交割事件后重跑归因对照")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -540,7 +614,30 @@ def run(argv=None):
     horizons = tuple(int(x) for x in str(args.horizons).split(",") if x.strip())
     data = load_events(args.db, horizons, args.days or None)
     factor_keys = list(config.ATTR_FACTOR_ORDER)
-    text, sidecar = build_report(data, factor_keys, args.main_horizon, args.days or None)
+    mask_compare = None
+    if args.mask_compare:
+        try:
+            import tradable_mask as tmask
+            con = sqlite3.connect(str(ROOT / "cache" / "research_panel.db"))
+            rows_by_date = defaultdict(dict)
+            for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
+                rows_by_date[row[1]][row[0]] = {"c": row[2], "h": row[3], "l": row[4]}
+            con.close()
+            panel_mask = tmask.mask_for_panel(rows_by_date)
+            per_h = {}
+            for h in horizons:
+                kept, _exc, stats = split_events_by_mask(data.get(h, []), panel_mask)
+                mc = mask_compare_horizon(data.get(h, []), kept, factor_keys,
+                                          config.ATTR_OOS_RATIO, config.ATTR_X_EPS,
+                                          min_sample=config.ATTR_MIN_SAMPLE)
+                mc["stats"] = stats
+                per_h[h] = mc
+            mask_compare = {"per_h": per_h}      # 正文保持全量口径（跨轮可比），掩码对照只在第六节
+        except Exception as me:
+            print("掩码对照构建失败（软降级，仅出全量口径）：%r" % (me,))
+            mask_compare = None
+    text, sidecar = build_report(data, factor_keys, args.main_horizon, args.days or None,
+                                 mask_compare=mask_compare)
     with open(args.out, "w", encoding="utf-8-sig") as fh:
         fh.write(text)
     with open(args.json_out, "w", encoding="utf-8") as fh:
@@ -645,8 +742,43 @@ def selftest():
     assert abs(sc["horizons"][1440]["bhb"]["closure_resid"]) < 1e-12
     json.dumps(_json_safe(sc), allow_nan=False)       # sidecar 必须 JSON 安全（无 NaN）
 
+    # 9) 第73轮 掩码拆分：锁板/临交割剔除、无覆盖分列、coverage 正确
+    msk = {"RB": {"2026-01-01": {"locked": True, "near_delivery": False, "tradable": False},
+                  "2026-01-02": {"locked": False, "near_delivery": True, "tradable": False},
+                  "2026-01-03": {"locked": False, "near_delivery": False, "tradable": True}}}
+    evs9 = [_ev(0.01, {"A": 1.0}, ts="2026-01-01 09:00:00", sym="RB"),
+            _ev(0.01, {"A": 1.0}, ts="2026-01-02 09:00:00", sym="RB"),
+            _ev(0.01, {"A": 1.0}, ts="2026-01-03 09:00:00", sym="RB"),
+            _ev(0.01, {"A": 1.0}, ts="2026-01-03 09:00:00", sym="XX")]
+    kept9, exc9, st9 = split_events_by_mask(evs9, msk)
+    assert st9["n_total"] == 4 and st9["n_locked"] == 1 and st9["n_near_delivery"] == 1
+    assert st9["n_no_mask"] == 1 and st9["n_kept"] == 1 and st9["n_excluded"] == 3
+    assert abs(st9["coverage"] - 0.25) < 1e-12
+    assert len(kept9) == 1 and kept9[0]["sym"] == "RB" and kept9[0]["ts"].startswith("2026-01-03")
+    reasons = sorted(r for _, r in exc9)
+    assert reasons == ["locked", "near_delivery", "no_mask"]
+    # 10) 掩码对照摘要：保留样本足够且暴露有方差时出 β 符号一致率；空事件 coverage=None
+    mc9 = mask_compare_horizon(evs9, kept9, ["A"], oos_ratio=0.3, x_eps=0.05, min_sample=2)
+    assert mc9["n_total"] == 4 and mc9["n_kept"] == 1 and mc9["enough"] is False
+    kept_vary = [_ev(0.01 + 0.01 * (i % 3), {"A": float((i % 3) - 1)},
+                     ts="2026-01-03 09:00:00", sym="RB") for i in range(6)]
+    mc10 = mask_compare_horizon(evs9 + kept_vary, kept_vary, ["A"], oos_ratio=0.3,
+                                x_eps=0.05, min_sample=2)
+    assert mc10["enough"] is True and mc10["beta_sign_agree"] is not None
+    assert split_events_by_mask([], msk)[2]["coverage"] is None
+    # 11) build_report 掩码对照段渲染 + sidecar 键
+    text_m, sc_m = build_report(data, ["A", "B", "C"], 1440,
+                                mask_compare={"per_h": {1440: dict(
+                                    mask_compare_horizon(data[1440], data[1440][:80], ["A", "B", "C"],
+                                                         0.3, 0.05, min_sample=40),
+                                    stats={"n_total": 80, "n_locked": 1, "n_near_delivery": 2,
+                                           "n_no_mask": 3, "n_kept": 74, "n_excluded": 6,
+                                           "coverage": 0.925})}})
+    assert "可交易性掩码对照" in text_m and "剔除明细" in text_m
+    json.dumps(_json_safe(sc_m), allow_nan=False)
+
     print("attribution selftest ALL PASS（方向化暴露/OLS恢复与闭合/零方差安全/"
-          "BHB手算与恒等式/板块统计/累计曲线闭合/IS-OOS/报告结构 共8组）")
+          "BHB手算与恒等式/板块统计/累计曲线闭合/IS-OOS/报告结构/掩码拆分/掩码对照摘要/掩码报告渲染 共11组）")
     return 0
 
 

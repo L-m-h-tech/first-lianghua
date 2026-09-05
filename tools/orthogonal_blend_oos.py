@@ -16,11 +16,18 @@ r"""G25续/G16前置（第61轮）正交IC加权接**真实研究面板**做样�
      对照 equal 等权合成与每个单因子，计算当日**截面 RankIC**；汇总均值/ICIR/正比例/天数。
 因果性：betas/weights/IC 只用 t 之前数据；OOS 日截面标准化只用当日截面；y 用 t 之后价格。
 
+第73轮新增（G25续·动量反转反向利用）：`--rev-factor`（默认 ret63）额外构造一条**反转动量账本**
+rev = -cs_uniform(rev_factor)，与正交/等权并列出 OOS 截面 RankIC 与分层多空净绩效——回答
+"expr_miner 时序层发现的动量负IC（反转），在跨品种截面上样本外是否有肉"。注意：正交IC合成的
+权重本就有符号（负IC因子自动得负权重），反向已隐含其中；本账本检验的是**纯反转单因子**本身。
+若 rev_factor 不在候选列中，仅作为附加列装载（不进训练/blend，不污染合成）。
+
 输出：reports/orthogonal_blend_oos.txt（人读）+ .json（机读），experiment_ledger 旁路台账一条。
 用法（项目根目录）：
-  D:\Python\python.exe tools\orthogonal_blend_oos.py                 # 全面板、写报告
-  D:\Python\python.exe tools\orthogonal_blend_oos.py --factors ret20,ret63,tsmom126
-  D:\Python\python.exe tools\orthogonal_blend_oos.py --selftest      # 零网络/零DB合成断言
+  D:\\Python\\python.exe tools\\orthogonal_blend_oos.py                 # 全面板、写报告
+  D:\\Python\\python.exe tools\\orthogonal_blend_oos.py --factors ret20,ret63,tsmom126
+  D:\\Python\\python.exe tools\\orthogonal_blend_oos.py --rev-factor tsmom126          # 换反转基准列
+  D:\\Python\\python.exe tools\\orthogonal_blend_oos.py --selftest      # 零网络/零DB合成断言
 """
 import argparse
 import json
@@ -40,6 +47,7 @@ DEFAULT_DB = _ROOT / "cache" / "research_panel.db"
 DEFAULT_TXT = _ROOT / "reports" / "orthogonal_blend_oos.txt"
 DEFAULT_JSON = _ROOT / "reports" / "orthogonal_blend_oos.json"
 DEFAULT_FACTORS = ("ret5", "ret20", "ret63", "tsmom63", "tsmom126", "day_chg")
+DEFAULT_REV_FACTOR = "ret63"   # 第73轮：反转动量账本基准列（expr_miner 时序层最强反转 mom_60 的面板代理）
 HORIZONS = (1, 5, 20)
 MIN_TRAIN = 60          # 至少 60 个交易日训练才开始 OOS
 REFIT_EVERY = 20        # 每 20 个交易日（约月度）扩展窗重估一次参数
@@ -285,9 +293,18 @@ def build_forward(by_sym, horizon):
 
 # --------------------------- walk-forward 核心 ---------------------------
 def walk_forward(dates, by_sym, factors, horizon,
-                 min_train=MIN_TRAIN, refit_every=REFIT_EVERY, min_cs=MIN_CS):
-    """扩展窗月度再拟合、日度 OOS 打分。返回 {策略名: 日度IC列表} 与再拟合次数。"""
+                 min_train=MIN_TRAIN, refit_every=REFIT_EVERY, min_cs=MIN_CS,
+                 rev_factor=None):
+    """扩展窗月度再拟合、日度 OOS 打分。返回 {策略名: 日度IC列表} 与再拟合次数。
+
+    第73轮：rev_factor 非空时额外出一条"反转动量"账本 rev=-cs_uniform(rev_factor)；
+    rev_factor 不在 factors 里时仅作附加列装载（不进训练池、不进 blend）；日IC列表长度
+    与其它策略对齐（当日有效截面不足 min_cs 时记 None）。"""
+    factors = list(factors)
     k = len(factors)
+    cols = factors + ([rev_factor] if (rev_factor and rev_factor not in factors) else [])
+    K = len(cols)
+    rev_idx = cols.index(rev_factor) if rev_factor else None
     ysym = build_forward(by_sym, horizon)
     # 训练池（增量累积列）：pool_f[i]、pool_y 对齐
     pool_f = [[] for _ in range(k)]
@@ -296,6 +313,8 @@ def walk_forward(dates, by_sym, factors, horizon,
     daily = {"orth_ic": [], "equal": []}
     for i in range(k):
         daily["f_" + factors[i]] = []
+    if rev_factor:
+        daily["rev"] = []
     books = []          # 第63轮：每个有效 OOS 日留一份 {orth/equal 分数, 前向收益 y}，供分层多空/换手/成本
     n_refit = 0
     added_up_to = -1
@@ -304,8 +323,9 @@ def walk_forward(dates, by_sym, factors, horizon,
         r = by_sym[sym].get(d)
         if r is None:
             return None
-        vec = [r.get(f) for f in factors]
-        return vec if all(isnum(v) for v in vec) else None
+        vec = [r.get(f) for f in cols]
+        # blend 列必须全有限；附加反转列允许缺失（当日该品种不进 rev 账本）
+        return vec if all(isnum(v) for v in vec[:k]) else None
 
     for t, d in enumerate(dates):
         # 1) 把 [added_up_to+1, t-1] 已成为历史的日期纳入训练池（截面标准化后）
@@ -314,10 +334,10 @@ def walk_forward(dates, by_sym, factors, horizon,
                 pd_ = dates[pt]
                 raw_by_sym = {s: raw_vector(s, pd_) for s in by_sym}
                 raw_by_sym = {s: v for s, v in raw_by_sym.items() if v is not None}
-                cs_cols = [cs_uniform({s: raw_by_sym[s][i] for s in raw_by_sym}) for i in range(k)]
+                cs_cols = [cs_uniform({s: raw_by_sym[s][i] for s in raw_by_sym}) for i in range(K)]
                 for s in raw_by_sym:
                     yv = ysym.get(s, {}).get(pd_)
-                    if not isnum(yv) or not all(s in z and isnum(z[s]) for z in cs_cols):
+                    if not isnum(yv) or not all(s in z and isnum(z[s]) for z in cs_cols[:k]):
                         continue
                     for i in range(k):
                         pool_f[i].append(cs_cols[i][s])
@@ -339,8 +359,8 @@ def walk_forward(dates, by_sym, factors, horizon,
                 raw_by_sym[s] = v
         if len(raw_by_sym) < min_cs:
             continue
-        cs_cols = [cs_uniform({s: raw_by_sym[s][i] for s in raw_by_sym}) for i in range(k)]
-        valid = [s for s in raw_by_sym if all(s in z for z in cs_cols)]
+        cs_cols = [cs_uniform({s: raw_by_sym[s][i] for s in raw_by_sym}) for i in range(K)]
+        valid = [s for s in raw_by_sym if all(s in z for z in cs_cols[:k])]
         if len(valid) < min_cs:
             continue
         score_orth, score_eq, score_single, yd = {}, {}, {f: {} for f in factors}, {}
@@ -354,7 +374,18 @@ def walk_forward(dates, by_sym, factors, horizon,
             yd[s] = ysym[s][d]
         daily["orth_ic"].append(fe.spearman(list(score_orth.values()), list(yd.values())))
         daily["equal"].append(fe.spearman(list(score_eq.values()), list(yd.values())))
-        books.append({"date": d, "orth": dict(score_orth), "equal": dict(score_eq), "y": dict(yd)})
+        book = {"date": d, "orth": dict(score_orth), "equal": dict(score_eq), "y": dict(yd)}
+        # 第73轮：反转动量账本（截面排序的反向；与 orth/equal/y 同日对齐）
+        if rev_factor:
+            zr = cs_cols[rev_idx]
+            rev_scores = {s: -zr[s] for s in valid if s in zr and isnum(zr[s])}
+            if len(rev_scores) >= min_cs:
+                daily["rev"].append(fe.spearman(list(rev_scores.values()),
+                                                [yd[s] for s in rev_scores]))
+                book["rev"] = rev_scores
+            else:
+                daily["rev"].append(None)
+        books.append(book)
         for f in factors:
             daily["f_" + f].append(fe.spearman([score_single[f][s] for s in valid],
                                                [yd[s] for s in valid]))
@@ -364,15 +395,17 @@ def walk_forward(dates, by_sym, factors, horizon,
 # --------------------------- 一次完整运行 ---------------------------
 def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
         factors=DEFAULT_FACTORS, horizons=HORIZONS, n_q=N_QUANTILE,
-        cost_oneway=DEFAULT_COST_ONEWAY, verbose=True):
-    loaded = load_panel(str(db_path), list(factors))
+        cost_oneway=DEFAULT_COST_ONEWAY, rev_factor=DEFAULT_REV_FACTOR, verbose=True):
+    load_cols = list(factors) + ([rev_factor] if (rev_factor and rev_factor not in factors) else [])
+    loaded = load_panel(str(db_path), load_cols)
     if loaded is None:
         msg = "未找到研究面板 %s；先运行 tools/panel_builder.py --all 建板。" % db_path
         if verbose:
             print(msg)
         return {"note": msg}
     dates, by_sym, sectors = loaded
-    result = {"factors": list(factors), "n_sym": len(by_sym), "n_dates": len(dates),
+    result = {"factors": list(factors), "rev_factor": rev_factor, "n_sym": len(by_sym),
+              "n_dates": len(dates),
               "date_min": dates[0] if dates else None, "date_max": dates[-1] if dates else None,
               "min_train": MIN_TRAIN, "refit_every": REFIT_EVERY, "horizons": {}}
     lines = []
@@ -382,28 +415,35 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
     lines.append("面板 %s；品种=%d 交易日=%d（%s ~ %s）；候选因子=%s"
                  % (db_path, len(by_sym), len(dates), result["date_min"], result["date_max"],
                     "、".join(factors)))
-    lines.append("设置：最小训练%d日 / 每%d日扩展窗重估 / OOS截面≥%d品种；因子先做当日截面均匀秩标准化"
-                 % (MIN_TRAIN, REFIT_EVERY, MIN_CS))
+    lines.append("设置：最小训练%d日 / 每%d日扩展窗重估 / OOS截面≥%d品种；因子先做当日截面均匀秩标准化；"
+                 "反转动量账本=-截面秩(%s)" % (MIN_TRAIN, REFIT_EVERY, MIN_CS, rev_factor or "关"))
     for h in horizons:
-        daily, n_refit, books = walk_forward(dates, by_sym, list(factors), h)
+        daily, n_refit, books = walk_forward(dates, by_sym, list(factors), h, rev_factor=rev_factor)
         summ = {name: summarize_ic(seq) for name, seq in daily.items()}
         # 第63轮：分层多空组合（多顶层/空底层），含换手与单边成本后的净收益（正交IC合成 vs 等权）
         ls_orth = evaluate_ls_books(books, "orth", n_q, cost_oneway)
         ls_equal = evaluate_ls_books(books, "equal", n_q, cost_oneway)
+        ls_rev = evaluate_ls_books(books, "rev", n_q, cost_oneway) if rev_factor else None
         # G25续（第64轮）：按 H 对齐非重叠再平衡（消除 H>1 前向重叠，可复利）
         ls_orth_h = evaluate_ls_books_aligned(books, "orth", n_q, cost_oneway, hold=h)
         ls_equal_h = evaluate_ls_books_aligned(books, "equal", n_q, cost_oneway, hold=h)
+        ls_rev_h = evaluate_ls_books_aligned(books, "rev", n_q, cost_oneway, hold=h) if rev_factor else None
         result["horizons"]["H%d" % h] = {"n_refit": n_refit, "summary": summ,
                                          "daily_orth": daily["orth_ic"], "daily_equal": daily["equal"],
                                          "ls_orth": ls_orth, "ls_equal": ls_equal,
                                          "ls_orth_aligned": ls_orth_h, "ls_equal_aligned": ls_equal_h}
+        if rev_factor:
+            result["horizons"]["H%d" % h]["daily_rev"] = daily["rev"]
+            result["horizons"]["H%d" % h]["ls_rev"] = ls_rev
+            result["horizons"]["H%d" % h]["ls_rev_aligned"] = ls_rev_h
         n_days = summ["orth_ic"]["n_days"]
         lines.append("")
         lines.append("[前向 H=%d 交易日] 有效OOS日=%d，月度重估=%d 次（ICIR=mean/std，正比例=日IC>0占比）"
                      % (h, n_days, n_refit))
         lines.append("  %-16s %10s %10s %10s %8s" % ("策略", "meanIC", "ICIR", "正比例", "天数"))
-        order = ["orth_ic", "equal"] + ["f_" + f for f in factors]
-        label = {"orth_ic": "正交IC合成", "equal": "等权合成"}
+        order = ["orth_ic", "equal", "rev"] + ["f_" + f for f in factors if "f_" + f in summ]
+        label = {"orth_ic": "正交IC合成", "equal": "等权合成",
+                 "rev": "反转动量(-%s)" % (rev_factor or "")}
         for name in order:
             s = summ[name]
             if s["mean_ic"] is None:
@@ -418,12 +458,18 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
             md = sum(diff) / len(diff)
             win = sum(1 for v in diff if v > 0) / len(diff)
             lines.append("  → 正交IC − 等权：平均日IC差 %+.4f，正交占优日占比 %.1f%%" % (md, 100.0 * win))
+        # 第73轮：反转动量 vs 正交 的配对日度差（检验纯反转是否比合成更稳）
+        if rev_factor and summ.get("rev", {}).get("mean_ic") is not None:
+            dr = [a - b for a, b in zip(daily["orth_ic"], daily["rev"]) if isnum(a) and isnum(b)]
+            if dr:
+                lines.append("  → 正交IC − 反转动量：平均日IC差 %+.4f，正交占优日占比 %.1f%%"
+                             % (sum(dr) / len(dr), 100.0 * sum(1 for v in dr if v > 0) / len(dr)))
         # 分层多空组合（Q%d：多顶层空底层、层内等权、gross=1）：毛收益→换手→单边成本→净收益
         lines.append("  分层多空（%d层多顶空底，单边成本万%.1f=费+滑点；H>1前向收益日序重叠，累计/回撤仅作相对比较）："
                      % (n_q, 10000.0 * cost_oneway))
         lines.append("  %-10s %8s %8s %8s %8s %9s %9s %9s"
                      % ("合成", "多腿", "空腿", "价差", "毛年化", "净年化", "净夏普", "日均换手"))
-        for lname, ls in (("正交IC", ls_orth), ("等权", ls_equal)):
+        for lname, ls in (("正交IC", ls_orth), ("等权", ls_equal), ("反转动量", ls_rev)):
             g, nn = ls["gross"], ls["net"]
             if g.get("n_days", 0) == 0:
                 continue
@@ -435,14 +481,23 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
                      % (h, 100.0 * ls_orth["total_cost"],
                         100.0 * (ls_orth["net"].get("max_drawdown") or 0.0)))
         # G25续（第64轮）：按 H 对齐非重叠再平衡（期数=调仓次数；净收益可复利）
-        lines.append("  [按H=%d对齐·非重叠再平衡] 调仓期=%d：正交净年化%+.2f%%/净夏普%.2f/日均换手%.3f（等权净年化%+.2f%%）"
-                     % (h, ls_orth_h["n_periods"],
-                        100.0 * (ls_orth_h["net"].get("annual_ret") or 0.0),
-                        ls_orth_h["net"].get("sharpe") or 0.0,
-                        ls_orth_h["avg_turnover_one_sided"] or 0.0,
-                        100.0 * (ls_equal_h["net"].get("annual_ret") or 0.0)))
+        aligned_line = ("  [按H=%d对齐·非重叠再平衡] 调仓期=%d：正交净年化%+.2f%%/净夏普%.2f/日均换手%.3f（等权净年化%+.2f%%"
+                        % (h, ls_orth_h["n_periods"],
+                           100.0 * (ls_orth_h["net"].get("annual_ret") or 0.0),
+                           ls_orth_h["net"].get("sharpe") or 0.0,
+                           ls_orth_h["avg_turnover_one_sided"] or 0.0,
+                           100.0 * (ls_equal_h["net"].get("annual_ret") or 0.0)))
+        if ls_rev_h and ls_rev_h["n_periods"]:
+            aligned_line += "；反转动量净年化%+.2f%%/净夏普%.2f）" % (
+                100.0 * (ls_rev_h["net"].get("annual_ret") or 0.0),
+                ls_rev_h["net"].get("sharpe") or 0.0)
+        else:
+            aligned_line += "）"
+        lines.append(aligned_line)
     lines.append("")
     lines.append("注：本结果为研究侧线性合成基线，不自动改 analyzer 权重、不进综合分；上线仍须 G29 体检 + 样本外+真实成本后≥现状。")
+    lines.append("注：反转动量账本=-截面秩(rev_factor)；正交IC合成的有符号权重本就隐含反向（负IC因子自动得负权重），"
+                 "本账本用于检验\"纯反转单因子\"样本外是否有肉。")
     text = "\n".join(lines)
     if verbose:
         print(text)
@@ -526,6 +581,26 @@ def selftest():
     so = summarize_ic(daily["orth_ic"]); se = summarize_ic(daily["equal"])
     # 合成面板里 alpha 真实存在：正交合成与等权都应取得正均值 OOS IC（方向健全性）
     assert so["mean_ic"] is not None and se["mean_ic"] is not None
+    # 4a) 第73轮：反转动量账本——rev IC 恒等于 -该因子IC（截面秩取负的对偶性），books 带 rev 键
+    daily_r, n_refit_r, books_r = walk_forward(dates, by_sym, factors, 1, min_train=60,
+                                               refit_every=20, min_cs=8, rev_factor="ret63")
+    assert "rev" in daily_r and len(daily_r["rev"]) == len(daily_r["orth_ic"])
+    assert all("rev" in b for b in books_r)
+    for a, b in zip(daily_r["rev"], daily_r["f_ret63"]):
+        assert (a is None and b is None) or (isnum(a) and isnum(b) and abs(a + b) < 1e-12)
+    # 4a-2) 附加列路径：rev_factor 不在 factors 里（不进 blend）也能跑通、长度对齐
+    factors_wo = [f for f in factors if f != "ret63"]
+    daily_x, _, books_x = walk_forward(dates, by_sym, factors_wo, 1, min_train=60,
+                                       refit_every=20, min_cs=8, rev_factor="ret63")
+    lens_x = {k: len(v) for k, v in daily_x.items()}
+    assert len(set(lens_x.values())) == 1 and "rev" in daily_x and "f_ret63" not in daily_x
+    # 4a-3) 多空反向恒等：同一 y 下，分数取负=拿另一边 → 毛/价差变号、多空腿互换
+    sc = {"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0, "e": 5.0,
+          "f": 6.0, "g": 7.0, "h": 8.0, "i": 9.0, "j": 10.0}
+    yy = {s: -0.002 * v for s, v in sc.items()}
+    q1, q2 = quantile_ls_day(sc, yy, 5), quantile_ls_day({s: -v for s, v in sc.items()}, yy, 5)
+    assert abs(q1["gross_ret"] + q2["gross_ret"]) < 1e-12 and abs(q1["spread"] + q2["spread"]) < 1e-12
+    assert abs(q2["long_ret"] - q1["short_ret"]) < 1e-12 and abs(q2["short_ret"] - q1["long_ret"]) < 1e-12
     # 4b) 分层多空单日：顶层分>底层分、gross=1 权重、多正空负腿结构
     day = quantile_ls_day({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5,
                            "f": 6, "g": 7, "h": 8, "i": 9, "j": 10},
@@ -577,14 +652,17 @@ def main(argv=None):
     ap.add_argument("--quantiles", type=int, default=N_QUANTILE, help="分层多空层数（多顶空底）")
     ap.add_argument("--cost-oneway", type=float, default=DEFAULT_COST_ONEWAY,
                     help="单边交易成本率（费+滑点），默认复用回测口径万1.5")
+    ap.add_argument("--rev-factor", default=DEFAULT_REV_FACTOR,
+                    help="反转动量账本基准列（默认 ret63；传空串关闭）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     factors = tuple(x.strip() for x in args.factors.split(",") if x.strip())
     horizons = tuple(int(x) for x in args.horizons.split(",") if x.strip())
+    rev = args.rev_factor.strip() or None
     run(db_path=args.db, factors=factors, horizons=horizons, n_q=args.quantiles,
-        cost_oneway=args.cost_oneway)
+        cost_oneway=args.cost_oneway, rev_factor=rev)
     return 0
 
 
