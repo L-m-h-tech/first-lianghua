@@ -194,7 +194,8 @@ def test_library_compiles_and_registered():
     for f in fe.LIBRARY:
         out = compute_ts(f["expr"], {"close": C, "high": [v * 1.005 for v in C],
                                      "low": [v * 0.995 for v in C],
-                                     "volume": [1000 + i for i in range(len(C))]})
+                                     "volume": [1000 + i for i in range(len(C))],
+                                     "oi": [5000 + i * 2 for i in range(len(C))]})
         assert len(out) == len(C)
         assert f["key"] in catalog_keys  # 表达式因子必须在唯一注册表登记
     assert fc.validate() == []

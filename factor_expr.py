@@ -733,6 +733,22 @@ LIBRARY = (
      "expr": "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)",
      "direction": 0, "name": "TSMOM252 z(表达式版)",
      "note": "252日波动调整动量，与 futures_data.tsmom_at 的 tsmom252 逐位相等"},
+    # ===== 第68轮 G25续：量仓类表达式因子（vol/oi 衍生量，研究侧；白名单 DSL 可编译、无未来） =====
+    {"key": "expr_vol_chg5", "expr": "volume/delay(volume,5)-1", "direction": +1,
+     "name": "5日成交量变化率(表达式版)",
+     "note": "量能扩张/收缩代理；与 microstructure_lab 的 rolling 口径同思路，研究侧登记"},
+    {"key": "expr_oi_chg5", "expr": "oi/delay(oi,5)-1", "direction": +1,
+     "name": "5日持仓量变化率(表达式版)",
+     "note": "持仓增减代理（增仓上行/减仓回补的资金方向原料）；研究侧登记"},
+    {"key": "expr_vol_oi_ratio", "expr": "volume/(oi+1)", "direction": 0,
+     "name": "量仓比(换手代理)(表达式版)",
+     "note": "成交量/持仓量，换手活跃度代理；研究侧登记"},
+    {"key": "expr_amount_proxy", "expr": "close*volume", "direction": 0,
+     "name": "成交额代理(表达式版)",
+     "note": "收盘价×成交量，与 carry_eval 的 amount 口径一致；研究侧登记"},
+    {"key": "expr_oi_corr_price20", "expr": "corr(close,oi,20)", "direction": 0,
+     "name": "价仓相关性20日(表达式版)",
+     "note": "价格与持仓量20日Pearson相关，量价配合诊断；研究侧登记"},
 )
 
 
@@ -907,7 +923,8 @@ def selftest():
     for f in LIBRARY:
         ast = parse(f["expr"])
         out = compute_ts(ast, {"close": c, "high": hi, "low": lo,
-                               "volume": [1000 + i for i in range(len(c))]})
+                               "volume": [1000 + i for i in range(len(c))],
+                               "oi": [5000 + i * 2 for i in range(len(c))]})
         assert len(out) == len(c)
     print("factor_expr selftest ALL PASS（安全解析白名单/拒绝危险调用、delay-delta/窗口统计/"
           "ts_rank-minmax-decay/corr嵌套与无未来、截面cross_rank-scale-zscore、pearson-spearman/"

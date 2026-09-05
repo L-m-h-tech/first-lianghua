@@ -567,7 +567,8 @@ def selftest():
     _l = [v * 0.996 for v in closes]
     for f in fe.LIBRARY:
         out = fe.compute_ts(f["expr"], {"close": closes, "high": _h, "low": _l,
-                                        "volume": [1000 + i for i in range(len(closes))]})
+                                        "volume": [1000 + i for i in range(len(closes))],
+                                        "oi": [5000 + i * 2 for i in range(len(closes))]})
         assert len(out) == len(closes)
     # 8) 第60轮新增：boll_std / hv20 与过程式**同求和序逐位相等**（非容差）
     rb, rh = parity_boll_std(closes), parity_hv20(closes)

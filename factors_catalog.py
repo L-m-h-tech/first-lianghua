@@ -219,6 +219,27 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 65,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "factor_legacy_expr",
      "formula": "ret252/(ts_std(收益,252)*sqrt252)，与 tsmom_at.tsmom252 逐位相等"},
+    # ===== 第68轮 G25续：量仓类表达式因子（研究侧） =====
+    {"key": "expr_vol_chg5", "name": "5日成交量变化率(表达式版)", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 68,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "volume/delay(volume,5)-1，量能扩张收缩代理"},
+    {"key": "expr_oi_chg5", "name": "5日持仓量变化率(表达式版)", "layer": "表达式研究", "direction": +1,
+     "bound": None, "status": "research", "introduced": 68,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "oi/delay(oi,5)-1，持仓增减代理"},
+    {"key": "expr_vol_oi_ratio", "name": "量仓比(换手代理)(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 68,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "volume/(oi+1)，换手活跃度代理"},
+    {"key": "expr_amount_proxy", "name": "成交额代理(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 68,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "close*volume，与 carry_eval amount 口径一致"},
+    {"key": "expr_oi_corr_price20", "name": "价仓相关性20日(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 68,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "corr(close,oi,20)，量价配合诊断"},
 )
 
 _BY_KEY = None
