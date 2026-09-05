@@ -3,11 +3,13 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
-## [0.63.0] — 2026-09-04 · 第63轮 G1 纸面引擎补 OMS/成交回报/持仓对账 + G25续 KDJ/EMA 表达式化 + OOS 分层多空/换手/成本
-- **G1 paper_broker 补 OMS/成交回报/持仓对账**：纯函数 reconcile_position_sets（五类 break）/aggregate_fills；内存级 _orders_by_id/fill_ledger；新方法 orders_view（全状态台账）/cancel_order（主动撤单）/fills_view/fill_report/reconcile_positions/reconcile_against_db；restore 跨进程回填。
-- **G25续 KDJ/EMA 表达式化**：DSL 加 kdj_rsv/kdj_sm 算子；EMA12/26、KDJ K/D/J 对过程式 float.hex 逐位 parity；LIBRARY+5、catalog 38→43。
-- **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
-- pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
+## [0.72.0] — 2026-09-05 · 第72轮 G25续 表达式因子自动挖掘 expr_miner（红线门控） + G22续 掩码系列归档 + G23续/G16/G1 阻塞核实
+- **新增 tools/expr_miner.py（G25续 表达式因子自动挖掘，研究侧、红线门控）**：确定性穷举（非随机/非遗传/非LLM）白名单 DSL 候选池 29 条（动量/量能/持仓变化/均线比/风险调整动量/量价相关/时序z/区间位置，窗口 5/10/20/60），逐候选前向 H=1/5/20 Spearman RankIC（逐品种 meanIC + 全样本 pooledIC，与 expr_research 同口径、严格无未来）；**绝不写 LIBRARY/catalog、不被 main import、不自动改权重**，只落 reports/expr_miner.txt/.json + experiment_ledger 台账。
+- **真实验证（64品种/6.1万点）**：|meanIC|≥0.05 上榜 7 条**全部为动量系且 IC 为负**（mom_60 H20 meanIC -0.117、mom_z_60 -0.106、5/10/20日动量 H5 -0.030~-0.067）——与项目"动量已被证伪"结论互证，呈现稳定**反转**特征；其余 22 条 |meanIC|<0.05 无稳定预测力，负结果照实。上榜与否由数据动态判定写入报告，不预设结论。
+- **顺手修正**：expr_miner/orthogonal_blend_oos 的 ledger artifacts 传 dict 导致路径按键名拼接（键"txt"被当相对路径）→ 统一改列表口径。
+- **G22续 掩码系列归档**：tradable_mask(64轮)→carry/xsmom 截面剔除(65/67轮)→对照表(66轮)→汇总工具(70轮)→portfolio_lab --mask(71轮) 全链齐整，本轮正式归档（总纲 G22 状态更新）。
+- **G23续/G16/G1 阻塞核实（只核实不硬做）**：G23 主板 OI 深度容量仍硬阻塞 G14（monitor.db 无 tick_snapshots 表，一档盘口自采未启动）；G16 ml_samples 42937 样本/64品种/特征全填但跨度仅 127 个交易日（2026-03-10~09-01），维持"跨度短不上模型"；G1 纸面三表 paper_orders/trades/equity 全为 0 行、PAPER_ENABLED 默认 False——影子从未实际启动，三方对账无对象（此前摘要"未到期"表述不准，已更正），需显式开 PAPER_ENABLED 后连续运行≥4周。
+- selftest 7组（候选池全编译/前向IC严格未来/单因子手算/报告结构/排序/上榜动态判定/max_abs_ic）；pytest 742→744 全绿（+selftest +compileall）；CHANGELOG 顺修 [0.63.0] 块错位（原被误置于文件最顶部）。
 
 ## [0.71.0] — 2026-09-05 · 第71轮 G22续 掩码接入 portfolio_lab
 - **portfolio_lab 新增 `--mask` 选项**：读 research_panel.db 算可交易性掩码（锁板/交割），apply_mask_to_returns 剔不可交易日后重做组合实验。
@@ -54,6 +56,12 @@
 - **G23续 carry 换手/容量**：carry points 增 v/oi/vol_turn/amount；报告新增"七·补 换手与容量"（多空腿成交额、1%参与率容量估算，精确待G14）。
 - **G5④ 核实**：circuit_breaker 三动作模式已在第51轮清账，本轮不重复开发。
 - pytest 738→742 全绿；研究侧零改动主链（隔离 grep 合规）。
+
+## [0.63.0] — 2026-09-04 · 第63轮 G1 纸面引擎补 OMS/成交回报/持仓对账 + G25续 KDJ/EMA 表达式化 + OOS 分层多空/换手/成本
+- **G1 paper_broker 补 OMS/成交回报/持仓对账**：纯函数 reconcile_position_sets（五类 break）/aggregate_fills；内存级 _orders_by_id/fill_ledger；新方法 orders_view（全状态台账）/cancel_order（主动撤单）/fills_view/fill_report/reconcile_positions/reconcile_against_db；restore 跨进程回填。
+- **G25续 KDJ/EMA 表达式化**：DSL 加 kdj_rsv/kdj_sm 算子；EMA12/26、KDJ K/D/J 对过程式 float.hex 逐位 parity；LIBRARY+5、catalog 38→43。
+- **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
+- pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
 ## [0.62.0] — 2026-09-04 · 第62轮 G4 续：滚动 walk-forward 样本外 + 对照基准（回测严谨性补齐）
 - **缺口审计**：第26轮 G4 已落地 next-bar 双档成交、交易级 bootstrap 置信区间（含多空）、单次 IS/OOS 静态切分、真实费率+滑点+冲击成本分列、3×3 参数网格、backtest_runs 留档、DSR/PBO 引用。本轮对照用户五要素（walk-forward/费+滑点+冲击/样本外/多空分桶/对照基准），确认**真正缺口只有"滚动 walk-forward"与"对照基准"**，其余已具备，不重复造。
