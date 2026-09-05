@@ -3,6 +3,12 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.85.0] — 2026-09-06 · 第85轮 影子跟随 main 集成（用户需求：跑 main 即自动完成影子信号）
+- **main.py 集成影子每日跟随**：run_cycle 在 report.save 后检查 `shadow_track.daily_due`（工作日、已过触发时刻 env FUTURES_MONITOR_SHADOW_HOUR 默认17:00=收盘后日K可用、当日未记过）→ 满足则 **daemon 线程执行全链**（term top-up → 长面板重建 → 记录当日三影子信号 → 到期评估），**用户跑 main 即自动完成影子信号，无需计划任务/手动命令**；当日防重复（state.shadow_done）；异常全吞掉零阻塞；--once 退出前有界等待影子线程（防 daemon 被杀）。
+- shadow_track.py：新增 `daily_due` 纯函数（工作日/触发时刻/当日未记三判定，可合成断言）+ daily() 的 topup verbose 透传；selftest 5→6组。
+- **真实验证**：--once 冒烟 exit=0/零 Traceback（周六工作日守卫正确未触发——设计行为）；shadow 库状态正常（2026-09-02 三信号各56腿已记录）；长面板/term 缓存数据完好。
+- **用法变化**：跑 main（手动或 start_monitor.bat）即自动完成当日影子信号；Runbook §3.4 的计划任务降级为**可选兜底**（仅当 main 不运行到 17:00 后时才需要）；pytest 758 全绿；评分路径零改动（双哈希无需重跑）。
+
 ## [0.84.0] — 2026-09-06 · 第84轮 G13 解锁落地：LLM 第二意见复核适配层（llm_reviewer.py，无 key 休眠）
 - **解锁方式（比拍板更优）**：未注册 Groq——搜机发现 cc-switch 已存 **DeepSeek 官方 key**（is_current、健康正常、api.deepseek.com 国内直连）；实测 HTTP 200（deepseek-v4-flash）。G13 设计原文点名"DeepSeek 级云端"，直连免代理优于 Groq（免注册/免代理依赖）。
 - **新增根模块 llm_reviewer.py（G13 规格逐条落地）**：①三类小流量触发器——紧急轮动新闻 / |综合分|≥6.5 强信号 / 词典情绪(新闻消息面)与技术分异号背离(双方|值|≥1.5)；②OpenAI 兼容 /chat/completions 走现有 http_client 连接池；**key 走环境变量 FUTURES_MONITOR_LLM_KEY/BASE_URL/MODEL**（本机写入 .env，已 gitignore）；③强制 JSON schema+越界裁剪（direction/strength/uncertainty/symbols≤10/reason≤300字）；④超时/非200/坏JSON/异常全软降级为 {"degraded":…}，**绝不抛出、绝不进主循环**；⑤守护线程异步（main 在 report.save 后启动，只写独立 sidecar reports/llm_review.txt/.jsonl，综合分路径零改动、双哈希无需重跑）；⑥--once 退出前 wait_last 有界 join（修 daemon 线程被杀 bug）。
