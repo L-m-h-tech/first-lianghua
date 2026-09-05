@@ -9,6 +9,10 @@
 - **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
 - pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
+## [0.70.0] — 2026-09-05 · 第70轮 G22续 掩码前后对照汇总工具
+- **新增 tools/mask_compare_summary.py**：聚合 carry_eval.json(mask_compare) 与 xsmom_eval.json(mask_compare_xs) 两个 sidecar，输出统一对照汇总（前后绩效、剔除统计、诚实结论）。
+- 真实汇总：carry 19期vs9期（剔8862→4173）、xsmom 12期vs6期（剔5952→2807）；结论=锁板罕见、交割剔除砍半样本、掩码价值在防锁板而非改善信号。
+- pytest 740→742（新工具 selftest + compileall）；研究侧单文件增量、隔离合规。
 ## [0.69.0] — 2026-09-05 · 第69轮 G25续 量仓因子接入 expr_research 前向IC体检小结
 - **expr_research 报告新增"量仓类表达式因子前向 IC 小结"段落**：自动识别 vol/oi/amount 系 key，汇总 H1/H5 IC。
 - 真实验证（64品种）：vol_chg5/oi_chg5 短期微正（H5 +0.023）、vol_oi_ratio/amount_proxy/oi_corr_price20 均 |IC|<0.05 无稳定预测力——诚实记录不进综合分。
