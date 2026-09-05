@@ -9,6 +9,12 @@
 - **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
 - pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
+## [0.69.0] — 2026-09-05 · 第69轮 G25续 量仓因子接入 expr_research 前向IC体检小结
+- **expr_research 报告新增"量仓类表达式因子前向 IC 小结"段落**：自动识别 vol/oi/amount 系 key，汇总 H1/H5 IC。
+- 真实验证（64品种）：vol_chg5/oi_chg5 短期微正（H5 +0.023）、vol_oi_ratio/amount_proxy/oi_corr_price20 均 |IC|<0.05 无稳定预测力——诚实记录不进综合分。
+- 核实第68轮量仓因子本就被 run() 全 LIBRARY 遍历自动体检，本段仅使结论显式可见。
+- pytest 740 全绿；研究侧单文件增量、隔离合规。
+
 ## [0.68.0] — 2026-09-05 · 第68轮 G25续 量仓类表达式因子（vol/oi 衍生量）
 - **LIBRARY +5 量仓因子（26→31条）**：expr_vol_chg5（成交量5日变化率）/expr_oi_chg5（持仓量5日变化率）/expr_vol_oi_ratio（量仓比换手代理）/expr_amount_proxy（成交额代理=收盘×量）/expr_oi_corr_price20（价仓相关性20日）；全部白名单 DSL、无未来、可编译。
 - **factors_catalog 47→52条**（全 research 不进综合分）；LIBRARY 编译循环/parity 注入 oi 字段（factor_expr/factor_legacy_expr/test_factor_expr/expr_research 四处）。
