@@ -240,6 +240,15 @@ CATALOG = (
      "bound": None, "status": "research", "introduced": 68,
      "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
      "formula": "corr(close,oi,20)，量价配合诊断"},
+    {"key": "expr_range_pct5", "name": "5日日均振幅(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 76,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "ts_mean((high-low)/close,5)；expr_miner 第74轮全池体检截面上榜（H20 meanIC -0.068/t-9.7，低波异象）、"
+                "regime_cond_lab 第75轮确认低波条件化（反向低波≈+11.0%年化/高波失效）；人工复核晋升，负方向、不进综合分"},
+    {"key": "expr_range_pct20", "name": "20日日均振幅(表达式版)", "layer": "表达式研究", "direction": 0,
+     "bound": None, "status": "research", "introduced": 76,
+     "live_at": "factor_expr(研究,不进综合分)", "archive": "research_panel",
+     "formula": "ts_mean((high-low)/close,20)；同 expr_range_pct5 的 20 日窗（H20 截面 -0.066/t-9.2）；不进综合分"},
 )
 
 _BY_KEY = None

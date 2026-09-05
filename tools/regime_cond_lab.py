@@ -148,9 +148,114 @@ def summarize_ics(cs_ics, view):
     return em.cs_summary(xs)
 
 
+# =========================== 第76轮：稳健链（H网格/子期分段/placebo） ===========================
+def placebo_regime_map(reg_map, dates, seed=20260905):
+    """Placebo 标签重排（确定性种子）：把"日期→标签向量"整体随机重排——保留标签的截面结构
+    与自相关量级，只破坏与(因子,前向收益)的对齐。若条件化增益是真实 regime 效应，重排后
+    低波视图应退化到≈全样本水平。纯函数。"""
+    import random
+    rng = random.Random(seed)
+    vecs = []
+    for d in dates:
+        vecs.append({sym: m.get(d) for sym, m in reg_map.items()})
+    shuffled = vecs[:]
+    rng.shuffle(shuffled)
+    out = {}
+    for d, vec in zip(dates, shuffled):
+        for sym, lbl in vec.items():
+            if lbl is not None:
+                out.setdefault(sym, {})[d] = lbl
+    return out
+
+
+def evaluate_views(bysym_rows, fac_map, reg_map, h, n_q, min_names, cost):
+    """单配置三口径评估（纯函数）：返回 (dates, summaries, ics, n_books)。"""
+    fwd_map = forward_maps(bysym_rows, h)
+    dates = sorted({d for m in fac_map.values() for d in m})
+    books, cs_ics = build_books(dates, fac_map, fwd_map, reg_map, h, n_q, min_names)
+    summaries = {v: view_summary(books, v, n_q, cost, h=h) for v in VIEWS}
+    ics = {v: summarize_ics(cs_ics, v) for v in VIEWS}
+    return dates, summaries, ics, len(books)
+
+
+def robust_chain(bysym_rows, fac_map, reg_map, h, n_q, min_names, cost,
+                 grid=(5, 10, 20, 40), seed=20260905):
+    """稳健链（纯函数）：
+    1) H 网格：grid 内各持有期的三口径净年化/截面IC（结构是否跨 H 稳定）；
+    2) 子期分段：全样本日期对半切，各段内重建账本（结构是否跨时段稳定）；
+    3) placebo：regime 标签日期重排后低波视图应退化到≈全样本（证明增益来自 regime 对齐）。"""
+    out = {"h_grid": [], "sub_periods": [], "placebo": None}
+    for hh in grid:
+        _d, summ, ics, n_books = evaluate_views(bysym_rows, fac_map, reg_map, hh, n_q, min_names, cost)
+        out["h_grid"].append({
+            "h": hh, "n_periods": n_books,
+            "all_annual": summ["all"]["net"].get("annual_ret"),
+            "low_annual": summ["low"]["net"].get("annual_ret"),
+            "high_annual": summ["high"]["net"].get("annual_ret"),
+            "all_ic": ics["all"]["mean_ic"], "low_ic": ics["low"]["mean_ic"],
+            "high_ic": ics["high"]["mean_ic"]})
+    # 子期分段（用主 h）
+    fwd_map = forward_maps(bysym_rows, h)
+    dates = sorted({d for m in fac_map.values() for d in m})
+    half = len(dates) // 2
+    for label, sub in (("前半", dates[:half]), ("后半", dates[half:])):
+        books, cs_ics = build_books(sub, fac_map, fwd_map, reg_map, h, n_q, min_names)
+        s_low = view_summary(books, "low", n_q, cost, h=h)
+        s_all = view_summary(books, "all", n_q, cost, h=h)
+        i_low = summarize_ics(cs_ics, "low")
+        i_all = summarize_ics(cs_ics, "all")
+        out["sub_periods"].append({
+            "label": label, "date_min": sub[0] if sub else None,
+            "date_max": sub[-1] if sub else None,
+            "low_annual": s_low["net"].get("annual_ret"), "all_annual": s_all["net"].get("annual_ret"),
+            "low_ic": i_low["mean_ic"], "all_ic": i_all["mean_ic"],
+            "low_days": i_low["n_days"]})
+    # placebo（用主 h）
+    pmap = placebo_regime_map(reg_map, dates, seed=seed)
+    _d, p_summ, p_ics, _nb = evaluate_views(bysym_rows, fac_map, pmap, h, n_q, min_names, cost)
+    out["placebo"] = {"low_annual": p_summ["low"]["net"].get("annual_ret"),
+                      "low_ic": p_ics["low"]["mean_ic"],
+                      "all_annual": p_summ["all"]["net"].get("annual_ret")}
+    return out
+
+
+def render_robust(rb):
+    L = ["-" * 104,
+         "[稳健链 --robust]（第76轮：结构是否跨持有期/跨时段稳定；placebo 验证增益来自 regime 对齐）"]
+    L.append("  H网格（净年化%% / 截面IC）：")
+    L.append("    %-6s %10s %10s %10s %10s %10s %10s"
+             % ("H", "全样本年化", "低波年化", "高波年化", "全样本IC", "低波IC", "高波IC"))
+    for r in rb["h_grid"]:
+        L.append("    %-6d %10s %10s %10s %10s %10s %10s"
+                 % (r["h"],
+                    ("%+.2f%%" % (100.0 * r["all_annual"])) if r["all_annual"] is not None else "--",
+                    ("%+.2f%%" % (100.0 * r["low_annual"])) if r["low_annual"] is not None else "--",
+                    ("%+.2f%%" % (100.0 * r["high_annual"])) if r["high_annual"] is not None else "--",
+                    ("%+.3f" % r["all_ic"]) if r["all_ic"] is not None else "--",
+                    ("%+.3f" % r["low_ic"]) if r["low_ic"] is not None else "--",
+                    ("%+.3f" % r["high_ic"]) if r["high_ic"] is not None else "--"))
+    L.append("  子期分段（前/后半各重建账本，低波视图）：")
+    for r in rb["sub_periods"]:
+        L.append("    %s（%s ~ %s）：低波净年化 %s / IC %s（全样本 %s / %s，低波有效天数 %d）"
+                 % (r["label"], r["date_min"], r["date_max"],
+                    ("%+.2f%%" % (100.0 * r["low_annual"])) if r["low_annual"] is not None else "--",
+                    ("%+.3f" % r["low_ic"]) if r["low_ic"] is not None else "--",
+                    ("%+.2f%%" % (100.0 * r["all_annual"])) if r["all_annual"] is not None else "--",
+                    ("%+.3f" % r["all_ic"]) if r["all_ic"] is not None else "--",
+                    r["low_days"]))
+    p = rb["placebo"]
+    if p:
+        L.append("  placebo（标签日期重排，低波视图）：净年化 %s / IC %s（全样本 %s）"
+                 "——若与真实低波口径接近则为分桶假象、远离则 regime 效应成立"
+                 % (("%+.2f%%" % (100.0 * p["low_annual"])) if p["low_annual"] is not None else "--",
+                    ("%+.3f" % p["low_ic"]) if p["low_ic"] is not None else "--",
+                    ("%+.2f%%" % (100.0 * p["all_annual"])) if p["all_annual"] is not None else "--"))
+    return L
+
+
 # =========================== 主流程 ===========================
 def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
-        h=20, n_q=5, min_names=10, cost=None, verbose=True):
+        h=20, n_q=5, min_names=10, cost=None, verbose=True, robust=False):
     db_path = str(db_path or DEFAULT_DB)
     txt_path = str(txt_path or DEFAULT_TXT)
     json_path = str(json_path or DEFAULT_JSON)
@@ -170,6 +275,7 @@ def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
     books, cs_ics = build_books(dates, fac_map, fwd_map, reg_map, h, n_q, min_names)
     summaries = {v: view_summary(books, v, n_q, cost, h=h) for v in VIEWS}
     ics = {v: summarize_ics(cs_ics, v) for v in VIEWS}
+    rb = robust_chain(bysym, fac_map, reg_map, h, n_q, min_names, cost) if robust else None
     result = {"factor": name, "expr": expr, "h": h, "n_q": n_q, "min_names": min_names,
               "cost_oneway": cost, "n_symbols": len(bysym), "n_dates": len(dates),
               "db": db_path,
@@ -184,7 +290,9 @@ def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
             "gross_annual": ls["gross"].get("annual_ret"),
             "avg_turnover": ls["avg_turnover_one_sided"], "total_cost": ls["total_cost"],
             "avg_spread": ls["avg_spread"], "cs_ic": ics[v]}
-    text = render_report(result)
+    if rb:
+        result["robust"] = rb
+    text = render_report(result, robust=rb)
     if verbose:
         print(text)
     os.makedirs(os.path.dirname(txt_path), exist_ok=True)
@@ -211,7 +319,7 @@ def run(db_path=None, txt_path=None, json_path=None, factor=None, expr=None,
     return result
 
 
-def render_report(result):
+def render_report(result, robust=None):
     L = ["=" * 104,
          " G25/G29续 regime 条件化分层多空实验台（研究侧：检验条件化是否增强，不自动上线）  生成于 %s"
          % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -260,6 +368,8 @@ def render_report(result):
                  % (-100.0 * low["net"]["annual_ret"], -100.0 * high["net"]["annual_ret"]))
     L.append("  负结果照实：若低波口径未优于全样本，则 regime 条件化不增强、仅为分桶统计假象。")
     L.append("  研究侧红线：本工具不写 LIBRARY/catalog、不被 main import、不自动改权重。")
+    if robust:
+        L.extend(render_robust(robust))
     L.append("=" * 104)
     return "\n".join(L)
 
@@ -317,8 +427,24 @@ def selftest():
     # 5) 单调性健全性：合成面板低波段因子=价格水平=未来收益序 → 低波视图 IC 应为正
     low_ic = summarize_ics(cs_ics, "low")
     assert low_ic["mean_ic"] is not None and low_ic["mean_ic"] > 0.5, low_ic
+    # 6) 第76轮 稳健链：placebo 确定性+保量、evaluate_views/robust_chain 结构齐
+    reg6 = regime_map_of(bysym)
+    dates6 = sorted({r["date"] for rows in bysym.values() for r in rows})
+    pm1 = placebo_regime_map(reg6, dates6, seed=7)
+    pm2 = placebo_regime_map(reg6, dates6, seed=7)
+    assert pm1 == pm2                                     # 同种子确定性
+    n_lbl = sum(1 for m in reg6.values() for v in m.values() if v)
+    n_plb = sum(1 for m in pm1.values() for v in m.values() if v)
+    assert n_lbl == n_plb                                 # 标签总量不变
+    dates_e, summ_e, ics_e, nb = evaluate_views(bysym, fac3, reg6, 5, 3, 4, 0.0)
+    assert nb > 0 and summ_e["low"]["net"].get("annual_ret") is not None
+    rb6 = robust_chain(bysym, fac3, reg6, 5, 3, 4, 0.0, grid=(5, 10))
+    assert len(rb6["h_grid"]) == 2 and len(rb6["sub_periods"]) == 2
+    assert rb6["placebo"]["low_ic"] is not None
+    text6 = "\n".join(render_robust(rb6))
+    assert "H网格" in text6 and "placebo" in text6
     print("regime_cond_lab selftest ALL PASS（因子装配两路径/regime标签/build_books结构无未来/"
-          "三视图绩效与IC汇总/低波强信号健全性 共5组）")
+          "三视图绩效与IC汇总/低波强信号健全性/稳健链与placebo 共6组）")
     return 0
 
 
@@ -332,12 +458,14 @@ def main(argv=None):
     ap.add_argument("--quantiles", type=int, default=5)
     ap.add_argument("--min-names", type=int, default=10)
     ap.add_argument("--cost-oneway", type=float, default=None, help="单边成本率，默认回测口径万1.5")
+    ap.add_argument("--robust", action="store_true", help="第76轮：稳健链（H网格/子期分段/placebo标签重排）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     run(db_path=args.db, factor=args.factor, expr=(args.expr.strip() or None),
-        h=args.h, n_q=args.quantiles, min_names=args.min_names, cost=args.cost_oneway)
+        h=args.h, n_q=args.quantiles, min_names=args.min_names, cost=args.cost_oneway,
+        robust=args.robust)
     return 0
 
 

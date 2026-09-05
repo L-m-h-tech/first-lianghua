@@ -749,6 +749,16 @@ LIBRARY = (
     {"key": "expr_oi_corr_price20", "expr": "corr(close,oi,20)", "direction": 0,
      "name": "价仓相关性20日(表达式版)",
      "note": "价格与持仓量20日Pearson相关，量价配合诊断；研究侧登记"},
+    # ===== G25续（第76轮人工复核晋升）：range_pct 日均振幅——第74轮 expr_miner 全池体检截面
+    # 上榜（H20 meanIC -0.068/t-9.7）、第75轮 regime_cond_lab 确认低波条件化结构
+    #（|IC| 0.082→0.148，反向低波≈+11.0%年化/高波失效）。按红线"自动挖掘产物须人工复核+体检
+    # 后方可登记"晋升为 research 因子（不进综合分、不被 main import）。
+    {"key": "expr_range_pct5", "expr": "ts_mean((high-low)/close,5)", "direction": 0,
+     "name": "5日日均振幅(表达式版)",
+     "note": "日内振幅5日均值；截面负IC=低波异象（第74/75轮体检与条件化实验），研究侧登记"},
+    {"key": "expr_range_pct20", "expr": "ts_mean((high-low)/close,20)", "direction": 0,
+     "name": "20日日均振幅(表达式版)",
+     "note": "日内振幅20日均值；低波状态反向结构见 regime_cond_lab（第75轮），研究侧登记"},
 )
 
 

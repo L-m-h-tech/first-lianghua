@@ -362,10 +362,11 @@ def filter_points_by_regime(points, regime_map, want="low", name_to_sym=None):
 
 
 def compare_regime(points_main, factor, main_h, vol_lb, n_q, min_names, cost_round,
-                   main_days, regime_map=None):
+                   main_days, regime_map=None, points_near=None):
     """波动率 regime 条件化对照（第75轮）：全样本 / 仅低波 / 仅高波 三个子截面的主因子多空。
 
-    口径与 compare_mask 一致：同一 main_days 截断窗；条件化视图样本不足时该项为 None。"""
+    口径与 compare_mask 一致：同一 main_days 截断窗；条件化视图样本不足时该项为 None。
+    第76轮：points_near 非空时同步出"近月连续(含展期roll)"口径的三个子截面（near 键）。"""
     all_dates, _all_by = xs.build_panel(points_main)
     main_dates = xs.truncate_dates(all_dates, main_days)
     main_set = set(main_dates)
@@ -377,12 +378,18 @@ def compare_regime(points_main, factor, main_h, vol_lb, n_q, min_names, cost_rou
         _d, by = xs.build_panel(pts)
         return _ls_summary(main_dates, by, factor, main_h, vol_lb, n_q, min_names, cost_round)
 
-    out = {"all": _sum(points_main), "low": None, "high": None, "counts": {}}
+    out = {"all": _sum(points_main), "low": None, "high": None, "counts": {}, "near": None}
     if regime_map:
         for want in ("low", "high"):
             fm = filter_points_by_regime(points_main, regime_map, want)
             out[want] = _sum(fm["points"])
             out["counts"][want] = {"kept": fm["kept"], "dropped": fm["dropped"]}
+    if points_near:
+        out["near"] = {"all": _sum(points_near)}
+        if regime_map:
+            for want in ("low", "high"):
+                fm_n = filter_points_by_regime(points_near, regime_map, want)
+                out["near"][want] = _sum(fm_n["points"])
     return out
 
 
@@ -406,6 +413,18 @@ def render_regime_compare(cmp):
         parts = ["%s:留%d/剔%d" % (w, cts[w]["kept"], cts[w]["dropped"]) for w in ("low", "high") if w in cts]
         L.append("  点数统计：" + "；".join(parts) + "（mid/无覆盖点不入条件化视图）")
     L.append("  诚实结论：条件化只改变子截面样本；若低波/高波净t与全样本同向同量级，则 regime 条件化不增益。")
+    near = cmp.get("near")
+    if near:
+        L.append("  [近月连续(含展期roll)口径·同窗子截面]（第76轮：roll 收益与 regime 的交互）")
+        for label, key in (("全样本", "all"), ("仅低波", "low"), ("仅高波", "high")):
+            s = near.get(key)
+            if s is None or s.get("pf") is None:
+                L.append("  近月·%-10s %10s" % (label, "无样本"))
+                continue
+            pf, bp = s["pf"], s["bands"]
+            L.append("  近月·%-10s %10d %10.2f %10.3f %8.0f %8.0f %8.3f"
+                     % (label, s["n_periods"], pf["net_t"], pf["net_mean"] * 100,
+                        pf["win"] * 100, bp["mono"] * 100, bp["spread"] * 100))
     L.append("=" * 108)
     return "\n".join(L)
 
@@ -787,14 +806,14 @@ def run(argv=None):
         else:
             rcmp = compare_regime(main_points, args.factor, main_h, args.vol_lb,
                                   args.quantiles, args.min_names, cost_round,
-                                  args.main_days, regime_map=rmap)
+                                  args.main_days, regime_map=rmap, points_near=points_near)
             rtxt = render_regime_compare(rcmp)
             print(rtxt)
             with open(args.out, "a", encoding="utf-8-sig") as f:
                 f.write(rtxt + "\n")
             sidecar["regime_compare"] = {
                 "all": rcmp.get("all"), "low": rcmp.get("low"), "high": rcmp.get("high"),
-                "counts": rcmp.get("counts")}
+                "counts": rcmp.get("counts"), "near": rcmp.get("near")}
             with open(args.json, "w", encoding="utf-8") as f:
                 f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
     return 0
