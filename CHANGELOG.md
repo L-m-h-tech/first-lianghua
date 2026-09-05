@@ -3,6 +3,12 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.84.0] — 2026-09-06 · 第84轮 G13 解锁落地：LLM 第二意见复核适配层（llm_reviewer.py，无 key 休眠）
+- **解锁方式（比拍板更优）**：未注册 Groq——搜机发现 cc-switch 已存 **DeepSeek 官方 key**（is_current、健康正常、api.deepseek.com 国内直连）；实测 HTTP 200（deepseek-v4-flash）。G13 设计原文点名"DeepSeek 级云端"，直连免代理优于 Groq（免注册/免代理依赖）。
+- **新增根模块 llm_reviewer.py（G13 规格逐条落地）**：①三类小流量触发器——紧急轮动新闻 / |综合分|≥6.5 强信号 / 词典情绪(新闻消息面)与技术分异号背离(双方|值|≥1.5)；②OpenAI 兼容 /chat/completions 走现有 http_client 连接池；**key 走环境变量 FUTURES_MONITOR_LLM_KEY/BASE_URL/MODEL**（本机写入 .env，已 gitignore）；③强制 JSON schema+越界裁剪（direction/strength/uncertainty/symbols≤10/reason≤300字）；④超时/非200/坏JSON/异常全软降级为 {"degraded":…}，**绝不抛出、绝不进主循环**；⑤守护线程异步（main 在 report.save 后启动，只写独立 sidecar reports/llm_review.txt/.jsonl，综合分路径零改动、双哈希无需重跑）；⑥--once 退出前 wait_last 有界 join（修 daemon 线程被杀 bug）。
+- **真实验证（main --once --no-launch --llm-force 冒烟）**：exit=0、零 Traceback、DB integrity ok；LLM 真实返回结构化第二意见（对丁二烯橡胶/沥青/燃料油三个 +10.0 强信号：方向多/强度4/不确定性0.35，理由引用库存低位/仓单大降/carry/词典情绪一致，agrees_with_lexicon=true）。冒烟抓出并修复 2 个真实 bug（ROOT 路径层级、http_client 会话实例调用）。
+- tests/test_llm_reviewer.py 6例（无key零请求零开销/三触发器/裁剪/三降级路径/完整流写sidecar/异步不外溢）；pytest 748→756 全绿；DB integrity ok。
+
 ## [0.83.0] — 2026-09-05 · 第83轮 影子信号追踪 shadow_track（路径A落地：每日离线影子，零主链改动）
 - **新增 tools/shadow_track.py（G7/G25续，第82轮拍板路径A）**：三个事先登记的影子信号——xsmom252_baseline（252日收益截面秩，全市场）/ tsmom252_factor（波动调整动量截面秩）/ xsmom252_ex_energy（剔除能化对照列，标注"样本内挑选"）——每日记录进 cache/shadow_signals.db（幂等），到期（H=20）按长面板实际价格回填多空绩效与截面IC，出 reports/shadow_track.txt/.json（绩效+当日多空腿快照）。
 - **启动日守卫（防回填）**：首次运行写入 shadow_start_date，生产环境永不回填历史（回填=把回测再演一遍，无增量证据价值）；--daily 全链=term top-up→长面板重建→记录→评估→报告（单命令供计划任务）。
