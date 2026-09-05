@@ -49,6 +49,25 @@ def load_return_map(db_path=DEFAULT_DB):
     return rets, sectors, syms
 
 
+def apply_mask_to_returns(return_map, mask):
+    """把可交易性掩码应用到收益映射：不可交易日（锁板/临近交割）的 ret1d 置为缺失。
+
+    mask: tradable_mask.mask_for_panel 输出 {sym: {date: {"tradable":bool}}}。
+    返回新的 return_map（浅拷贝品种字典，不可交易日 pop 掉），纯函数不改入参。
+    """
+    out = {}
+    for sym, dm in return_map.items():
+        m = mask.get(sym)
+        d = dict(dm)
+        if m:
+            for dt in list(d.keys()):
+                e = m.get(dt)
+                if e is not None and not e.get("tradable", True):
+                    d.pop(dt, None)
+        out[sym] = d
+    return out
+
+
 def dense_matrix(return_map, analysis_days=ANALYSIS_DAYS, coverage_min=COVERAGE_MIN, fill_missing=False):
     """选固定宇宙（分析窗内覆盖率达标）并对齐成 dates×symbols 稠密矩阵，返回 (dates, syms, matrix[t][i])。
     fill_missing=False（默认）：覆盖率不足的品种剔除、任一品种缺值的整日剔除（稠密，旧行为逐字节一致）。
@@ -252,10 +271,33 @@ def latest_snapshot(mat, syms, sectors, methods=None):
     return snap
 
 
-def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
+def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True, mask=False):
     txt_path = txt_path or config.PC_FILE
     json_path = json_path or config.PC_JSON
     return_map, sectors, all_syms = load_return_map(db_path)
+    # G22续（第71轮）：可交易性掩码剔除（--mask；只读 research_panel.db，零网络）
+    mask_notes = ""
+    if mask:
+        try:
+            import tradable_mask as tmask
+            from collections import defaultdict as _dd
+            db_p = str(os.path.join(_ROOT, "cache", "research_panel.db"))
+            if os.path.exists(db_p):
+                import sqlite3 as _sq
+                con = _sq.connect(db_p)
+                rows_by_date = _dd(dict)
+                for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
+                    rows_by_date[row[1]][row[0]] = {"c": row[2], "h": row[3], "l": row[4]}
+                con.close()
+                mask = tmask.mask_for_panel(rows_by_date)
+                removed = sum(1 for sym, dm in return_map.items()
+                              for dt in dm if not (mask.get(sym) or {}).get(dt, {}).get("tradable", True))
+                return_map = apply_mask_to_returns(return_map, mask)
+                mask_notes = "；G22续掩码：剔不可交易日点%d（锁板/距交割月1号≤15天）" % removed
+            else:
+                mask_notes = "；G22续掩码：research_panel.db 不存在，跳过"
+        except Exception as e:
+            mask_notes = "；G22续掩码失败（不影响主流程）: %s" % type(e).__name__
     dates, syms, mat = dense_matrix(return_map)
     proxy = rolling_proxy(mat)
     stats = {m: perf_stats(proxy[m]["daily"]) for m in config.PC_METHODS}
@@ -288,6 +330,8 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True):
     gross_grid_all = gross_cost_grid(proxy_all, gross_list, DEFAULT_ONEWAY_COST)
 
     L = []
+    if mask_notes:
+        L.append(mask_notes.lstrip("；"))
     L.append("=" * 104)
     L.append("G26 组合构建实验台 portfolio_lab（纯离线读 G21 面板，风险型权重、不预测收益、不接 main 不改综合分/sizing）")
     L.append("固定宇宙=%d/%d 品种（最近%d日覆盖率≥%.0f%%），稠密区间 %s~%s 共%d日；协方差窗%d、再平衡每%d日、对角收缩%.2f、单票上限%.0f%%"
@@ -518,20 +562,29 @@ def selftest():
         assert rows_a[2]["ann_vol_net"] >= rows_a[0]["ann_vol_net"]
         for r in rows_a:
             assert r["sharpe_net"] <= r["sharpe_gross"] + 1e-9 and r["ann_cost_drag"] >= 0
+    # 第71轮 G22续：apply_mask_to_returns 剔除不可交易日（锁板/临近交割）后收益映射变小、不改入参
+    rm3 = {k: dict(v) for k, v in rm.items()}
+    mask = {"S0": {dt: {"tradable": dt != "2025-260"} for dt in rm["S0"]},
+            "S1": {dt: {"tradable": True} for dt in rm["S1"]}}
+    out = apply_mask_to_returns(rm3, mask)
+    assert "S0" in out and "2025-260" not in out["S0"] and "2025-260" in rm3["S0"]  # 不改入参
+    assert "2025-260" in out["S1"] and len(out["S1"]) == len(rm3["S1"])
+    assert len(out["S0"]) == len(rm3["S0"]) - 1
     print("portfolio_lab selftest ALL PASS（稠密面板对齐/固定宇宙覆盖率筛选/滚动样本外无未来且GMV波动≤等权/"
           "快照四方法合法/短序列安全/净值曲线复利与idx日期对齐/回撤窗口手算/fill_missing全品种/"
-          "gross放大与段首日换手成本手算/gross网格单调/全品种三档网格 共12组）")
+          "gross放大与段首日换手成本手算/gross网格单调/全品种三档网格/掩码剔除 共13组）")
     return 0
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="G26 组合构建实验台（纯离线读面板）")
     ap.add_argument("--db", default=DEFAULT_DB)
+    ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码并剔除不可交易日后重做组合实验")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
-    run(db_path=args.db)
+    run(db_path=args.db, mask=getattr(args, "mask", False))
     return 0
 
 

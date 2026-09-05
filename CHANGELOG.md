@@ -9,6 +9,10 @@
 - **OOS 分层多空/换手/成本**：orthogonal_blend_oos 加 quantile_ls_day/turnover_between/evaluate_ls_books；真实面板负结果照实。
 - pytest 733→738 全绿；远程 origin 配置 + 隐私 xlsx 移除 + 全量 push 完成（161 commit + 34 tag）。
 
+## [0.71.0] — 2026-09-05 · 第71轮 G22续 掩码接入 portfolio_lab
+- **portfolio_lab 新增 `--mask` 选项**：读 research_panel.db 算可交易性掩码（锁板/交割），apply_mask_to_returns 剔不可交易日后重做组合实验。
+- 真实验证：剔不可交易日点 32613；固定宇宙 61→54 品种、504→472 日；等权年化 -2.35%/波动9.22%/夏普-0.26（掩码后口径）。
+- selftest 12→13组（apply_mask_to_returns 剔除不改入参）；pytest 742 全绿；研究侧单文件增量、隔离合规。
 ## [0.70.0] — 2026-09-05 · 第70轮 G22续 掩码前后对照汇总工具
 - **新增 tools/mask_compare_summary.py**：聚合 carry_eval.json(mask_compare) 与 xsmom_eval.json(mask_compare_xs) 两个 sidecar，输出统一对照汇总（前后绩效、剔除统计、诚实结论）。
 - 真实汇总：carry 19期vs9期（剔8862→4173）、xsmom 12期vs6期（剔5952→2807）；结论=锁板罕见、交割剔除砍半样本、掩码价值在防锁板而非改善信号。
