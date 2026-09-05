@@ -24,8 +24,10 @@ for p in (_ROOT, _HERE):
 
 import factor_expr as fe          # noqa: E402  根模块：表达式引擎+治理
 import panel_builder as pb        # noqa: E402  同 tools：G21 面板回读
+import expr_miner as em           # noqa: E402  第77轮：复用逐日截面IC原语（cross_section_ics/cs_summary）
 
 HORIZONS = (1, 5, 20)
+MIN_CS = em.MIN_CS                # 逐日截面IC最少品种数（与 expr_miner 同口径）
 DEFAULT_DB = os.path.join(_ROOT, "cache", "research_panel.db")
 DEFAULT_TXT = os.path.join(_ROOT, "reports", "expr_research.txt")
 DEFAULT_JSON = os.path.join(_ROOT, "reports", "expr_research.json")
@@ -117,7 +119,7 @@ def symbol_factor_ic(expr, series, close, horizons=HORIZONS):
     return out
 
 
-def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbose=True):
+def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbose=True, min_cs=None):
     store = pb.PanelStore(db_path)
     syms = sorted(store.symbols())
     lib = fe.LIBRARY
@@ -129,11 +131,15 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
     glob_xcheck_n = 0
     # per factor per horizon: 逐品种 ic 列表 + 池化 (x,y)
     per = {f["key"]: {h: {"ics": [], "px": [], "py": []} for h in HORIZONS} for f in lib}
-    last_cs = {f["key"]: {} for f in lib}     # 最近交易日截面值
+    fac_bd = {f["key"]: {} for f in lib}     # 第77轮：逐日截面层 {key: {sym: {date: val}}}
+    fwd_bd = {}                              # {sym: {h: {date: fwd}}}（与因子无关，每品种只算一次）
+    last_cs = {f["key"]: {} for f in lib}    # 最近交易日截面值
+    loaded = []
     for sym in syms:
         rows = store.load_rows(sym)
         if not rows:
             continue
+        loaded.append(sym)
         d, np_, mis = parity_for_rows(rows)
         glob_parity_diff = max(glob_parity_diff, d)
         glob_parity_pts += np_
@@ -143,8 +149,13 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
         glob_xcheck_n += xn
         series = series_from_rows(rows)
         close = series["close"]
+        dates_sym = [r["date"] for r in rows]
+        fwd_bd[sym] = {h: {dates_sym[t]: forward_return(close, t, h)
+                           for t in range(len(close))} for h in HORIZONS}
         for f in lib:
             fac = fe.compute_ts(f["expr"], series)
+            fac_bd[f["key"]][sym] = {dates_sym[t]: v for t, v in enumerate(fac)
+                                     if fe._isnum(v)}
             for h in HORIZONS:
                 xs, ys = [], []
                 for t in range(len(fac)):
@@ -167,13 +178,18 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
 
     summary = {}
     for f in lib:
-        summary[f["key"]] = {"name": f["name"], "direction": f["direction"], "expr": f["expr"], "h": {}}
+        summary[f["key"]] = {"name": f["name"], "direction": f["direction"], "expr": f["expr"],
+                             "h": {}, "cs": {}}
         for h in HORIZONS:
             bucket = per[f["key"]][h]
             pooled = fe.spearman(bucket["px"], bucket["py"])
             summary[f["key"]]["h"][h] = {
                 "mean_ic": mean(bucket["ics"]), "pooled_ic": pooled,
                 "n_sym": len(bucket["ics"]), "n_pair": len(bucket["px"])}
+            # 第77轮：逐日截面层（跨品种 Spearman 的均值/ICIR/t值/正比例，与 expr_miner 同口径）
+            summary[f["key"]]["cs"][h] = em.cs_summary(em.cross_section_ics(
+                fac_bd[f["key"]], {s: fwd_bd[s][h] for s in loaded},
+                MIN_CS if min_cs is None else min_cs))
     # 截面 cross_rank 演示（短长均线比）最近日
     cs_rank_demo = fe.eval_cs("cross_rank(m)", {"m": last_cs["expr_ma_ratio"]})
     finite_cs = sorted(((s, v) for s, v in cs_rank_demo.items() if fe._isnum(v)), key=lambda kv: kv[1])
@@ -208,6 +224,31 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
                 pi if fe._isnum(pi) else float("nan"), r["n_pair"]))
         lines.append("  %-18s %+d      | %-22s | %-22s | %-22s" %
                      (f["key"], f["direction"], cells[0], cells[1], cells[2]))
+    # 第77轮：逐日截面层（与 expr_miner 同口径；时序层=逐品种均值，截面层=逐日跨品种 RankIC）
+    lines.append("  （第77轮新增逐日截面层 mean/ICIR/t/正比例，与 expr_miner 完全同口径——双工具口径统一）")
+    for f in lib:
+        cs = summary[f["key"]]["cs"]
+        cells = []
+        for h in HORIZONS:
+            r = cs[h]
+            cells.append("mean%+.3f/t%+.1f/正%.0f%%" % (
+                r["mean_ic"], r["t_stat"] or 0.0, 100.0 * (r["pct_positive"] or 0.0))
+                if r["mean_ic"] is not None else "无有效截面样本")
+        lines.append("  %-18s %-8s | %-22s | %-22s | %-22s" %
+                     ("", "截面", cells[0], cells[1], cells[2]))
+    cs_hits = []
+    for f in lib:
+        vals = [abs(summary[f["key"]]["cs"][h]["mean_ic"]) for h in HORIZONS
+                if summary[f["key"]]["cs"][h]["mean_ic"] is not None]
+        if vals and max(vals) >= 0.05:
+            cs_hits.append((f["key"], max(vals)))
+    cs_hits.sort(key=lambda kv: -kv[1])
+    if cs_hits:
+        lines.append("  [截面上榜 |逐日截面meanIC|≥0.05]：" +
+                     "、".join("%s(%.3f)" % (k, v) for k, v in cs_hits) +
+                     "（仅供人工复核，不自动上线）")
+    else:
+        lines.append("  [截面上榜 |逐日截面meanIC|≥0.05]  无（负结果照实）")
     lines.append("-" * 92)
     # G25续（第68/69轮）：量仓类表达式因子前向 IC 小结（自动识别 vol/oi/amount 系 key）
     vol_keys = [f["key"] for f in lib
@@ -296,8 +337,25 @@ def selftest():
     resid, beta = fe.orthogonalize(target, [base1, base2])
     assert abs(beta[0] - 2.0) < 1e-9 and abs(beta[1] + 1.0) < 1e-9
     assert all(abs(r) < 1e-9 for r in resid)
+    # 6) 第77轮 逐日截面层：临时面板跑 run()，summary 含 cs 且结构齐、强截面因子 IC≈+1
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="expr_research_t_")
+    tmpdb = os.path.join(tmpdir, "panel.db")
+    st = pb.PanelStore(tmpdb)
+    n_sym6 = 6
+    for k2 in range(n_sym6):
+        # 各品种差异化斜率（品种 k2 稳定跑赢 k2-1）→ ret5 的截面序稳定 → 截面IC≈+1
+        rows6 = _mk_rows([100.0 + k2 * 10.0 + (0.5 + 0.1 * k2) * i for i in range(60)],
+                         sym="S%d" % k2)
+        st.replace_symbol("S%d" % k2, rows6)
+    st.close()
+    res6 = run(db_path=tmpdb, txt_path=os.path.join(tmpdir, "r.txt"),
+               json_path=os.path.join(tmpdir, "r.json"), verbose=False, min_cs=4)
+    r6 = res6["factors"]["expr_ret5_exact"]["cs"][5]
+    assert r6["mean_ic"] is not None and r6["n_days"] > 0 and "t_stat" in r6
+    assert "截面" in open(os.path.join(tmpdir, "r.txt"), encoding="utf-8").read()
     print("expr_research selftest ALL PASS（面板/bar同表达式parity=0、表达式动量==实时ret5、"
-          "前向收益严格向未来且秩相关方向正确、多品种cross_rank、OLS正交恢复 共5组）")
+          "前向收益严格向未来且秩相关方向正确、多品种cross_rank、OLS正交恢复、逐日截面层 共6组）")
     return 0
 
 

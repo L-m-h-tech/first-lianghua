@@ -26,7 +26,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, timedelta
 
 import config
 import futures_data
@@ -295,6 +295,13 @@ class TermHistoryStore:
             cur = self.conn.execute("SELECT COUNT(*) FROM ckline WHERE code=?", (code,))
             return cur.fetchone()[0]
 
+    def max_bar_date(self, code):
+        """该合约缓存中的末根日期（"YYYY-MM-DD" 或 None）——第77轮 top-up 用。"""
+        with self.lock:
+            cur = self.conn.execute("SELECT MAX(d) FROM ckline WHERE code=?", (code,))
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+
     def save_contract(self, sym, code, bars):
         """落库一个合约的日K；bars 为空则登记到 cempty。返回写入根数。"""
         with self.lock:
@@ -337,13 +344,16 @@ class TermHistoryStore:
 
 
 # =========================== 联网下载（研究侧离线跑，失败软降级、不编造） ===========================
-def fetch_one_contract(sym, yy, mm, store, retry=2, pause=0.25):
-    """下载单个合约日K并落库；返回 (code, n_bars, status)。已缓存/已标空直接跳过。"""
+def fetch_one_contract(sym, yy, mm, store, retry=2, pause=0.25, force=False):
+    """下载单个合约日K并落库；返回 (code, n_bars, status)。已缓存/已标空直接跳过。
+
+    force=True（第77轮 top-up 用）忽略"已缓存即跳过"，重拉并按 INSERT OR REPLACE 合并
+    （重复日期以新数据覆盖，新日期追加）——用于已缓存合约末根落后的增量补K线。"""
     code = kline_symbol(sym, yy, mm)
-    if store.count_bars(code) > 0:
-        return code, store.count_bars(code), "cached"
-    if store.is_empty_marked(code):
+    if store.is_empty_marked(code) and not force:
         return code, 0, "empty-marked"
+    if not force and store.count_bars(code) > 0:
+        return code, store.count_bars(code), "cached"
     try:
         bars = futures_data.fetch_daily_kline(code, retry=retry)
     except Exception as e:  # 单合约失败不阻断，记状态、下次可重试
@@ -352,6 +362,87 @@ def fetch_one_contract(sym, yy, mm, store, retry=2, pause=0.25):
     if pause:
         time.sleep(pause)
     return code, n, ("saved" if n else "empty")
+
+
+# =========================== 第77轮：增量补K线（top-up，修"缓存不回补"缺口） ===========================
+def _parse_date(s):
+    y, m, d = str(s).split("-")
+    return date(int(y), int(m), int(d))
+
+
+def topup_decide(today, entries, stale_days=10):
+    """决定哪些合约需要增量补K线（纯函数，零网络）。
+
+    entries=[(sym, code, yy, mm, max_date_str_or_None)]。规则：
+      无缓存 → "new"；合约月仍在挂牌（yy/mm ≥ 上个日历月）且末根早于 today-stale_days → "stale"；
+      已退市合约（末根天然早于今天）不补——避免对历史合约做无谓重拉。
+    返回 {code: "new"|"stale"}。"""
+    cutoff = today - timedelta(days=stale_days)
+    last_month = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+    out = {}
+    for _sym, code, yy, mm, maxd in entries:
+        if not maxd:
+            out[code] = "new"
+            continue
+        if (full_year(yy), mm) >= last_month and _parse_date(maxd) < cutoff:
+            out[code] = "stale"
+    return out
+
+
+def topup_varieties(items, store, months_back=6, stale_days=10, workers=6, pause=0.1,
+                    today=None, verbose=True):
+    """对品种列表做增量补K线（第77轮，G22续④常驻采集的离线等价物）。
+
+    items=[(中文名, 主连code)]（与 carry_eval.resolve_codes 输出同形）。
+    枚举每品种近 months_back 个月的合约：无缓存→下载（new）；仍挂牌且末根落后 stale_days→
+    重拉合并（stale，INSERT OR REPLACE 幂等）；已退市不补。返回统计 dict。"""
+    import config
+    today = today or date.today()
+    months = []
+    y, m = today.year, today.month
+    for _ in range(months_back):
+        months.append((y % 100, m))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    entries, sym_of = [], {}
+    for name, main_code in items:
+        meta = config.VARIETIES.get(name, {})
+        sym = meta.get("sym") or main_code.rstrip("0")
+        sym_of[sym] = name
+        for yy, mm in months:
+            code = kline_symbol(sym, yy, mm)
+            if store.is_empty_marked(code):
+                continue
+            entries.append((sym, code, yy, mm, store.max_bar_date(code)))
+    plan = topup_decide(today, entries, stale_days=stale_days)
+    stats = {"checked": len(entries), "new": 0, "stale": 0, "fresh": len(entries) - len(plan),
+             "errors": []}
+    todo = [(c, r) for c, r in plan.items()]
+    job_sym = {}
+    for sym, code, yy, mm, _maxd in entries:
+        job_sym[code] = (sym, yy, mm)
+    if verbose and todo:
+        print("top-up：检查 %d 个近月合约，需处理 %d（new %d / stale %d）"
+              % (len(entries), len(todo), stats["new"], stats["stale"]))
+
+    def _job(item):
+        code, reason = item
+        sym, yy, mm = job_sym[code]
+        return fetch_one_contract(sym, yy, mm, store, pause=pause,
+                                  force=(reason == "stale"))
+
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            for code, _n, status in pool.map(_job, todo):
+                reason = plan[code]
+                if reason == "new":
+                    stats["new"] += 1
+                else:
+                    stats["stale"] += 1
+                if status.startswith("error"):
+                    stats["errors"].append("%s:%s" % (code, status))
+    return stats
 
 
 def build_symbol_range(sym, start_yy, start_mm, end_yy, end_mm, store,
@@ -465,10 +556,48 @@ def _selftest():
     assert abs(nav[3] - 1.0404) < 1e-12     # 换月日 nav 不跳
     assert abs(nav[4] - 1.0404 * 1.01) < 1e-12
     assert near_roll_nav([{"near": None, "near_s": None}]) == [None]
+    # 9) 第77轮 top-up：max_bar_date 与补K线决策（纯函数：new/stale/退市不补）
+    import tempfile
+    tmpdir = tempfile.mkdtemp(prefix="th_t_")
+    tstore = TermHistoryStore(os.path.join(tmpdir, "th.db"))
+    bars9 = [{"d": "2026-08-28", "c": 100.0, "s": 100.0, "v": 5, "p": 50},
+             {"d": "2026-09-01", "c": 101.0, "s": 101.0, "v": 6, "p": 55}]
+    tstore.save_contract("RB", "RB2609", bars9)
+    assert tstore.max_bar_date("RB2609") == "2026-09-01"
+    assert tstore.max_bar_date("RB9999") is None
+    today9 = date(2026, 9, 5)
+    plan = topup_decide(today9, [
+        ("RB", "RB2610", 26, 10, None),            # 无缓存 → new
+        ("RB", "RB2609", 26, 9, "2026-09-01"),     # 挂牌中、末根新鲜 → 不补
+        ("RB", "RB2609b", 26, 9, "2026-08-20"),    # 挂牌中、末根落后>10天 → stale
+        ("RB", "RB2601", 26, 1, "2025-12-30"),     # 已退市 → 不补
+    ], stale_days=10)
+    assert plan == {"RB2610": "new", "RB2609b": "stale"}, plan
+    tstore.close()
     print("term_history selftest ALL PASS（月份代码/曲线选择换月缓冲/年化carry/NS载荷/"
-          "均值差分/期限序列重建与OI汇总/空输入/近月连续净值 共8组）")
+          "均值差分/期限序列重建与OI汇总/空输入/近月连续净值/top-up决策与max_bar_date 共9组）")
     return 0
 
 
 if __name__ == "__main__":
+    import argparse as _ap
+    _aparser = _ap.ArgumentParser(description="term_history 期限结构缓存（缺省=自检）")
+    _aparser.add_argument("--topup", action="store_true",
+                          help="第77轮：增量补K线（近月挂牌合约无缓存下载/末根落后重拉合并）")
+    _aparser.add_argument("--codes", default="", help="逗号分隔中文名/主连，缺省=全品种")
+    _aparser.add_argument("--months-back", type=int, default=6)
+    _aparser.add_argument("--stale-days", type=int, default=10)
+    _aparser.add_argument("--workers", type=int, default=6)
+    _aargs = _aparser.parse_args()
+    if _aargs.topup:
+        import backtest
+        _items = backtest.resolve_codes(_aargs.codes, None)
+        _store = TermHistoryStore(TERM_DB_PATH)
+        try:
+            _stats = topup_varieties(_items, _store, months_back=_aargs.months_back,
+                                     stale_days=_aargs.stale_days, workers=_aargs.workers)
+        finally:
+            _store.close()
+        print("top-up 完成：%s" % _stats)
+        raise SystemExit(0)
     raise SystemExit(_selftest())

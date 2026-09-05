@@ -275,6 +275,35 @@ HEALTH_SNAPSHOT = {
     },
     "daily_layer": "G21面板日频因子(ret5..tsmom_blend)对未来1~60交易日的池化RankIC绝对值均<0.10、且多数随H变号不构成单调衰减，"
                    "说明单独日频回看收益在4年池化样本上无稳定横截面预测力（与tsmom/xsmom双样本证伪一致）",
+    # ---- G25/G29续（第77轮）研究因子日频面板层体检卡（脚本刷新、结论登记） ----
+    "research_cards": {
+        "asof": "2026-09-05",
+        "tools": "tools/expr_research.py(时序+逐日截面双层,与expr_miner同口径)/tools/expr_miner.py(全池截面体检)/tools/regime_cond_lab.py(placebo稳健链)",
+        "method": "时序层=逐品种 meanIC；截面层=逐日跨品种 RankIC 均值/t值（H=1/5/20）；"
+                  "条件化/筛选类结论必须过 placebo（第76轮教训），|截面meanIC|<0.05 视为无稳定预测力",
+        "cards": {
+            "expr_range_pct5": {
+                "ts_mean_ic": "H1 +0.007 / H5 +0.002 / H20 +0.006（无时序力）",
+                "cs_mean_ic": "H1 -0.008 / H5 -0.028 / H20 -0.068（t-9.7）",
+                "verdict": "健康(反向·纯截面)",
+                "note": "高振幅品种未来20日跑输=低波异象商品版；跨H（-0.039~-0.079）跨子期（-0.111/-0.061）方向稳健；"
+                        "第75轮'低波条件化放大|IC|'被第76轮 placebo 证伪已撤回（分桶构成假象）"},
+            "expr_range_pct20": {
+                "ts_mean_ic": "H1 +0.004 / H5 -0.002 / H20 +0.004（无时序力）",
+                "cs_mean_ic": "H1 -0.010 / H5 -0.034 / H20 -0.066（t-9.2）",
+                "verdict": "健康(反向·纯截面)",
+                "note": "与 expr_range_pct5 同族 20 日窗，结论一致"},
+            "expr_tsmom252": {
+                "cs_mean_ic": "H1 +0.024 / H5 +0.034 / H20 +0.081（t+11.0）",
+                "verdict": "待复核",
+                "note": "252日动量全样本截面正IC——与'动量证伪'（策略口径）不矛盾，与 factor_regime 第39轮"
+                        "'长周期动量低波有效/高波反转'的 regime 分层共存；未过 placebo/条件化复核，第77轮不晋升"},
+            "expr_hv20": {
+                "cs_mean_ic": "H1 -0.008 / H5 -0.030 / H20 -0.058（t-8.8）",
+                "verdict": "健康(反向·纯截面)",
+                "note": "高波动跑输，与 range_pct 同族互证（低波异象族）；未单独晋升，随族观察"},
+        },
+    },
 }
 
 
