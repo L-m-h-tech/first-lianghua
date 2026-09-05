@@ -169,19 +169,24 @@ def perf_of_returns(rs):
 
 
 def evaluate_ls_books_aligned(books, score_key="orth", n_q=N_QUANTILE,
-                    cost_oneway=DEFAULT_COST_ONEWAY, hold=None):
+                    cost_oneway=DEFAULT_COST_ONEWAY, hold=None, period_days=None):
     """G25续（第64轮）：按 H 对齐的**非重叠**再平衡分层多空（消除第63轮 H>1 前向收益日序重叠）。
 
     只在每 hold 个交易日（books 里的有效 OOS 日）的调仓日重算多空权重并记账一笔
     [调仓日, 调仓日+hold) 的持有期收益；中间日不重算、不计当日收益（期与期不重叠），
     因此净收益=Σ期收益-Σ期换手成本可以**真实复利**（累计净值/最大回撤可作数）。
     hold=None 或缺省=每天调仓（与 evaluate_ls_books 逐日重叠口径一致，仅作对照）。
+    period_days（第75轮修正）：每笔记账期的真实持有天数；年化=mean×252/period_days、
+    夏普=mean/sd×sqrt(252/period_days)。第64-74轮版本把 H>1 的期收益当"日收益"年化
+    （annual/sharpe 被 ×h 虚高），本轮修正——同 h 内相对排序不受影响。缺省=hold。
 
     返回 {"n_q","cost_oneway","hold","n_periods","gross","net","avg_turnover_one_sided",
           "total_cost","avg_spread","avg_long_leg","avg_short_leg",
           "daily_gross","daily_net","daily_turnover"}（daily_* 按调仓期数对齐）。
     """
     hold = hold or 1
+    pdays = period_days or hold
+    annualize = TRADING_DAYS / float(pdays)
     gross, net, traded_series, onesided_series, cost_series, spreads, longr, shortr = \
         [], [], [], [], [], [], [], []
     prev_w = {}
@@ -203,6 +208,13 @@ def evaluate_ls_books_aligned(books, score_key="orth", n_q=N_QUANTILE,
         shortr.append(day["short_ret"])
         prev_w = day["weights"]
     gperf, nperf = perf_of_returns(gross), perf_of_returns(net)
+    # 第75轮修正：期收益按真实持有期年化（annualize=252/period_days），而非当"日收益"×252
+    for p in (gperf, nperf):
+        if p.get("n_days"):
+            sd = (p["annual_vol"] / math.sqrt(TRADING_DAYS)) if p["annual_vol"] else 0.0
+            p["annual_ret"] = p["mean_daily"] * annualize
+            p["annual_vol"] = sd * math.sqrt(annualize)
+            p["sharpe"] = (p["mean_daily"] / sd * math.sqrt(annualize)) if sd > 1e-15 else 0.0
     n = len(gross)
     return {"n_q": n_q, "cost_oneway": cost_oneway, "hold": hold, "n_periods": n,
             "gross": gperf, "net": nperf,
@@ -425,9 +437,9 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON,
         ls_equal = evaluate_ls_books(books, "equal", n_q, cost_oneway)
         ls_rev = evaluate_ls_books(books, "rev", n_q, cost_oneway) if rev_factor else None
         # G25续（第64轮）：按 H 对齐非重叠再平衡（消除 H>1 前向重叠，可复利）
-        ls_orth_h = evaluate_ls_books_aligned(books, "orth", n_q, cost_oneway, hold=h)
-        ls_equal_h = evaluate_ls_books_aligned(books, "equal", n_q, cost_oneway, hold=h)
-        ls_rev_h = evaluate_ls_books_aligned(books, "rev", n_q, cost_oneway, hold=h) if rev_factor else None
+        ls_orth_h = evaluate_ls_books_aligned(books, "orth", n_q, cost_oneway, hold=h, period_days=h)
+        ls_equal_h = evaluate_ls_books_aligned(books, "equal", n_q, cost_oneway, hold=h, period_days=h)
+        ls_rev_h = evaluate_ls_books_aligned(books, "rev", n_q, cost_oneway, hold=h, period_days=h) if rev_factor else None
         result["horizons"]["H%d" % h] = {"n_refit": n_refit, "summary": summ,
                                          "daily_orth": daily["orth_ic"], "daily_equal": daily["equal"],
                                          "ls_orth": ls_orth, "ls_equal": ls_equal,
@@ -632,6 +644,18 @@ def selftest():
     al1 = evaluate_ls_books_aligned(books, "orth", 5, 0.0, hold=1)
     assert al1["n_periods"] >= al0["n_periods"] * 2 - 2  # hold=1 期数≈hold=2 的两倍（足样本满仓时精确2倍，跳过期不计数）
     assert abs(al1["gross"]["cum_ret"] - ls0["gross"]["cum_ret"]) < 1e-9   # hold=1 逐日=原逐日口径
+    # 4e) 第75轮年化修正：期收益按真实持有期折算（annualize=252/period_days），hold=1 逐日口径不变
+    fake_books = []
+    for _k in range(100):
+        sc = {"a": 1.0, "b": 0.9, "c": -0.9, "d": -1.0}
+        yy = {"a": 0.01, "b": 0.01, "c": -0.01, "d": -0.01}
+        fake_books.append({"s": sc, "y": yy})
+    fa1 = evaluate_ls_books_aligned(fake_books, "s", 2, 0.0, hold=1)
+    fa2 = evaluate_ls_books_aligned(fake_books, "s", 2, 0.0, hold=2, period_days=2)
+    assert abs(fa1["net"]["annual_ret"] - 0.01 * 252) < 1e-9      # 逐日期：×252
+    assert abs(fa2["net"]["annual_ret"] - 0.01 * 126) < 1e-9      # 2日期：×126（修正后，不再×252）
+    assert abs(fa2["net"]["sharpe"] - fa1["net"]["sharpe"]) < 1e-9  # 常数收益：期折算后夏普一致
+    assert fa2["n_periods"] == 50
     # 5) 无未来函数：截断最后一天不影响之前任一 OOS 日的 IC
     base_daily, _, base_books = walk_forward(dates[:-1], by_sym, factors, 1,
                                              min_train=60, refit_every=20, min_cs=8)

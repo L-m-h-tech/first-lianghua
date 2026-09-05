@@ -318,6 +318,98 @@ def render_mask_compare(cmp):
     return "\n".join(L)
 
 
+def _load_regime_map():
+    """读 research_panel.db 算逐(sym,date) 波动率 regime 标签（第75轮，复用 factor_regime.compute_labels）。
+
+    返回 {sym_code: {date: "low"/"mid"/"high"}}（与掩码同口径的面板代码键），失败返回 None。"""
+    try:
+        import sqlite3 as _sq
+        from collections import defaultdict as _dd
+        db_p = str(ROOT / "cache" / "research_panel.db")
+        if not os.path.exists(db_p):
+            return None
+        con = _sq.connect(db_p)
+        bysym = _dd(list)
+        cols = ("sym", "date", "c", "ret126", "hv60")
+        for row in con.execute("SELECT sym,date,c,ret126,hv60 FROM research_panel ORDER BY sym,date"):
+            bysym[row[0]].append(dict(zip(cols, row)))
+        con.close()
+        import factor_regime as _frg
+        out = {}
+        for sym, rows in bysym.items():
+            _rs, _tl, vl = _frg.compute_labels({sym: rows})[sym]
+            out[sym] = {r["date"]: vl[i] for i, r in enumerate(_rs)}
+        return out
+    except Exception:
+        return None
+
+
+def filter_points_by_regime(points, regime_map, want="low", name_to_sym=None):
+    """按波动率 regime 筛 carry/xsmom 的 points（第75轮）。
+
+    want ∈ {"low","high"}；标签非 want（含 mid/无覆盖）的点被剔除。
+    返回 {"points": kept, "kept": n_kept, "dropped": n_dropped}（不修改原列表）。"""
+    name_map = name_to_sym or tmask._name_to_sym()
+    kept, dropped = [], 0
+    for p in points:
+        sym = tmask._resolve_sym(p.get("sym", ""), name_map)
+        lbl = (regime_map or {}).get(sym, {}).get(p.get("date", ""))
+        if lbl == want:
+            kept.append(p)
+        else:
+            dropped += 1
+    return {"points": kept, "kept": len(kept), "dropped": dropped}
+
+
+def compare_regime(points_main, factor, main_h, vol_lb, n_q, min_names, cost_round,
+                   main_days, regime_map=None):
+    """波动率 regime 条件化对照（第75轮）：全样本 / 仅低波 / 仅高波 三个子截面的主因子多空。
+
+    口径与 compare_mask 一致：同一 main_days 截断窗；条件化视图样本不足时该项为 None。"""
+    all_dates, _all_by = xs.build_panel(points_main)
+    main_dates = xs.truncate_dates(all_dates, main_days)
+    main_set = set(main_dates)
+
+    def _sum(points):
+        pts = [p for p in points if p["date"] in main_set]
+        if not pts:
+            return None
+        _d, by = xs.build_panel(pts)
+        return _ls_summary(main_dates, by, factor, main_h, vol_lb, n_q, min_names, cost_round)
+
+    out = {"all": _sum(points_main), "low": None, "high": None, "counts": {}}
+    if regime_map:
+        for want in ("low", "high"):
+            fm = filter_points_by_regime(points_main, regime_map, want)
+            out[want] = _sum(fm["points"])
+            out["counts"][want] = {"kept": fm["kept"], "dropped": fm["dropped"]}
+    return out
+
+
+def render_regime_compare(cmp):
+    """把 compare_regime 结果渲染成人类可读对照文本。"""
+    L = ["\n" + "=" * 108,
+         " G23续（第75轮）波动率 regime 条件化对照（同一输入主窗，子截面=当日 hv60 过去120日 ts_rank 三分位）",
+         "=" * 108]
+    L.append("  %-14s %10s %10s %10s %8s %8s %8s" % ("口径", "期数", "净t", "净均收%", "胜率%", "单调%", "Q5-Q1%"))
+    for label, key in (("全样本", "all"), ("仅低波", "low"), ("仅高波", "high")):
+        s = cmp.get(key)
+        if s is None or s.get("pf") is None:
+            L.append("  %-14s %10s" % (label, "无样本"))
+            continue
+        pf, bp = s["pf"], s["bands"]
+        L.append("  %-14s %10d %10.2f %10.3f %8.0f %8.0f %8.3f"
+                 % (label, s["n_periods"], pf["net_t"], pf["net_mean"] * 100,
+                    pf["win"] * 100, bp["mono"] * 100, bp["spread"] * 100))
+    cts = cmp.get("counts") or {}
+    if cts:
+        parts = ["%s:留%d/剔%d" % (w, cts[w]["kept"], cts[w]["dropped"]) for w in ("low", "high") if w in cts]
+        L.append("  点数统计：" + "；".join(parts) + "（mid/无覆盖点不入条件化视图）")
+    L.append("  诚实结论：条件化只改变子截面样本；若低波/高波净t与全样本同向同量级，则 regime 条件化不增益。")
+    L.append("=" * 108)
+    return "\n".join(L)
+
+
 def _pf_line(pf):
     if pf is None:
         return "无样本"
@@ -601,6 +693,7 @@ def run(argv=None):
     ap.add_argument("--panel", action="store_true", help="G21续：主连读已复权面板（期限仍走term_history；面板约1023日，长2500样本请用缺省网络）")
     ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码（疑似锁板/距交割月1号≤15天）并剔除不可交易点后重做截面多空对照")
     ap.add_argument("--mask-compare", action="store_true", help="G22续（第66轮）：掩码前后截面多空绩效对照表（同一输入各跑无掩码/有掩码）")
+    ap.add_argument("--regime-compare", action="store_true", help="G23续（第75轮）：波动率 regime 条件化对照（全样本/仅低波/仅高波子截面多空）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -686,6 +779,24 @@ def run(argv=None):
                                    "removed": cmp.get("removed")}
         with open(args.json, "w", encoding="utf-8") as f:
             f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
+    # G23续（第75轮）：波动率 regime 条件化对照表
+    if args.regime_compare:
+        rmap = _load_regime_map()
+        if rmap is None:
+            print("regime 对照：research_panel.db 不可用，跳过")
+        else:
+            rcmp = compare_regime(main_points, args.factor, main_h, args.vol_lb,
+                                  args.quantiles, args.min_names, cost_round,
+                                  args.main_days, regime_map=rmap)
+            rtxt = render_regime_compare(rcmp)
+            print(rtxt)
+            with open(args.out, "a", encoding="utf-8-sig") as f:
+                f.write(rtxt + "\n")
+            sidecar["regime_compare"] = {
+                "all": rcmp.get("all"), "low": rcmp.get("low"), "high": rcmp.get("high"),
+                "counts": rcmp.get("counts")}
+            with open(args.json, "w", encoding="utf-8") as f:
+                f.write(json.dumps(sidecar, ensure_ascii=False, indent=1))
     return 0
 
 

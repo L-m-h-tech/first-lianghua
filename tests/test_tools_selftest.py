@@ -36,6 +36,7 @@ import orthogonal_blend_oos
 import tradable_mask
 import mask_compare_summary
 import expr_miner
+import regime_cond_lab
 
 
 def test_factor_eval_selftest():
@@ -210,3 +211,8 @@ def test_orthogonal_blend_oos_selftest():
 def test_expr_miner_selftest():
     """G25续（第72轮）表达式因子自动挖掘 --selftest：候选池全编译/前向IC严格未来/单因子手算/报告结构/排序/上榜动态判定/max_abs_ic 共7组。"""
     assert expr_miner.selftest() == 0
+
+
+def test_regime_cond_lab_selftest():
+    """G25/G29续（第75轮）regime条件化分层多空实验台 --selftest：因子装配/regime标签/build_books无未来/三视图绩效与IC/低波健全性 共5组。"""
+    assert regime_cond_lab.selftest() == 0
