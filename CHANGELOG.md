@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.90.0] — 2026-09-06 · 第90轮 G18 Tushare 零依赖接入落地（用户提供代理 token）
+- **新增 tushare_client.py（G18 适配层，token 走 env 绝不入库）**：零依赖裸 HTTP（走现有 http_client 连接池）调用户代理 https://t.xiaodefa.top/；tushare 标准 {fields,items} 解包为 list[dict]；缺 token/断网/非200/坏返回 → None（软降级绝不抛）；token 只从 env TUSHARE_TOKEN 读（已写入 .env，gitignored；.env.example 占位已有）。
+- **新增 tools/tushare_ingest.py（T1+T2 接入落地）**：T1=trade_cal 当月交易日历校验（对照 STATIC_HOLIDAY_RANGES 只告警不替代）；T2=fut_wsr 最新交易日全市场仓单快照（按品种汇总总仓单/环比/交割库数，落 reports/warehouse_snapshot.txt/.json）。
+- **真实验证（真实 token 跑通）**：T1 当月 202609 交易日 21 天、休市日正确（周末+中秋调休）；T2 仓单快照 **62 个品种**真实数据（A豆一 97464手、AG白银 140.7万手、SC原油 296.1万手、SP纸浆 41.8万手等）。
+- **诚实边界（实测确认）**：代理 fut_wsr/trade_cal 的日期参数不生效——fut_wsr 恒返回最新交易日（历史仓单回填暂不可行，库存分位"3月升多年"目标部分受限，只做当日横向快照）；trade_cal 固定返回 SSE（A股日历，节假日校验与期货大体同源、夜盘差异不覆盖）。
+- **存量补录**：charts.py 的 76 行影子看板页签代码（shadow_payload/接线/⑮卡片/renderShadow，第83轮起写于工作区但从未提交）本轮一并入库；tools/ml_train/__init__.py 补入。
+- selftest：tushare_client 4组（无token零请求/标准解包/非200降级/仓单聚合）、tushare_ingest 依赖全过；pytest 763→767 全绿；token 不入库核验通过（.env gitignored、167+ 被跟踪文件零 token 命中）。
+
 ## [0.89.0] — 2026-09-06 · 第89轮 纸面影子账户正式开启（PAPER_ENABLED=True，用户拍板）
 - **config.PAPER_ENABLED False→True**：纸面引擎随 main 启动并每轮撮合/盯市/记账（第28轮接入 main 后一直休眠，本轮用户拍板开启）；状态持久化 paper_orders/trades/equity 三表，重启 restore 续跑（暂停=启动键非重置）。
 - **真实验证（main --once --no-launch 冒烟）**：exit=0 零 Traceback；本轮生成 24 个虚拟委托（paper_orders=24）、成交 0 笔（next 档=下一轮首个新价成交、严格晚于信号，正确）、首条权益记录（equity=1）；reports/paper_account.txt 生成（初始 1,000,000、动态权益 100 万、持仓 0、在途挂单 24、已实现 0）。

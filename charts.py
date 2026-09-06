@@ -488,6 +488,34 @@ def spread_payload(path=None):
         return None
 
 
+def shadow_payload(path=None):
+    """读 reports/shadow_track.json（G7/G25续影子信号）：三信号状态 + 当日多空腿。缺/坏返 None。"""
+    path = path or os.path.join(os.path.dirname(config.PC_JSON), "shadow_track.json")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        sig = data.get("signals") or {}
+        legs = (data.get("snapshot") or {}).get("legs") or {}
+        out = {"snapshot_date": (data.get("snapshot") or {}).get("date"),
+               "signals": {}, "legs": {}}
+        for k, v in sig.items():
+            net = v.get("net") or {}
+            out["signals"][k] = {"label": v.get("label"), "n_logged": v.get("n_logged"),
+                                 "n_periods": v.get("n_periods"),
+                                 "annual_ret": net.get("annual_ret"),
+                                 "cs_ic": (v.get("cs_ic") or {}).get("mean_ic")}
+        for k, v in legs.items():
+            if v is None:
+                continue
+            out["legs"][k] = {"long": (v.get("long") or [])[:12],
+                              "short": (v.get("short") or [])[:12]}
+        return out
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
 def journal_payload(path=None):
     """读 reports/trade_journal.json（G30①复盘）：总览 + 持仓时长档/信号强度档/平仓原因分桶 + 日度净盈亏节奏。缺/坏返 None。"""
     path = path or os.path.join(os.path.dirname(config.PC_JSON), "trade_journal.json")
@@ -796,6 +824,11 @@ def build_payload(state=None):
         payload["factor_ic"] = factor_payload()
     except Exception:
         payload["factor_ic"] = None
+    # ④b 影子信号（G7/G25续：前向样本外，只记录不改综合分）
+    try:
+        payload["shadow"] = shadow_payload()
+    except Exception:
+        payload["shadow"] = None
     # ⑤ 纸面账户影子净值（storage paper_equity 每轮快照；休眠/空表自动 None 显空态）
     try:
         payload["paper"] = paper_payload(state)
@@ -1091,6 +1124,12 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
   <div class="card full">
     <h3>日频层·IC 期限衰减 <span class="sub">G21面板日频因子对未来H交易日的池化RankIC；|IC|&lt;0.1为弱（当前全部近零=日频回看收益无稳定截面预测力），悬停看半衰期</span></h3>
     <div id="c-fh-daily" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card full">
+    <h3>⑮ 影子信号（G7/G25续·前向样本外） <span class="sub">shadow_track.json：xsmom252基线/tsmom252单因子/剔能化对照 每日记录、H=20后按真实价格回填；只记录不改综合分，未到期绩效显示"未到期"</span></h3>
+    <div class="chips" id="sh-chips"></div>
+    <div id="c-shadow-state" style="padding:8px 12px;line-height:1.7;color:#cfd3dc"></div>
+    <div id="c-shadow-legs" style="padding:0 12px 10px;line-height:1.6;color:#aab"></div>
   </div>
 </div>
 """
@@ -1687,6 +1726,41 @@ function _bucketDual(id, rows, netName) {
        data: rows.map(function (r) { return r.win_rate == null ? null : +(r.win_rate * 100).toFixed(1); })}]
   });
 }
+function renderShadow(d) {
+  var chipEl = document.getElementById("sh-chips");
+  if (!d || !d.signals) {
+    if (chipEl) { chipEl.textContent = "暂无影子信号：先运行 main 让每日影子链自动记录（tools/shadow_track.py --daily）。"; }
+    var st = document.getElementById("c-shadow-state"); if (st) { st.textContent = ""; }
+    var lg = document.getElementById("c-shadow-legs"); if (lg) { lg.textContent = ""; }
+    return;
+  }
+  if (chipEl) {
+    chipEl.textContent = "快照日 " + (d.snapshot_date || "—")
+      + "（H=20 交易日到期后按真实价格回填，只记录不改综合分）";
+  }
+  var keys = ["xsmom252_baseline", "tsmom252_factor", "xsmom252_ex_energy"];
+  var html = "";
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i], v = d.signals[k];
+    if (!v) { continue; }
+    var per = (v.annual_ret == null) ? "未到期" : (+(v.annual_ret * 100).toFixed(2)) + "%/年";
+    html += "<div><b>" + (v.label || k) + "</b> · 已记录 " + v.n_logged + " 日 / 到期 "
+      + v.n_periods + " 期 · 净年化 " + per + " · 截面IC "
+      + (v.cs_ic == null ? "—" : (+v.cs_ic).toFixed(3)) + "</div>";
+  }
+  var st = document.getElementById("c-shadow-state");
+  if (st) { st.innerHTML = html || "（影子库为空）"; }
+  var legs = d.legs || {}, legHtml = "";
+  var legKeys = ["xsmom252_baseline", "tsmom252_factor", "xsmom252_ex_energy"];
+  for (var j = 0; j < legKeys.length; j++) {
+    var k2 = legKeys[j], lg = legs[k2];
+    if (!lg) { continue; }
+    legHtml += "<div><b>" + k2 + "</b> 多: " + (lg.long || []).join(" ")
+      + "　空: " + (lg.short || []).join(" ") + "</div>";
+  }
+  var lg2 = document.getElementById("c-shadow-legs");
+  if (lg2) { lg2.innerHTML = legHtml || ""; }
+}
 function renderJournal(d) {
   if (!d || !d.overall) {
     empty("c-jr-hold", "暂无交易复盘：先运行 python tools/trade_journal.py 生成 reports/trade_journal.json。");
@@ -2003,13 +2077,14 @@ function loadAndRender() {
     renderPrisk(D.prisk);
     renderWf(D.wf_cost);
     renderFh(D.fhealth);
+    renderShadow(D.shadow);
   };
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
     renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
     renderSpread(null); renderJournal(null); renderPrisk(null);
-    renderWf(null); renderFh(null); };
+    renderWf(null); renderFh(null); renderShadow(null); };
   document.body.appendChild(sc);
 }
 function resizeAll() { Object.keys(inst).forEach(function (k) { inst[k].resize(); }); }

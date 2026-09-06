@@ -234,3 +234,17 @@ def test_ml_inference_selftest():
     """G16（第88轮）ml_inference --selftest：缺模型/特征不全/跨度不足/前向手算/版本不符 共5组。"""
     import ml_inference as mli
     assert mli.selftest() == 0
+
+
+def test_tushare_client_selftest():
+    """G18（第90轮）tushare_client --selftest：无token零请求/标准解包/非200降级/仓单聚合 共4组。"""
+    import tushare_client as tc
+    assert tc.selftest() == 0
+
+
+def test_tushare_ingest_selftest():
+    """G18（第90轮）tushare_ingest --selftest：依赖 tushare_client 4组全过。"""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import tushare_ingest as ti
+    assert ti.selftest() == 0
