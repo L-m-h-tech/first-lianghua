@@ -155,7 +155,7 @@ HEADERS_SINA = {           # 新浪行情接口必须带 Referer，否则被拒�
 HEADERS_COMMON = {"User-Agent": _UA}
 
 # ---------------- 同花顺期货通 ----------------
-THS_EXE = r"C:\同花顺期货通\bin\happ.exe"   # 已检测到的本机安装路径
+THS_EXE = r"E:\同花顺期货通\bin\happ.exe"   # 第91轮：随用户 C→E 盘迁移更新
 THS_AUTO_LAUNCH = True                      # 每次启动程序时自动打开期货通
 
 # ---------------- 期货分析阈值（综合分范围 -10 ~ +10） ----------------
