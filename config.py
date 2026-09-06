@@ -635,7 +635,7 @@ BACKTEST_WF_MIN_IS_TRADES = 3      # IS窗某参数交易少于该值视为样�
 BACKTEST_WARMUP_BARS = 60          # 指标预热根数（与 prepare_symbol 的 series 起点一致，基准也从此起算）
 
 # ---------------- G1 纸面交易引擎（第27轮；默认影子独立，不接入主链/不改任何现有输出；第28轮接报告/看板） ----------------
-PAPER_ENABLED = False             # 总开关：False=纸面引擎完全休眠（默认；第28轮接入 main 后再评估默认开影子）
+PAPER_ENABLED = True              # 总开关：True=纸面引擎随 main 启动并每轮撮合/盯市/记账（第89轮用户拍板开启；数据持久化三表，重启 restore 续跑）
 PAPER_FILL_MODE = "next"          # 成交时点：next=信号下一轮首个新价成交(保守,影子默认,严格晚于信号)；close=信号轮当轮最新价成交
 PAPER_EQUITY0 = 1_000_000         # 纸面账户初始资金（人民币元，与 portfolio 默认一致）
 PAPER_ENTRY_SCORE = 4.0           # |综合分|>=该值才开仓（默认=SCORE_LIGHT 轻仓线；低于此只观望不下单）

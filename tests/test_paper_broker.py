@@ -275,9 +275,11 @@ def test_restore_pending_then_fill(loose, tmp_db):
     assert len(pb2.pf.positions) == 1                              # 下一轮成交
 
 
-def test_default_switch_off():
-    # 默认总开关关闭：main 侧据此决定是否实例化，引擎休眠是回退承诺
-    assert config.PAPER_ENABLED is False
+def test_paper_switch_on_user_decided():
+    # 第89轮用户拍板：PAPER_ENABLED=True（纸面影子随 main 启停、三表持久化 restore 续跑）。
+    # 回退承诺不变：改回 False 即完全休眠（main 不实例化、零开销），三表历史保留。
+    assert config.PAPER_ENABLED is True
+    assert config.PAPER_FILL_MODE == "next"      # 成交严格晚于信号（保守影子默认）
 
 
 # ---------------- 第28轮：实时平今/平昨 owner 判定 + 账户视图 ----------------
