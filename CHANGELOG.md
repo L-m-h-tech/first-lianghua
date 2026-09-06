@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.88.0] — 2026-09-06 · 第88轮 G21续 长面板消费端参数化 + G16 浅ML训练管线预备（标准库LR）
+- **G21续（第86轮候选③落地）**：tsmom_eval/carry_eval 加 `--panel-db`（透传 load_adjusted_bars 的 db_path，同 xsmom 第82轮）——三个截面/动量研究工具现均可读 8.5 年长面板（cache/research_panel_long.db）；tsmom 长面板 RB/CU 实跑 exit=0 验证。
+- **G16 训练管线预备（研究侧，等样本跨度即解锁）**：
+  - `tools/ml_train/dataset.py`：从 ml_samples 读 10 项技术特征→X/y/meta；**Purged TimeSeriesSplit+embargo**（复用 build_ml_samples.purged_embargo_split，禁随机 K 折）；特征标准化只用训练折统计（防泄漏）；二进制指标（准确率/正类精度/召回/AUC 秩和法）标准库实现。selftest 4组。
+  - `tools/ml_train/train_lr.py`：**纯标准库逻辑回归（IRLS 牛顿法）**——本机无 sklearn，按总纲"标准库可实现的逻辑回归/评分卡"台阶实现；train 导出极简 JSON（版本/训练区间/特征/权重/截距/缩放器/OOS指标）；嵌跨度硬门槛表述（当前 127 交易日 < 250，**禁止上线**）。selftest 3组。真实跑 42,936 样本：OOS AUC=0.50/precision=0（**诚实负结果**：跨度不足+正类39%下 LR 学不到结构——管线可跑、模型不可用，正符合 G16"样本外不达标不上线"纪律）。
+  - `ml_inference.py`（根模块，默认不被 main 调用）：**标准库前向推理**（sigmoid(Σw·x+b)）；缺模型/特征不全/跨度<250/版本不符 → 回退线性打分并登记 reports/ml_fallback.jsonl。selftest 5组。
+- 三模块零新增运行依赖、进 tests/test_tools_selftest.py 注册；pytest 759→763 全绿；研究侧/展示侧零评分改动（双哈希无需重跑）。
+
 ## [0.87.0] — 2026-09-06 · 第87轮 全部研究报告融入实时看板（新增"研究报告(全部)"页签，聚合 34 份 reports/*.txt）
 - **report.py 新增研究报告聚合页签（__research__ 内嵌视图，不走 iframe）**：`_research_reports_html()` 扫描 reports/*.txt（排除实时看板既有 15 页签已覆盖的文件），按工具类别分组（G7/G23/G25/G28/G29/G22/G24/G26/G30/G13 等）生成卡片网格——每卡=报告名+类别+更新时间+内容摘要（前14行/2200字符）+ "查看全文（新标签）"链接；html 转义防注入；纯展示只读。
 - **_dashboard_tmpl 增 research-panel 容器 + show()/reloadView() 支持 __research__**（静态注入、不随轮动重载）；write_dashboard 注入 RP_DOM。
