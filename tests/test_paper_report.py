@@ -109,3 +109,26 @@ def test_dashboard_tab_visibility_follows_switch(monkeypatch):
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_research_reports_tab_and_aggregator(tmp_path, monkeypatch):
+    """第87轮：研究报告(全部)页签登记 + 聚合器产出卡片/排除实时页签/转义防注入。"""
+    # 1) 页签已登记
+    assert ("__research__", "研究报告(全部)") in report._DASHBOARD_TABS
+    # 2) 聚合器对临时目录生效：造两个 txt（正常 + 含 HTML 注入字符）
+    monkeypatch.setattr(report.config, "BASE_DIR", str(tmp_path))
+    (tmp_path / "reports").mkdir(exist_ok=True)
+    (tmp_path / "reports" / "shadow_track.txt").write_text(
+        "影子信号追踪\n已记录 1 日", encoding="utf-8")
+    (tmp_path / "reports" / "evil_report.txt").write_text(
+        "<script>alert(1)</script>&<b>", encoding="utf-8")
+    h = report._research_reports_html(max_rows=6)
+    assert "shadow_track.txt" in h
+    # HTML 注入被转义：脚本标签不得原样出现
+    assert "<script>alert(1)</script>" not in h
+    assert "&lt;script&gt;" in h and "&amp;&lt;b&gt;" in h
+    # 3) 排除了实时看板页签文件
+    assert "latest_report.txt" not in h
+    # 4) _dashboard_html 注入研究页签 + research-panel 容器
+    html = report._dashboard_html()
+    assert '__research__' in html and 'research-panel' in html

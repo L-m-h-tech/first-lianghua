@@ -16,6 +16,7 @@
   写入鲁棒性：文件被 Excel/编辑器占用时自动短暂重试，且每个文件独立写入、互不影响。
 """
 import csv
+import html
 import io
 import json
 import os
@@ -199,6 +200,7 @@ _DASHBOARD_TABS = [
     ("offhours_report.txt", "非交易时段·最近5轮"),
     ("offhours_history.txt", "非交易时段·当日归档"),
     ("daily_review.txt", "每日复盘(永久)"),
+    ("__research__", "研究报告(全部)"),  # 第87轮：内嵌聚合全部 reports/*.txt 研究/监控报告（不走 iframe）
 ]
 # 报告写出比轮动刻度晚的缓冲秒数（分析耗时），看板在"刻度+缓冲"后刷新
 _DASHBOARD_WRITE_DELAY_SEC = 20
@@ -251,6 +253,7 @@ def _dashboard_html():
 </div>
 <iframe id="view" src="%s"></iframe>
 <div id="charts-panel">/*__CP_DOM__*/</div>
+  <div id="research-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;">/*__RP_DOM__*/</div>
 <script>
   var cur = "%s";
   var CHARTS_VIEW = "__charts__";   // 图表页签为同页内嵌面板，不走 iframe
@@ -260,11 +263,15 @@ def _dashboard_html():
   function show(src) {
     cur = src;
     var isCp = src === CHARTS_VIEW;
+    var isRp = src === '__research__';
     var view = document.getElementById('view');
     var panel = document.getElementById('charts-panel');
-    view.style.display = isCp ? 'none' : 'block';
+    var rpanel = document.getElementById('research-panel');
+    view.style.display = (isCp || isRp) ? 'none' : 'block';
     panel.style.display = isCp ? 'block' : 'none';
+    rpanel.style.display = isRp ? 'block' : 'none';
     if (isCp) { if (window.ChartPanel) window.ChartPanel.activate(); }
+    else if (isRp) { /* 研究聚合为静态注入，无需重载 */ }
     else { view.src = src + '?t=' + Date.now(); }
     var btns = document.querySelectorAll('.tab');
     for (var i = 0; i < btns.length; i++)
@@ -321,6 +328,7 @@ def _dashboard_html():
   var POLL_MS = 10000, lastStatusTs = null;
   function reloadView() {
     if (cur === CHARTS_VIEW) { if (window.ChartPanel) window.ChartPanel.reload(); return; }
+    if (cur === '__research__') { return; }   // 静态研究索引：不随轮动重载
     document.getElementById('view').src = cur + '?t=' + Date.now();
   }
   function pollStatus() {
@@ -367,7 +375,88 @@ def _dashboard_html():
     _cp_style, _cp_dom, _cp_js = charts.dashboard_embed_parts()
     return (html.replace("/*__CP_STYLE__*/", _cp_style)
                 .replace("/*__CP_DOM__*/", _cp_dom)
-                .replace("/*__CP_JS__*/", _cp_js))
+                .replace("/*__CP_JS__*/", _cp_js)
+                .replace("/*__RP_DOM__*/", _research_reports_html()))
+
+
+# =========================== 第87轮：研究报告聚合页签（全部 reports/*.txt 融入实时看板） ===========================
+_REPORT_TAB_EXCLUDED = {name for name, _label in _DASHBOARD_TABS if not name.startswith("__")}
+_REPORT_CATEGORY = {
+    "carry_eval": "G23 carry/期限结构", "tsmom_eval": "G7 时序动量",
+    "xsmom_eval": "G7 截面动量", "xsmom_long": "G7 长窗复核",
+    "expr_research": "G25 表达式因子", "expr_miner": "G25 自动挖掘",
+    "orthogonal_blend_oos": "G25 正交合成OOS", "regime_cond_lab": "G25/G29 regime条件化",
+    "factor_eval": "G2 因子评估", "factor_health": "G29 因子体检",
+    "factor_regime": "G29 regime分层", "attribution": "G28 归因",
+    "tradable_mask": "G22 可交易性掩码", "mask_compare_summary": "G22 掩码汇总",
+    "microstructure_lab": "G24 微结构", "spec_pressure_lab": "G24 套保/投机压力",
+    "spread_lab": "G24 跨期价差", "portfolio_lab": "G26 组合实验台",
+    "portfolio_risk_lab": "G5 组合风险", "circuit_review": "G5 熔断校准",
+    "wf_cost_lab": "G27 成本敏感性", "trade_journal": "G30 交易复盘",
+    "research_review": "G30 研究复盘", "shadow_track": "G7 影子信号",
+    "llm_review": "G13 LLM复核", "experiment_ledger_view": "G27 实验台账",
+    "research_panel_manifest": "G21 面板清单", "backtest_validation": "G4 回测严谨性",
+}
+
+
+def _research_reports_html(max_rows=14, max_bytes=2200):
+    """聚合 reports/*.txt（排除看板实时页签已覆盖的）成卡片网格 HTML。
+
+    每卡：报告名 + 类别 + 更新时间 + 内容摘要(<pre> 前 max_rows 行/前 max_bytes 字符) +
+    全文链接（新标签打开 txt）。纯展示、只读、html 转义防注入。"""
+    reports_dir = os.path.join(config.BASE_DIR, "reports")
+    cards = []
+    if os.path.isdir(reports_dir):
+        for fn in sorted(os.listdir(reports_dir)):
+            if not fn.endswith(".txt") or fn in _REPORT_TAB_EXCLUDED:
+                continue
+            path = os.path.join(reports_dir, fn)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    head = f.read(max_bytes)
+            except OSError:
+                continue
+            mtime = os.path.getmtime(path)
+            try:
+                mt = datetime.fromtimestamp(mtime).strftime("%m-%d %H:%M")
+            except Exception:
+                mt = ""
+            base = fn[:-4]
+            cat = "其他"
+            for pref, c in _REPORT_CATEGORY.items():
+                if base.startswith(pref):
+                    cat = c
+                    break
+            lines = head.splitlines()
+            body = "\n".join(lines[:max_rows])
+            esc = html.escape
+            cards.append(
+                '<div class="rp-card">'
+                '<div class="rp-head"><span class="rp-name">%s</span>'
+                '<span class="rp-cat">%s</span><span class="rp-time">%s</span></div>'
+                '<pre class="rp-pre">%s</pre>'
+                '<div class="rp-foot"><a href="%s" target="_blank" rel="noopener">查看全文（新标签）</a></div>'
+                '</div>' % (esc(fn), esc(cat), esc(mt), esc(body), esc(fn)))
+    grid = "\n".join(cards)
+    return ("""<style>
+  #research-panel { padding: 12px; }
+  .rp-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(430px,1fr)); gap: 12px; }
+  .rp-card { background:#202229; border:1px solid #33363d; border-radius:6px; padding:10px 12px; }
+  .rp-head { display:flex; align-items:baseline; gap:10px; margin-bottom:6px; flex-wrap:wrap; }
+  .rp-name { color:#7ecbff; font-weight:bold; font-size:13px; }
+  .rp-cat { color:#b8c; font-size:11px; }
+  .rp-time { margin-left:auto; color:#8a8f98; font-size:11px; }
+  .rp-pre { background:#16171b; border:1px solid #2a2d33; border-radius:4px; padding:8px;
+            font:12px/1.5 Consolas,"Microsoft YaHei",monospace; color:#cfd3dc;
+            max-height:320px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0 0 8px; }
+  .rp-foot a { color:#7ecbff; font-size:12px; text-decoration:none; }
+  .rp-foot a:hover { text-decoration:underline; }
+</style>
+<div class="rp-grid">
+%s
+</div>
+<p style="color:#8a8f98;font-size:12px;margin-top:10px">共 %d 份研究报告（自动聚合 reports/*.txt，排除实时看板既有页签；点击卡片内链接可在新标签查看全文）</p>
+""" % (grid, len(cards)))
 
 
 def write_dashboard():

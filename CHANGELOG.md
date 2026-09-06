@@ -3,6 +3,12 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.87.0] — 2026-09-06 · 第87轮 全部研究报告融入实时看板（新增"研究报告(全部)"页签，聚合 34 份 reports/*.txt）
+- **report.py 新增研究报告聚合页签（__research__ 内嵌视图，不走 iframe）**：`_research_reports_html()` 扫描 reports/*.txt（排除实时看板既有 15 页签已覆盖的文件），按工具类别分组（G7/G23/G25/G28/G29/G22/G24/G26/G30/G13 等）生成卡片网格——每卡=报告名+类别+更新时间+内容摘要（前14行/2200字符）+ "查看全文（新标签）"链接；html 转义防注入；纯展示只读。
+- **_dashboard_tmpl 增 research-panel 容器 + show()/reloadView() 支持 __research__**（静态注入、不随轮动重载）；write_dashboard 注入 RP_DOM。
+- **真实验证**：reports/实时报告.html 重新生成后含 __research__ 页签、research-panel 容器、34 份研究报告卡片（shadow_track/carry_eval/xsmom_long/expr_research/factor_health/llm_review… 全部在内）；pytest 758→759（+研究报告聚合页签测试：页签登记/卡片产出/排除实时文件/HTML注入转义）。研究侧零改动评分路径（双哈希无需重跑）。
+- **看板现状**：实时看板页签 = 15 个实时监控页签 + 图表看板 + 研究报告(全部)34 卡 = 全部 reports 显示报告均可在看板查看。
+
 ## [0.86.0] — 2026-09-06 · 第86轮 影子信号看板页签验证（看板既有页签 ⑮ 已完整预接，仅验证无代码新增）
 - **核实**：第83轮 shadow_track 落地时已同步预接看板完整链条——charts.py 的 `shadow_payload` 函数 + build_payload 接线 + 图表看板.html 的 ⑮ 影子信号页签（c-shadow-state / c-shadow-legs）+ renderShadow 渲染函数 + CHART_IDS + chart_data.js 注入全部齐；当前 `reports/图表看板.html` 实测含 shadow 卡片3处、`reports/chart_data.js` 已含 shadow payload（快照日 2026-09-02、三信号各已记录1天/0期到期、多空腿已就绪）。
 - **验证**：结构检查（renderShadow 存在 / CHART_IDS 含 shadow / 卡片容器存在）+ pytest 758 全绿；研究侧零改动主链。
