@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.92.0] — 2026-09-06 · 第92轮 G14 一档盘口低频快照自采落地（新浪主连 5分钟级、非逐笔）
+- **新增根模块 orderbook_snapshot.py（G14，纯标准库零新增依赖）**：对 8 个试点主力品种（RB/CU/AU/AG/I/M/TA/MA，覆盖上期所/大商所/郑商所）每 5 分钟采一次买一/卖一价量，落 `tick_snapshots` 表（monitor.db 业务表 14→15）；用于统计真实买卖价差、校准回测滑点、给 G1 纸面提供保守成交价（采集先行、成交接线留后续）。
+- **futures_data._parse_quote 增量扩展（零破坏）**：行情 dict 新增 bid/ask/bid_vol/ask_vol/quote_date/quote_time 六键（新浪主源实有字段；东财兜底无这些键=0，不编造），既有消费方逐键读取不受影响。
+- **验收达成**：①**upsert 去重**——storage.upsert_tick_snapshots 按 (sym, 行情5分钟桶) INSERT OR REPLACE，同桶重复采集/断网重试/重启续传只保留最新一行（真实重采验证 8 行不翻倍）；②**断网续传不丢不重**——失败全吞下轮自动重试、已采快照永不删除、非法档位（bid/ask≤0、ask<bid）整行丢弃；③5 分钟进程内节流 + 仅交易时段采集（收盘/周末/节假日零请求，SNAPSHOT_* 配置可调）。
+- **main 接入**：run_cycle 第 6.4 步新增 `_maybe_snapshot(state)`（懒加载、异常全吞、零主周期改动）；周末冒烟静默跳过（off_hours 设计行为）、exit=0 零 Traceback。
+- **统计输出**：reports/orderbook_stats.txt/.json（reports 聚合页签可见）——8 试点品种均价差 bp/中位/最大/最新/绝对价差；真实首采：RB 3.15bp、CU 1.83bp、AU 4.38bp、AG 2.49bp、I 6.78bp、M 2.92bp、TA 3.37bp、MA 3.14bp（2026-09-04/05 夜盘快照，样本<10 只列数不下结论）。
+- 测试：tests/test_orderbook_snapshot.py **12 例零网络**（桶推导/软降级/upsert 去重/节流/时段门控/总开关/试点空/异常吞/统计落盘/storage 幂等/表计数/selftest）+ test_tools_selftest 注册；**pytest 769→783 全绿**；compileall 收录新模块。
+
 ## [0.91.0] — 2026-09-06 · 第91轮 全代码审查与优化（清理未用import/修复重复告警隐患/调度块抽取）
 - **全面静态审查（140 个 py 文件）**：扫描未使用 import / TODO-FIXME / 硬编码密钥 / 可变默认参数 / 裸 except / 资源泄漏 / 超长函数 / 超大文件。
 - **清理 20+ 处未使用 import**（生产代码）：factors.py(futures_data, oil_data, storage, option_analyzer, option_strategies, factor_plugin, ml_inference 等根级) + tools/ 系（build_ml_samples, panel_builder, tsmom_eval, factor_eval, wf_cost_lab, tradable_mask, attribution, web_dashboard, circuit_review, shadow_track, tushare_client 等）；顺带修复 option_strategies.py 一个被清残的 import 行。
