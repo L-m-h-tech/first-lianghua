@@ -3,6 +3,10 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.86.0] — 2026-09-06 · 第86轮 影子信号看板页签验证（看板既有页签 ⑮ 已完整预接，仅验证无代码新增）
+- **核实**：第83轮 shadow_track 落地时已同步预接看板完整链条——charts.py 的 `shadow_payload` 函数 + build_payload 接线 + 图表看板.html 的 ⑮ 影子信号页签（c-shadow-state / c-shadow-legs）+ renderShadow 渲染函数 + CHART_IDS + chart_data.js 注入全部齐；当前 `reports/图表看板.html` 实测含 shadow 卡片3处、`reports/chart_data.js` 已含 shadow payload（快照日 2026-09-02、三信号各已记录1天/0期到期、多空腿已就绪）。
+- **验证**：结构检查（renderShadow 存在 / CHART_IDS 含 shadow / 卡片容器存在）+ pytest 758 全绿；研究侧零改动主链。
+
 ## [0.85.0] — 2026-09-06 · 第85轮 影子跟随 main 集成（用户需求：跑 main 即自动完成影子信号）
 - **main.py 集成影子每日跟随**：run_cycle 在 report.save 后检查 `shadow_track.daily_due`（工作日、已过触发时刻 env FUTURES_MONITOR_SHADOW_HOUR 默认17:00=收盘后日K可用、当日未记过）→ 满足则 **daemon 线程执行全链**（term top-up → 长面板重建 → 记录当日三影子信号 → 到期评估），**用户跑 main 即自动完成影子信号，无需计划任务/手动命令**；当日防重复（state.shadow_done）；异常全吞掉零阻塞；--once 退出前有界等待影子线程（防 daemon 被杀）。
 - shadow_track.py：新增 `daily_due` 纯函数（工作日/触发时刻/当日未记三判定，可合成断言）+ daily() 的 topup verbose 透传；selftest 5→6组。
