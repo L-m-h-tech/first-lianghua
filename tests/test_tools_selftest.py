@@ -248,3 +248,11 @@ def test_tushare_ingest_selftest():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     import tushare_ingest as ti
     assert ti.selftest() == 0
+
+
+def test_tushare_harvest_selftest():
+    """G18续（第90轮）tushare_harvest --selftest：依赖 tushare_client 4组 + upsert 幂等 共5组。"""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import tushare_harvest as th
+    assert th.selftest() == 0

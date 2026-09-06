@@ -10,6 +10,7 @@
 - **诚实边界（实测确认）**：代理 fut_wsr/trade_cal 的日期参数不生效——fut_wsr 恒返回最新交易日（历史仓单回填暂不可行，库存分位"3月升多年"目标部分受限，只做当日横向快照）；trade_cal 固定返回 SSE（A股日历，节假日校验与期货大体同源、夜盘差异不覆盖）。
 - **存量补录**：charts.py 的 76 行影子看板页签代码（shadow_payload/接线/⑮卡片/renderShadow，第83轮起写于工作区但从未提交）本轮一并入库；tools/ml_train/__init__.py 补入。
 - selftest：tushare_client 4组（无token零请求/标准解包/非200降级/仓单聚合）、tushare_ingest 依赖全过；pytest 763→767 全绿；token 不入库核验通过（.env gitignored、167+ 被跟踪文件零 token 命中）。
+- **[补丁·限时 token 收割（用户"限时一天利益最大化"）]**：批量实测代理接口——trade_cal 全历史（唯一永久资产）、fut_basic 全量合约元数据（永久）、fut_daily/ft_limit/fut_settle/fut_wsr 当日快照（校准用）；**其余接口全被代理锁单日**（fut_daily/ft_limit/fut_settle/fut_mapping 锁 20260904、fut_holding 锁 20100104 远古）→ 历史回填确认不可行。新增 tools/tushare_harvest.py：收割落库 cache/tushare_harvest.db（tushare_cal 3287 条 8 年交易日历 / fut_basic 9000 合约 / snap_daily 6000 / snap_limit 4000 / snap_settle 1600 / snap_wsr 936），幂等 upsert 断点续传、软降级；**用 snap_limit.m_ratio 对照 data/futures_margins.csv**：官方=近月合约交易所保证金(15-22%) vs 项目=品种基准银河投机档(12-16%)，口径不同不强行替换、作为交叉校验信息记录。selftest 5组（+upsert幂等）；pytest 767→769 全绿。
 
 ## [0.89.0] — 2026-09-06 · 第89轮 纸面影子账户正式开启（PAPER_ENABLED=True，用户拍板）
 - **config.PAPER_ENABLED False→True**：纸面引擎随 main 启动并每轮撮合/盯市/记账（第28轮接入 main 后一直休眠，本轮用户拍板开启）；状态持久化 paper_orders/trades/equity 三表，重启 restore 续跑（暂停=启动键非重置）。
