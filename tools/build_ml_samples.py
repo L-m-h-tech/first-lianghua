@@ -31,8 +31,6 @@ r"""WP-F2（P1-2）B3：triple-barrier 监督学习样本构建（研究侧离�
 import argparse
 import bisect
 import json
-import math
-import os
 import statistics
 import sys
 from collections import Counter, defaultdict

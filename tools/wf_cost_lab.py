@@ -21,7 +21,6 @@ storage/backtest），纯函数层不 import 任何项目模块（零 DB 可确�
 import argparse
 import io
 import json
-import math
 import os
 import statistics
 import sys

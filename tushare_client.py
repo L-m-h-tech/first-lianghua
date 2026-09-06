@@ -21,7 +21,6 @@ r"""G18 Tushare 零依赖适配层（第90轮解锁落地）——裸 HTTP、tok
   D:\Python\python.exe tools\tushare_ingest.py            # T1 日历校验 + T2 仓单快照
   D:\Python\python.exe tushare_client.py --selftest
 """
-import json
 import os
 import sys
 from datetime import datetime

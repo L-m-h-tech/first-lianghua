@@ -13,7 +13,6 @@ _locked_limit 口径）；②临近交割日（距最近交割月1号 ≤ DELIVE
   D:\Python\python.exe tools\tradable_mask.py                 # 读 research_panel.db 出报告
   D:\Python\python.exe tools\tradable_mask.py --selftest      # 零网络/零DB 合成断言
 """
-import argparse
 import json
 import math
 import os

@@ -23,7 +23,6 @@ import http.server
 import os
 import socket
 import socketserver
-import sys
 import urllib.parse
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

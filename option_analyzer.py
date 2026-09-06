@@ -32,7 +32,7 @@ import math
 
 import config
 import contracts as contracts_mod
-from utils import norm_cdf, norm_pdf, clip, fmt_px
+from utils import norm_cdf, norm_pdf, fmt_px
 
 R_FREE = 0.02   # 无风险利率
 

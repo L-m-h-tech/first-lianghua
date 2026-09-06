@@ -18,7 +18,6 @@ import math
 import config
 import contracts as contracts_mod
 from option_analyzer import black76, greeks76, implied_vol_profile, iv_pct_text
-from utils import fmt_px
 
 
 def _round_k(x, step):

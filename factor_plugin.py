@@ -17,7 +17,6 @@
 
 本模块 import 零副作用（不自动注册任何插件）；示例见 example_plugins()，selftest 注册后即 clear。
 """
-import inspect
 
 try:
     import factors_catalog as _catalog

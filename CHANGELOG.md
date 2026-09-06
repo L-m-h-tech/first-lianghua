@@ -3,6 +3,14 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.91.0] — 2026-09-06 · 第91轮 全代码审查与优化（清理未用import/修复重复告警隐患/调度块抽取）
+- **全面静态审查（140 个 py 文件）**：扫描未使用 import / TODO-FIXME / 硬编码密钥 / 可变默认参数 / 裸 except / 资源泄漏 / 超长函数 / 超大文件。
+- **清理 20+ 处未使用 import**（生产代码）：factors.py(futures_data, oil_data, storage, option_analyzer, option_strategies, factor_plugin, ml_inference 等根级) + tools/ 系（build_ml_samples, panel_builder, tsmom_eval, factor_eval, wf_cost_lab, tradable_mask, attribution, web_dashboard, circuit_review, shadow_track, tushare_client 等）；顺带修复 option_strategies.py 一个被清残的 import 行。
+- **修复真 bug**：main.py run_cycle 中 `state.alerts.observe_cycle` 被**调用两次**（本轮新增 G13/影子块集成时重复行残留）——会导致告警计数/冷却重复，已去重（grep 验证仅 1 处）。
+- **main.py 调度块抽取（行为不变）**：run_cycle 内 G13 LLM 调度 + 影子跟随两段（46 行）抽为模块级 `_maybe_review(state,fut_rows)` / `_maybe_shadow(state)`，run_cycle 主体更清晰；零主周期改动（冒烟 exit=0、G13 节流、影子每日链 64/64/40 腿正常、observe_cycle 单次）。
+- **评估保留**：超长函数（option_strategies.recommend 367行/carry_eval.build_report 241行等）拆分风险>收益，保留；charts.py 2151 行同样保留（既有 34 卡体系）。
+- 审查结论：无 TODO/FIXME、无硬编码密钥、无可变默认参数、无裸 except、无资源泄漏（open/sqlite 全 with/close）、token/key 零命中。pytest 769 全绿；研究侧+展示侧零评分改动。
+
 ## [0.90.0] — 2026-09-06 · 第90轮 G18 Tushare 零依赖接入落地（用户提供代理 token）
 - **新增 tushare_client.py（G18 适配层，token 走 env 绝不入库）**：零依赖裸 HTTP（走现有 http_client 连接池）调用户代理 https://t.xiaodefa.top/；tushare 标准 {fields,items} 解包为 list[dict]；缺 token/断网/非200/坏返回 → None（软降级绝不抛）；token 只从 env TUSHARE_TOKEN 读（已写入 .env，gitignored；.env.example 占位已有）。
 - **新增 tools/tushare_ingest.py（T1+T2 接入落地）**：T1=trade_cal 当月交易日历校验（对照 STATIC_HOLIDAY_RANGES 只告警不替代）；T2=fut_wsr 最新交易日全市场仓单快照（按品种汇总总仓单/环比/交割库数，落 reports/warehouse_snapshot.txt/.json）。

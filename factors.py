@@ -13,7 +13,7 @@ from collections import deque
 from datetime import datetime
 
 import config
-from utils import LOG, clip, sanitize
+from utils import LOG, clip
 
 EN, BL, ME, PM, AG, FI = config.EN, config.BL, config.ME, config.PM, config.AG, config.FI
 ALL = "ALL"

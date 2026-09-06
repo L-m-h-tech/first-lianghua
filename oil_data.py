@@ -16,7 +16,7 @@ from collections import deque
 
 import config
 from http_client import http
-from utils import LOG, clip, fmt_pct, fmt_px
+from utils import clip, fmt_pct, fmt_px
 
 OIL_LIST = [("布伦特原油", "hf_OIL"), ("纽约原油", "hf_CL")]
 

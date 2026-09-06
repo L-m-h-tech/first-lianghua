@@ -29,7 +29,6 @@ r"""G7（第30轮）多窗口时序动量 TSMOM(63/126/252) 离线时序 IC 评�
   D:\Python\python.exe tools\tsmom_eval.py --selftest     # 零网络合成断言
 """
 import argparse
-import io
 import math
 import os
 import sys

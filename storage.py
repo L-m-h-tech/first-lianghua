@@ -18,7 +18,7 @@ import threading
 from datetime import datetime, timedelta
 
 import config
-from utils import LOG, is_variety_trading
+from utils import is_variety_trading
 
 # 行情代码 -> 品种元数据，用于信号到期时判断该品种自身是否仍在交易
 _CODE_TO_META = {m.get("code"): m for m in config.VARIETIES.values()}

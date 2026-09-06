@@ -24,7 +24,6 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import config                                  # noqa: E402
 import circuit_breaker as cb                   # noqa: E402 阈值默认值/分档口径单一事实源
 import portfolio_lab as pl                     # noqa: E402 复用稠密面板+滚动样本外代理
 import experiment_ledger as el                 # noqa: E402

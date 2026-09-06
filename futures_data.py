@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 import config
 from http_client import http
 from data_router import REGISTRY
-from utils import LOG, clip, norm_pdf
+from utils import LOG, clip
 
 
 def _f(s):

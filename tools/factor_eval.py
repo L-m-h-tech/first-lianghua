@@ -28,7 +28,6 @@ r"""WP-F2（P1-2）B2：因子 IC 评估（研究侧离线工具，不进常驻�
   D:\Python\python.exe tools\factor_eval.py --selftest      # 零网络合成断言
 """
 import argparse
-import io
 import math
 import os
 import sys

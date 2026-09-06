@@ -38,7 +38,6 @@ for p in (str(ROOT), str(ROOT / "tools")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import config                       # noqa: E402  品种表
 import factor_health as fh          # noqa: E402  forward_map（严格未来收益）
 import orthogonal_blend_oos as ob   # noqa: E402  cs_uniform/quantile_ls_day/对齐绩效原语
 import panel_builder as pb          # noqa: E402  长面板回读
