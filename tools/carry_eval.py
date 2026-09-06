@@ -182,7 +182,7 @@ def _ym_range_for(days, future_months=9, back_buffer_months=8):
 
 
 def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner, store,
-                         prefer_panel=False):
+                         prefer_panel=False, panel_db=None):
     name, main_code = item
     meta = config.VARIETIES.get(name, {})
     sym = meta.get("sym") or main_code.rstrip("0")
@@ -192,7 +192,7 @@ def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner,
         th.build_symbol_range(sym, syy, smm, eyy, emm, store, workers=workers_inner, pause=0.0)
         term_series = th.term_series_for(sym, store)
         if prefer_panel:
-            bars, _src = pb.load_adjusted_bars(main_code, days, prefer_panel=True)
+            bars, _src = pb.load_adjusted_bars(main_code, days, prefer_panel=True, db_path=panel_db)
             pts = carry_points_from_adjusted(name, sector, bars, term_series, horizons,
                                              smooth, mom_k, vol_lb)
         else:
@@ -207,12 +207,12 @@ def _fetch_one_carry(item, days, horizons, smooth, mom_k, vol_lb, workers_inner,
 
 
 def collect_carry_points(items, days, horizons, smooth, mom_k, vol_lb, workers, workers_inner, store,
-                         prefer_panel=False):
+                         prefer_panel=False, panel_db=None):
     points, errors = [], []
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futs = [pool.submit(_fetch_one_carry, it, days, horizons, smooth, mom_k,
-                            vol_lb, workers_inner, store, prefer_panel) for it in items]
+                            vol_lb, workers_inner, store, prefer_panel, panel_db) for it in items]
         for k, fut in enumerate(as_completed(futs), 1):
             name, pts, err = fut.result()
             if pts:
@@ -710,6 +710,8 @@ def run(argv=None):
     ap.add_argument("--out", default="reports/carry_eval.txt")
     ap.add_argument("--json", default="reports/carry_eval.json")
     ap.add_argument("--panel", action="store_true", help="G21续：主连读已复权面板（期限仍走term_history；面板约1023日，长2500样本请用缺省网络）")
+    ap.add_argument("--panel-db", default=None,
+                    help="G21续(第88轮)：--panel 时读哪个面板库（缺省 G21 主面板；可指 cache/research_panel_long.db 长面板）")
     ap.add_argument("--mask", action="store_true", help="G22续：读 research_panel.db 算可交易性掩码（疑似锁板/距交割月1号≤15天）并剔除不可交易点后重做截面多空对照")
     ap.add_argument("--mask-compare", action="store_true", help="G22续（第66轮）：掩码前后截面多空绩效对照表（同一输入各跑无掩码/有掩码）")
     ap.add_argument("--regime-compare", action="store_true", help="G23续（第75轮）：波动率 regime 条件化对照（全样本/仅低波/仅高波子截面多空）")
@@ -726,7 +728,8 @@ def run(argv=None):
         print("carry_eval：%d 个品种，逐合约缺失才下载并缓存到 %s ..." % (len(items), args.db))
         points, errors = collect_carry_points(
             items, args.days, horizons, args.smooth, args.mom_k, args.vol_lb,
-            args.workers, args.workers_inner, store, getattr(args, 'panel', False))
+            args.workers, args.workers_inner, store, getattr(args, 'panel', False),
+            panel_db=args.panel_db)
     finally:
         store.close()
     if not points:

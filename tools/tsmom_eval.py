@@ -467,11 +467,11 @@ def _sidecar(records, metrics, cmat, resid, weights, verdict, lookbacks, horizon
 
 
 # =========================== 数据抓取与入口 ===========================
-def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False):
+def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False, panel_db=None):
     name, code = item
     try:
         if prefer_panel:
-            bars, _src = pb.load_adjusted_bars(code, days, prefer_panel=True)
+            bars, _src = pb.load_adjusted_bars(code, days, prefer_panel=True, db_path=panel_db)
             recs = records_from_adjusted(name, bars, lookbacks, horizons)
         else:
             raw = futures_data.fetch_daily_kline(code)
@@ -484,10 +484,11 @@ def _fetch_one(item, lookbacks, horizons, days, prefer_panel=False):
         return name, [], "%s: %s" % (type(e).__name__, e)
 
 
-def collect_records(items, lookbacks, horizons, days, workers, prefer_panel=False):
+def collect_records(items, lookbacks, horizons, days, workers, prefer_panel=False, panel_db=None):
     records, errors = [], []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days, prefer_panel) for it in items]
+        futs = [pool.submit(_fetch_one, it, lookbacks, horizons, days, prefer_panel, panel_db)
+                for it in items]
         for fut in as_completed(futs):
             name, recs, err = fut.result()
             if recs:
@@ -513,6 +514,8 @@ def run(argv=None):
     ap.add_argument("--workers", type=int, default=config.TSMOM_EVAL_WORKERS)
     ap.add_argument("--out", default=config.TSMOM_EVAL_FILE)
     ap.add_argument("--panel", action="store_true", help="G21续：优先读已复权研究面板（缺省联网现拉）")
+    ap.add_argument("--panel-db", default=None,
+                    help="G21续(第88轮)：--panel 时读哪个面板库（缺省 G21 主面板；可指 cache/research_panel_long.db 长面板）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -521,7 +524,8 @@ def run(argv=None):
     horizons = tuple(int(x) for x in args.horizons.split(",") if x.strip())
     main_h = args.main_h if args.main_h in horizons else horizons[len(horizons) // 2]
     items = backtest.resolve_codes(args.codes, args.limit if args.limit > 0 else None)
-    records, errors = collect_records(items, lookbacks, horizons, args.days, args.workers, getattr(args,'panel',False))
+    records, errors = collect_records(items, lookbacks, horizons, args.days, args.workers,
+                                     getattr(args,'panel',False), panel_db=args.panel_db)
     if not records:
         print("无可用样本（全部品种取数失败或暖机不足），错误示例：%s" % errors[:3])
         return 2

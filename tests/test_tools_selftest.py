@@ -216,3 +216,21 @@ def test_expr_miner_selftest():
 def test_regime_cond_lab_selftest():
     """G25/G29续（第75轮）regime条件化分层多空实验台 --selftest：因子装配/regime标签/build_books无未来/三视图绩效与IC/低波健全性 共5组。"""
     assert regime_cond_lab.selftest() == 0
+
+
+def test_ml_train_dataset_selftest():
+    """G16（第88轮）ml_train.dataset --selftest：purged折叠不相交/标准化/auc手算/缺库安全 共4组。"""
+    import ml_train.dataset as mld
+    assert mld.selftest() == 0
+
+
+def test_ml_train_train_lr_selftest():
+    """G16（第88轮）ml_train.train_lr --selftest：sigmoid边界/可分恢复/前向手算 共3组。"""
+    import ml_train.train_lr as mlt
+    assert mlt.selftest() == 0
+
+
+def test_ml_inference_selftest():
+    """G16（第88轮）ml_inference --selftest：缺模型/特征不全/跨度不足/前向手算/版本不符 共5组。"""
+    import ml_inference as mli
+    assert mli.selftest() == 0
