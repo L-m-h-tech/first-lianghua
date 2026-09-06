@@ -27,6 +27,18 @@
 
 | 第14轮 分钟K自采库（WP-D0，为日内/平今回测积累自有分钟数据） | `intraday_bars.py`（**新浪主连为主+东财补1m+通达信可选冗余**的三源选源、周期聚合纯函数）+新增 `tdx_bars.py`（pytdx延迟导入、启动并发探测、取不到期货零成本降级）；`storage`新增第8张表`minute_bars`（唯一键去重、保留400天）；`main`启动小回填+后台线程交易5分钟/非交易30分钟增量自采；实测回填261888根（64品种×5/15/30/60m×1023根），60m回溯约12.5月。选型证据见《数据源选型与通达信替换可行性分析.md》 |
 
+### 近期轮次关键能力（第81-91轮，2026-09）
+
+- **G21续 长面板与消费端**：`tools/long_panel_builder.py` 用 term_history 近月复权重建 **8.5 年长面板**（64品种/109,803行，cache/research_panel_long.db）；tsmom_eval / xsmom_eval / carry_eval 均支持 `--panel-db` 读长面板。
+- **G25 表达式因子体系**：`factor_expr.py` 白名单 DSL（含 ts_skew 偏度算子）；`expr_miner.py` 确定性穷举自动挖掘（红线门控、只出候选不自动上线）；`regime_cond_lab.py` regime 条件化实验台（placebo 多种子纪律）；`expr_research.py` 双口径（时序+逐日截面IC）全库体检。
+- **G7 长窗复核 + 影子信号**：xsmom/tsmom252 在 8.5 年长窗通过双样本稳健；`tools/shadow_track.py` 影子信号（xsmom252基线/tsmom252/剔能化对照）**随 main 启动自动记录**（每交易日首次+17:00后），看板 ⑮ 影子信号页签实时可见；`main --daily` 或跑 main 即自动完成当日影子链。
+- **G13 LLM 第二意见复核**：`llm_reviewer.py`（无 key 完全休眠）；DeepSeek key 走 `.env` 环境变量（gitignored）；三类触发器+OpenAI 兼容+JSON schema+三降级+每日成本节流（默认≤3次）。
+- **G16 浅ML训练管线预备**：`tools/ml_train/`（dataset.py purged+embargo 时序切分禁随机K折 / train_lr.py 纯标准库逻辑回归蒙特卡罗）+ `ml_inference.py`（标准库前向推理+缺模型回退登记，默认关）；样本跨度≥250 交易日即解锁重训。
+- **G18 Tushare 零依赖接入**：`tushare_client.py`（token 走 env、裸 HTTP 走现有连接池、软降级）+ `tools/tushare_ingest.py`（T1 交易日历校验+T2 当日仓单快照）+ `tools/tushare_harvest.py`（限时 token 一次收割：8年交易日历/合约元数据/当日快照落 cache/tushare_harvest.db）。
+- **G1 纸面影子账户开启**：`config.PAPER_ENABLED=True`（第89轮拍板）；纸面引擎随 main 启停、三表持久化、重启 restore 续跑；reports/paper_account.txt + 看板页签可见；三方对账等影子≥4周。
+- **看板研究报告聚合页签**：实时看板新增"研究报告(全部)"内嵌页签，聚合 reports/*.txt 全部分析报告（报告名/类别/更新时间/摘要/查看全文）。
+- **第91轮代码审查优化**：清理 20+ 处未使用 import、修复 observe_cycle 重复调用告警隐患、run_cycle 调度抽取（行为不变）；同花顺期货通路径已随迁移更新至 `E:\同花顺期货通in\happ.exe`。
+
 > ⚠️ 免责声明：本程序输出由公开数据与规则引擎自动生成，仅供学习研究参考，不构成任何投资建议。期货及期权杠杆交易风险极高，据此操作风险自负。
 
 ---
