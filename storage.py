@@ -255,6 +255,21 @@ class MonitorDB:
                     positions_json TEXT, created_real REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_pe_ts ON paper_equity(created_real);
+
+                CREATE TABLE IF NOT EXISTS tick_snapshots(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sym TEXT NOT NULL, variety TEXT,
+                    bucket TEXT NOT NULL,
+                    quote_date TEXT, quote_time TEXT,
+                    collected_at TEXT,
+                    bid REAL, ask REAL, latest REAL,
+                    bid_vol REAL, ask_vol REAL,
+                    spread REAL, spread_bp REAL,
+                    prev_settle REAL, oi REAL, volume REAL,
+                    created_real REAL,
+                    UNIQUE(sym, bucket)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ts_sym ON tick_snapshots(sym, created_real);
                 """
             )
             self.conn.commit()
@@ -558,6 +573,44 @@ class MonitorDB:
                 n += int(cur.rowcount or 0)
             self.conn.commit()
         return n
+
+    def upsert_tick_snapshots(self, rows):
+        """G14（第92轮）一档盘口快照落库：按 (sym, bucket) INSERT OR REPLACE 幂等去重——
+        同一 5 分钟桶重复采集/断网重试/重启续传都只保留最新一行（upsert 去重、不丢不重）。
+        rows: orderbook_snapshot 产出的 dict 列表。返回受影响行数（写入行数）。"""
+        if not rows:
+            return 0
+        with self.lock:
+            cur = self.conn.executemany(
+                """INSERT OR REPLACE INTO tick_snapshots(
+                       sym, variety, bucket, quote_date, quote_time, collected_at,
+                       bid, ask, latest, bid_vol, ask_vol, spread, spread_bp,
+                       prev_settle, oi, volume, created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(r.get("sym"), r.get("variety"), r.get("bucket"),
+                  r.get("quote_date"), r.get("quote_time"), r.get("collected_at"),
+                  float(r.get("bid") or 0), float(r.get("ask") or 0), float(r.get("latest") or 0),
+                  float(r.get("bid_vol") or 0), float(r.get("ask_vol") or 0),
+                  float(r.get("spread") or 0), float(r.get("spread_bp") or 0),
+                  float(r.get("prev_settle") or 0), float(r.get("oi") or 0),
+                  float(r.get("volume") or 0), r.get("created_real") or 0.0)
+                 for r in rows])
+            self.conn.commit()
+            return cur.rowcount if cur.rowcount else len(rows)
+
+    def recent_tick_snapshots(self, days=30, sym=None, limit=5000):
+        """按需读取一档盘口快照（G14 统计用），升序返回 dict 列表。"""
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        sql = ("SELECT sym, variety, bucket, quote_date, quote_time, collected_at,"
+               " bid, ask, latest, bid_vol, ask_vol, spread, spread_bp, oi, volume"
+               " FROM tick_snapshots WHERE collected_at >= ?")
+        args = [cutoff]
+        if sym:
+            sql += " AND sym = ?"
+            args.append(sym)
+        sql += " ORDER BY collected_at ASC, sym ASC LIMIT ?"
+        args.append(int(limit))
+        return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
 
     def minute_bars_for_sym(self, sym, period, since=None, limit=None):
         """按品种跨具体合约取某周期分钟bar（换月后新旧主力按时间自然衔接），升序返回 dict 列表，
@@ -982,7 +1035,7 @@ class MonitorDB:
     def table_counts(self):
         out = {}
         with self.lock:
-            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health", "backtest_runs", "paper_orders", "paper_trades", "paper_equity"):
+            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health", "backtest_runs", "paper_orders", "paper_trades", "paper_equity", "tick_snapshots"):
                 out[table] = self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
         return out
 
@@ -1011,4 +1064,6 @@ class MonitorDB:
             self.conn.execute("DELETE FROM paper_orders WHERE ts < ?", (paper_cut,))
             self.conn.execute("DELETE FROM paper_trades WHERE ts < ?", (paper_cut,))
             self.conn.execute("DELETE FROM paper_equity WHERE ts < ?", (paper_cut,))
+            snap_cut = (datetime.now() - timedelta(days=config.SNAPSHOT_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            self.conn.execute("DELETE FROM tick_snapshots WHERE collected_at < ?", (snap_cut,))
             self.conn.commit()

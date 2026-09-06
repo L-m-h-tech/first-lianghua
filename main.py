@@ -532,6 +532,18 @@ def _maybe_shadow(state):
         LOG.error("影子跟随调度失败（已吞掉）: %s", traceback.format_exc())
 
 
+def _maybe_snapshot(state):
+    """G14（第92轮）一档盘口快照采集（新浪主连5分钟级）：同步单批请求、5分钟节流、
+    仅交易时段采集、失败全吞零阻塞；落 tick_snapshots 表 + 刷新 orderbook_stats 统计。"""
+    try:
+        import orderbook_snapshot
+        res = orderbook_snapshot.collect_once(state.db)
+        if res.get("stored"):
+            LOG.info("G14 盘口快照已落库 %d 行", res["stored"])
+    except Exception:
+        LOG.warning("G14 盘口快照调度失败（已吞掉）: %s", traceback.format_exc())
+
+
 
 def run_cycle(state):
     state.cycle += 1
@@ -787,9 +799,10 @@ def run_cycle(state):
     text = report.render(state, fut_rows, opt_rows, strat_rows, news_top)
     print(text, flush=True)
     report.save(state, text, fut_rows, opt_rows)
-    # 6.4 G13 LLM 第二意见 + 6.5 影子信号跟随（抽取为模块级轻量调度，零主周期改动）
+    # 6.4 G13 LLM 第二意见 + 6.5 影子信号跟随 + 6.6 G14 一档盘口快照（抽取为模块级轻量调度，零主周期改动）
     _maybe_review(state, fut_rows)
     _maybe_shadow(state)
+    _maybe_snapshot(state)
     state.alerts.observe_cycle(state, fut_rows, strat_rows)
     LOG.info("第 %d 轮分析完成，报告已保存到 %s | %s | %s",
              state.cycle, config.REPORT_FILE,

@@ -657,6 +657,18 @@ PAPER_ALLOW_ADD = False           # 持仓且同向更强信号是否加仓（�
 PAPER_RETENTION_DAYS = 3650       # paper_orders/trades/equity 保留天数（纸面需长期影子对照，默认约10年）
 PAPER_ACCOUNT_TXT = os.path.join(BASE_DIR, "reports", "paper_account.txt")  # 第28轮纸面账户报告路径
 
+# ================= G14（第92轮）：一档盘口低频快照自采（新浪主连快照，5分钟级、非逐笔） =================
+# 用途：统计真实买卖价差、校准回测滑点、给 G1 纸面提供保守成交价。只采集不改任何评分/撮合口径。
+# 接口字段（商品期货 nf_XXX0 实测）：[6]买一价 [7]卖一价 [11]买一量 [12]卖一量 [8]最新价 [10]昨结
+# [13]持仓 [14]成交量 [17]行情日期 [1]行情时间HHMMSS；中金所字段不同且无买卖档，试点不含中金所。
+SNAPSHOT_ENABLED = True            # 总开关：True=main 每轮调度采集（异常全吞、绝不影响主监控）
+SNAPSHOT_INTERVAL = 300            # 采集节流（秒）：每5分钟采一次（G14 设计=5分钟级，非逐笔）
+SNAPSHOT_ONLY_TRADING = True       # 仅交易时段采集（收盘/周末/节假日零请求，避免空转）
+SNAPSHOT_VARIETIES = ["RB", "CU", "AU", "AG", "I", "M", "TA", "MA"]  # 试点主力品种8个（上期所4/大商所2/郑商所2）
+SNAPSHOT_RETENTION_DAYS = 3650     # tick_snapshots 保留天数（盘口快照长期用于滑点校准，默认约10年）
+SNAPSHOT_STATS_TXT = os.path.join(BASE_DIR, "reports", "orderbook_stats.txt")
+SNAPSHOT_STATS_JSON = os.path.join(BASE_DIR, "reports", "orderbook_stats.json")
+
 # ================= G3（第29轮）：完整绩效指标包 / tear sheet（纯展示，不改综合分与主链） =================
 METRICS_BARS_PER_YEAR = 243       # 日度口径年化周期数（国内期货约243个交易日）
 METRICS_ROLLING_WINDOW = 60       # 滚动夏普窗口（个交易日）

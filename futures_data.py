@@ -162,13 +162,22 @@ def _parse_quote(code, text, quotes):
              "prev_settle": prev,
              "chg_pct": (latest / prev - 1.0) if (latest > 0 and prev > 0) else 0.0,
              "open_interest": _f(f[13]), "volume": _f(f[14]),
-             "date": f[17] if len(f) > 17 else ""}
+             "date": f[17] if len(f) > 17 else "",
+             # G14（第92轮）：一档盘口快照字段（[6]买一价 [7]卖一价 [11]买一量 [12]卖一量
+             # [17]行情日期 [1]行情时间HHMMSS）。仅新浪主源有；东财兜底 dict 无这些键，消费端按 0 处理。
+             "bid": _f(f[6]), "ask": _f(f[7]),
+             "bid_vol": _f(f[11]) if len(f) > 11 else 0.0,
+             "ask_vol": _f(f[12]) if len(f) > 12 else 0.0,
+             "quote_date": f[17] if len(f) > 17 else "",
+             "quote_time": f[1] if len(f) > 1 else ""}
     elif is_cffex and len(f) >= 4:
         latest = _f(f[3])
         q = {"name": f[-1] if f[-1] else code, "latest": latest,
              "open": _f(f[0]), "high": _f(f[1]), "low": _f(f[2]),
              "prev_settle": 0.0, "chg_pct": 0.0,
-             "open_interest": 0.0, "volume": _f(f[4]), "date": ""}
+             "open_interest": 0.0, "volume": _f(f[4]), "date": "",
+             "bid": 0.0, "ask": 0.0, "bid_vol": 0.0, "ask_vol": 0.0,
+             "quote_date": "", "quote_time": ""}
     if q.get("latest", 0) > 0:
         quotes[code] = q
 

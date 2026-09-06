@@ -20,6 +20,7 @@ import expr_research
 import factor_regime
 import microstructure_lab
 import spread_lab
+import orderbook_snapshot
 import spec_pressure_lab
 import web_dashboard
 import portfolio_constructor
@@ -256,3 +257,8 @@ def test_tushare_harvest_selftest():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     import tushare_harvest as th
     assert th.selftest() == 0
+
+
+def test_orderbook_snapshot_selftest():
+    """G14（第92轮）一档盘口快照：零网络合成断言（桶/软降级/upsert去重/节流/门控/统计）。"""
+    assert orderbook_snapshot.selftest() == 0
