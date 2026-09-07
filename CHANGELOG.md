@@ -1,7 +1,27 @@
 # 更新日志（CHANGELOG）
 
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
-铁律：生产纯标准库 + 三个直接依赖；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
+铁律：生产纯标准库 + 直接依赖（requests/uiautomation/websocket-client；第94轮决策门收编 lxml 为单例外，缺失自动回退 stdlib）；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
+
+## [0.94.0] — 2026-09-07 · 第94轮 对标 scrapling 的全链路抓取/解析工程增强（A1-A6+B1-B7，用户拍板全做）
+- **P0 底座（纯标准库+收编 lxml）**
+  - **A1 解析健康探针**（parser_health.py）：各解析器 record(ok,字段数) → 滚动窗口尾部连续失败≥4 或字段数骤降 → alerts 告警 + reports/parser_health.txt/.jsonl；已接入新浪行情/新闻/原油/东财库存/OpenVlab 日历五源，main run_cycle 每轮 emit（异常全吞）。网站改版从"静默出错"变"当天告警"。
+  - **A3 统一文本/表格提取**（html_text.py）：lxml 优先 + stdlib html.parser 自动回退（双后端接口一致、测试双覆盖）；clean_text 去 script/style/注释、extract_tables 表格行提取、find_anchor_line 模糊锚点（B3）、first_valid 多候选链（A2）。**决策门通过：lxml==6.1.2 收编进 requirements.txt（机器早已安装，缺它自动回退，行为等价）。**
+  - **A4 每源会话+cookie 持久化**（http_client）：get_session(source) 独立会话、cookie 落 cache/cookies.json 节流持久化、重启续用；默认 http 仍走全局会话零影响。
+  - **A5 请求级限流退避**（http_client）：429/503/Retry-After → 指数退避+抖动（5s→120s 封顶），退避期返回合成 503 不发请求，成功逐步恢复；与 data_router 源级熔断互补。
+  - **A6 dev 缓存重放**（http_client）：FUTURES_MONITOR_DEV_CACHE=1 时按(源,url,日期)落 cache/http_replay/，同键重放不发请求（调试/复现用，默认关）。
+- **P1 自愈闭环**
+  - **A2 多候选解析链**：html_text.first_valid + fundamental_data 表格主备（"现货/主力"表头→最大表），走备选登记 parser_health；futures_data 字段移位变体经评估为臆测布局（真实数据已证其产生脏数据）按"宁缺毋滥"撤销，保留单一正确解析+A1探针。
+  - **B1 浏览器级完整请求头**（config.HEADERS_BROWSER）：Accept/Language/Encoding/Sec-Fetch-* 全量；HEADERS_SINA 并入完整头实测新浪行情正常（240B）。
+  - **B2 LLM 修选择器**（tools/selector_heal.py，研究侧）：解析告警时把 HTML 片段+期望字段喂 DeepSeek（复用 llm_reviewer key，≈0.002元/次），强制 JSON 返回新解析规则建议；无 key/坏 JSON 全软降级；只出建议不改代码。
+  - **B3 模糊锚点**：html_text.find_anchor_line（difflib，行级包含匹配，min_ratio 防误定位）。
+- **P2 遗留攻坚+资产**
+  - **B4 生意社基差 cookie 初始化**：先 GET 100ppi 首页拿会话 cookie（独立会话持久化）再取数据页；实测仍被反爬拦截→诚实维持软降级（None）。
+  - **B5 官方IV交叉校验**（tools/iv_official_check.py，研究侧）：上期所公开页提取官方 IV vs 本地 iv_surface 反推对照，偏差>2vol 标注；实测官网路径 404 → 软降级诚实呈现（URL 待官网改版后校正）。
+  - **B6 长任务 checkpoint**（checkpoint.py）：cache/checkpoints.json 按自然日登记阶段进度；shadow_track.daily 的 term top-up / 长面板重建按日跳过已完成阶段（run 记录永不跳过），中断重启续传不重算。
+  - **B7 页面 markdown 资产**（tools/page_archive.py，研究侧）：html_text 转 md 落 cache/page_md/ + manifest.json，实测新浪期货页归档成功。
+- 测试：test_http_client(7)/test_html_text(9)/test_parser_health(6)/新增 A2 first_valid 等 + 4 工具 selftest 注册；**pytest 786→818 全绿**；真实验证行情/归档/checkpoint 通过、生意社与官方IV 诚实降级。
+- **依赖变更（唯一破例）**：requirements.txt +lxml==6.1.2（html_text 后端，缺失自动回退 stdlib）；README/总纲纪律声明同步"纯标准库+lxml 单例外"。
 
 ## [0.93.0] — 2026-09-07 · 第93轮 纸面开仓标注具体合约 + 开盘30分钟后轮动节奏 20→10 分钟（用户拍板）
 - **纸面账户（影子）开仓标注具体合约**（G1续）：`contract_code`/`main_month` 从 analyzer 结果透传进纸面委托/成交/持仓并落库——`paper_orders`/`paper_trades` 新增两列（CREATE TABLE 同步 + **存量库幂等 ALTER TABLE 补列迁移**）；开仓/平仓/反手/风控强平/熔断减仓各条成交均带合约（平仓腿从持仓对象继承开仓合约，重启 restore 重建持仓也保留）。

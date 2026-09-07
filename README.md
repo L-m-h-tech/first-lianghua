@@ -27,8 +27,9 @@
 
 | 第14轮 分钟K自采库（WP-D0，为日内/平今回测积累自有分钟数据） | `intraday_bars.py`（**新浪主连为主+东财补1m+通达信可选冗余**的三源选源、周期聚合纯函数）+新增 `tdx_bars.py`（pytdx延迟导入、启动并发探测、取不到期货零成本降级）；`storage`新增第8张表`minute_bars`（唯一键去重、保留400天）；`main`启动小回填+后台线程交易5分钟/非交易30分钟增量自采；实测回填261888根（64品种×5/15/30/60m×1023根），60m回溯约12.5月。选型证据见《数据源选型与通达信替换可行性分析.md》 |
 
-### 近期轮次关键能力（第81-93轮，2026-09）
+### 近期轮次关键能力（第81-94轮，2026-09）
 
+- **第94轮 抓取/解析工程增强（对标 scrapling）**：`parser_health.py` 解析健康探针（改版当天告警）；`html_text.py` 统一 HTML 文本/表格提取（lxml 收编+stdlib 回退）；`http_client` 每源会话+cookie 持久化、限流退避、dev 缓存重放；`checkpoint.py` 长任务断点续传；LLM 修选择器建议（`tools/selector_heal.py`）、官方IV交叉校验（`tools/iv_official_check.py`）、页面 markdown 归档（`tools/page_archive.py`）、生意社 cookie 初始化。零评分/撮合口径改动。
 - **第93轮 纸面合约标注+节奏**：纸面账户（影子）开仓/持仓/成交均标注具体合约（如 RB2610，落 paper_orders/paper_trades 表并显示在 paper_account.txt）；交易时段开盘30分钟后轮动节奏 20→10 分钟（前30分钟仍每5分钟，纸面与主循环同节奏）。
 - **G14 一档盘口快照自采**：`orderbook_snapshot.py`（新浪主连快照，5分钟级、非逐笔）对 8 个试点主力品种（RB/CU/AU/AG/I/M/TA/MA）每 5 分钟采买一/卖一价量，落 monitor.db `tick_snapshots` 表（upsert 去重、断网续传不丢不重、仅交易时段采集零空转）；随 main 每轮自动调度；reports/orderbook_stats.txt/.json 输出真实买卖价差统计（校准回测滑点/给G1保守成交价的基础数据）。
 - **G21续 长面板与消费端**：`tools/long_panel_builder.py` 用 term_history 近月复权重建 **8.5 年长面板**（64品种/109,803行，cache/research_panel_long.db）；tsmom_eval / xsmom_eval / carry_eval 均支持 `--panel-db` 读长面板。
@@ -454,7 +455,7 @@ $env:FUTURES_MONITOR_WEBHOOK='你的机器人Webhook地址'; D:\Python\python.ex
 ## 七.5、工程化与数据质量底座（第25轮 G9/G10/G11/G6）
 
 1. **git 工程化（G9）**：项目已纳入 git（基线 tag 0.24.0）。.gitignore 忽略 data/*.db、cache、logs、reports 运行产物、__pycache__、.env 等，只版本化源码/测试/文档与 data 下 csv/xlsx 配置表；.gitattributes 统一 LF；
-equirements.txt 锁定三个直接依赖版本，
+equirements.txt 锁定直接依赖版本（requests/uiautomation/websocket-client + 第94轮收编 lxml），
 equirements-freeze.txt 为开发解释器完整冻结留档；版本看 VERSION、变更看 CHANGELOG.md。
 2. **配置外置（G10，零新增依赖）**：不改代码即可调参——复制 config.template.json 为 config.json（已 gitignore）改阈值/开关/账户参数，启动时深合并覆盖内置默认；密钥/webhook 只走 .env（复制 .env.example，真实环境变量优先）。缺这些文件时行为与历史完全一致；非法类型/未知键/路径常量会被安全跳过。也可用环境变量 FUTURES_MONITOR_CONFIG、FUTURES_MONITOR_ENV 指定外置文件。
 3. **数据源熔断降级链（G11，data_router.py）**：每个数据源有独立熔断器（连续失败 N 次→熔断冷却→半开试探一次→成功恢复/失败再熔断），行情（新浪主、东财兜底）与分钟K（新浪/通达信/东财）三源结果都汇入进程级 REGISTRY；健康时取数顺序与结果不变，仅在源确实连续失败时跳过它并自动降级，避免向坏源空发请求。
