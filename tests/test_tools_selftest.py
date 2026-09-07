@@ -300,3 +300,9 @@ def test_checkpoint_selftest():
     """第94轮 B6：阶段 checkpoint 幂等/容错（零网络）。"""
     import checkpoint
     assert checkpoint.selftest() == 0
+
+
+def test_holiday_updater_selftest():
+    """第95轮：节假日年度维护工具（区间解析/官方日历推导/查重/渲染，零网络）。"""
+    import holiday_updater
+    assert holiday_updater.selftest() == 0
