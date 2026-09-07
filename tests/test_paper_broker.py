@@ -559,3 +559,30 @@ def test_paper_restore_keeps_contract(loose, tmp_db):
     b2 = make_broker("close", db=tmp_db, restore=True, slip=0.0)
     pv = b2.positions_view()
     assert len(pv) == 1 and pv[0]["contract_code"] == "CU2610"
+
+
+def test_paper_backfill_null_contracts(loose, tmp_db):
+    """第95轮：DB里 contract_code=NULL 的旧行被一次性补仓（NULL 安全匹配），restore后内存持仓带合约。"""
+    # 用 storage 层插入一条无合约的成交记录（模拟旧 main 产出，contract_code=NULL）
+    t = {"ts": "t0", "pos_ref": "XX-1", "sym": "XX", "name": "占位", "sector": "未知",
+         "side": "open", "dir_text": "多", "direction": 1, "lots": 1, "price": 100.0,
+         "raw_price": 100.0, "notional": 1000.0, "slip_yuan": 0.0, "fee_yuan": 0.0,
+         "realized_yuan": 0.0, "leg": "开仓", "reason": "伪造", "forced": 0,
+         "order_id": 1, "entry_ts": "t0", "entry_price": 100.0, "score": None,
+         "margin_rate": 0.1, "contract_code": "", "main_month": "", "created_real": 1}
+    tmp_db.insert_paper_trade(t)
+    # 再把合约字段改成 NULL（模拟 ALTER 加列后旧代码写入的 NULL）
+    tmp_db.conn.execute("UPDATE paper_trades SET contract_code=NULL, main_month=NULL WHERE sym='XX'")
+    tmp_db.conn.commit()
+    # 信号表插入带合约的同 sym 最新行（补仓数据源）
+    tmp_db.conn.execute(
+        "INSERT INTO signals(ts,cycle,variety,code,sym,exchange,cat,price,score,direction_int,"
+        "contract_code,main_month,created_real)"
+        " VALUES('t9',1,'XX','XX0','XX','NONE','未知',100,5,1,'XX2701','2701',1)")
+    tmp_db.conn.commit()
+    b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
+    b.restore()
+    empties = tmp_db.conn.execute(
+        "SELECT COUNT(*) FROM paper_trades WHERE contract_code IS NULL OR contract_code=''").fetchone()[0]
+    assert empties == 0, "DB仍残留空合约"
+    assert len(b._known_contract) > 0 and b._known_contract.get("XX", ("", ""))[0] == "XX2701"

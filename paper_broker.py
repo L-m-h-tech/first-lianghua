@@ -271,6 +271,8 @@ class PaperBroker:
         else:
             self.breaker = None
         self._last_circuit = None
+        # 第95轮：最后已知合约映射（回补探测前空合约，修复 paper_account 合约列显示）
+        self._known_contract: dict = {}   # sym -> (contract_code, main_month)
         if restore and self.db is not None:
             self.restore()
 
@@ -317,7 +319,8 @@ class PaperBroker:
                 "fill_mode": self.fill_mode, "status": status,
                 "fill_ts": "", "fill_price": None, "raw_price": None,
                 "reason": "", "order_ref": "", "pos_ref": self.pos_ref.get(row["sym"], ""),
-                "contract_code": row.get("contract_code") or "", "main_month": row.get("main_month") or "",
+                "contract_code": row.get("contract_code") or self._known_contract.get(row["sym"], ("", ""))[0],
+                "main_month": row.get("main_month") or self._known_contract.get(row["sym"], ("", ""))[1],
                 "raw": {"atr": row.get("atr")}}
 
     def _next_pos_ref(self, sym):
@@ -549,6 +552,34 @@ class PaperBroker:
             ord_events.append(order)
         return events
 
+    # 第95轮：一次性 DB 补仓——用信号表最新 contract/main_month 回填纸面空合约行
+    def _backfill_empty_contracts(self):
+        if self.db is None:
+            return
+        try:
+            latest = {r["sym"]: (r["contract_code"], r["main_month"])
+                      for r in self.db.conn.execute(
+                          "SELECT sym, contract_code, main_month FROM signals s"
+                          " WHERE contract_code IS NOT NULL AND contract_code != ''"
+                          " AND ts = (SELECT MAX(ts) FROM signals WHERE sym = s.sym)").fetchall()
+                      if r["contract_code"]}
+            if not latest:
+                return
+            n = 0
+            for sym, (cc, mm) in latest.items():
+                for tbl in ("paper_trades", "paper_orders"):
+                    n += self.db.conn.execute(
+                        "UPDATE %s SET contract_code=?, main_month=? "
+                        "WHERE sym=? AND (contract_code IS NULL OR contract_code='')" % tbl,
+                        (cc, mm, sym)).rowcount or 0
+            self.db.conn.commit()
+            self._known_contract.update(latest)
+            if n:
+                LOG.info("纸面合约补仓: 回填 %d 行空 contract_code (from signals)", n)
+        except Exception:
+            pass
+
+
     # ---------------- G5④ 阶段A2：paper_delever 自动减仓（只平不反向） ----------------
 
     def _delever_cut(self, ts, by_sym, by_quote):
@@ -631,6 +662,9 @@ class PaperBroker:
             sym = (row.get("sym") or "").upper()
             if not sym:
                 continue
+            # 第95轮：从有合约的 row 更新最后已知映射（早周期空合约回补用）
+            if row.get("contract_code"):
+                self._known_contract[sym] = (row["contract_code"] or "", row.get("main_month") or "")
             by_sym[sym] = row
             px = float(row.get("price") or 0.0)
             if px > 0:
@@ -745,6 +779,9 @@ class PaperBroker:
             pf._last_prices[sym] = t["price"]
             self.pos_ref[sym] = t["pos_ref"]
             open_fees += t.get("fee_yuan") or 0.0
+            # 第95轮：开仓成交更新最后已知映射
+            if t.get("contract_code"):
+                self._known_contract[sym] = (t["contract_code"] or "", t.get("main_month") or "")
             suffix = int(t["pos_ref"].split("-")[-1]) if str(t.get("pos_ref", "")).split("-")[-1].isdigit() else 0
             self._open_seq[sym] = max(self._open_seq.get(sym, 0), suffix)
         # 已实现净盈亏：已平仓腿的净盈亏合计；仍持仓开仓费在开仓时已付、尚未计入任何平仓腿，需补扣
@@ -777,6 +814,17 @@ class PaperBroker:
                 if hasattr(self.db, "paper_trades_recent") else self.fill_ledger
         except Exception:
             pass
+        # 第95轮：一次性补仓——paper_trades/orders 空合约用最新信号同 sym 回填，DB 持久化
+        self._backfill_empty_contracts()
+        # 内存持仓同步补仓结果（restore 先建 Position、后补 DB，需回写内存对象）
+        try:
+            for p in pf.positions.values():
+                if not getattr(p, "contract_code", ""):
+                    cc, mm = self._known_contract.get(p.sym, ("", ""))
+                    p.contract_code, p.main_month = cc, mm
+        except Exception:
+            pass
+
         self.restored = True
         return True
 
