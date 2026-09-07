@@ -72,6 +72,12 @@ def fetch_quotes(codes):
         except Exception as e:
             LOG.warning("东财行情兜底失败（不影响主流程）: %s", e)
             REGISTRY.record("quote_em", False)
+    # A1（第94轮）：解析健康探针——行情覆盖数（64品种全齐=64）
+    try:
+        import parser_health
+        parser_health.record("sina_em_quotes", bool(quotes), len(quotes))
+    except Exception:
+        pass
     return quotes
 
 
@@ -144,15 +150,37 @@ def _fetch_quotes_em(codes):
 
 
 def _parse_quote(code, text, quotes):
+    """解析新浪行情行（字段布局以 docstring 为准；A2 改版变体经评估为臆测布局会产出脏数据，
+    按"宁缺毋滥"纪律不做字段移位猜测——保留 A1 探针上报零命中供人工/LLM 介入）。"""
+    try:
+        import parser_health
+    except Exception:
+        parser_health = None
+    if not _parse_quote_inner(code, text, quotes):
+        if parser_health is not None:
+            try:
+                parser_health.record("sina_quote", False, 0)
+            except Exception:
+                pass
+        return
+    if parser_health is not None:
+        try:
+            parser_health.record("sina_quote", True, 1)
+        except Exception:
+            pass
+
+
+def _parse_quote_inner(code, text, quotes):
     m = re.search(r'hq_str_nf_%s="([^"]*)"' % code, text)
     if not m:
-        return
+        return False
     f = m.group(1).split(",")
     try:
         float(f[0])
         is_cffex = True          # 中金所行情第一字段就是数字
     except (ValueError, IndexError):
         is_cffex = False
+
     q = {}
     if not is_cffex and len(f) >= 18:
         latest = _f(f[8])
@@ -180,6 +208,8 @@ def _parse_quote(code, text, quotes):
              "quote_date": "", "quote_time": ""}
     if q.get("latest", 0) > 0:
         quotes[code] = q
+        return True
+    return False
 
 
 def fetch_daily_kline(symbol, retry=2):

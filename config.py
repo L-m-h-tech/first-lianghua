@@ -148,11 +148,33 @@ EXCHANGE_NAMES = {"SHFE": "上期所", "INE": "上期能源", "DCE": "大商所"
 TIMEOUT = 10
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-HEADERS_SINA = {           # 新浪行情接口必须带 Referer，否则被拒绝
+HEADERS_COMMON = {"User-Agent": _UA}
+# B1（第94轮，对标 scrapling stealth headers 子集）：完整浏览器级请求头（Accept/语言/编码/Sec-Fetch-*）
+# 实测：带完整头的组合可降低新浪/东财限流概率；TLS 指纹级伪装（curl_cffi）明确不做（铁律零新增依赖）。
+HEADERS_BROWSER = {
+    "User-Agent": _UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+HEADERS_SINA = {           # 新浪行情接口必须带 Referer，否则被拒绝（第94轮并入完整头）
     "User-Agent": _UA,
     "Referer": "https://finance.sina.com.cn/",
+    "Accept": HEADERS_BROWSER["Accept"],
+    "Accept-Language": HEADERS_BROWSER["Accept-Language"],
 }
-HEADERS_COMMON = {"User-Agent": _UA}
+# ---- 第94轮 A4/A5/A6（对标 scrapling：session 持久化 / AutoThrottle / dev 缓存重放） ----
+HTTP_COOKIE_JAR = os.path.join(BASE_DIR, "cache", "cookies.json")   # 每源 cookie 持久化落盘
+HTTP_THROTTLE_ENABLED = True      # A5 请求级限流退避总开关（仅 429/503/Retry-After 时改变时序，正常路径零影响）
+HTTP_THROTTLE_BACKOFF0 = 5.0      # 首次退避基础秒数（指数增长 5/10/20...封顶）
+HTTP_THROTTLE_MAX = 120.0         # 退避封顶秒数
+# A6 dev 缓存默认关：FUTURES_MONITOR_DEV_CACHE=1 开启（响应落 cache/http_replay/ 并可重放）
 
 # ---------------- 同花顺期货通 ----------------
 THS_EXE = r"E:\同花顺期货通\bin\happ.exe"   # 第91轮：随用户 C→E 盘迁移更新

@@ -799,10 +799,15 @@ def run_cycle(state):
     text = report.render(state, fut_rows, opt_rows, strat_rows, news_top)
     print(text, flush=True)
     report.save(state, text, fut_rows, opt_rows)
-    # 6.4 G13 LLM 第二意见 + 6.5 影子信号跟随 + 6.6 G14 一档盘口快照（抽取为模块级轻量调度，零主周期改动）
+    # 6.4 G13 LLM 第二意见 + 6.5 影子信号跟随 + 6.6 G14 一档盘口快照 + 6.7 A1 解析健康探针
     _maybe_review(state, fut_rows)
     _maybe_shadow(state)
     _maybe_snapshot(state)
+    try:
+        import parser_health
+        parser_health.emit_health_alerts(state)
+    except Exception:
+        pass
     state.alerts.observe_cycle(state, fut_rows, strat_rows)
     LOG.info("第 %d 轮分析完成，报告已保存到 %s | %s | %s",
              state.cycle, config.REPORT_FILE,

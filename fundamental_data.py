@@ -16,7 +16,8 @@ import threading
 from html.parser import HTMLParser
 
 import config
-from http_client import http
+from http_client import http, get_session as _get_session
+import html_text
 
 EM_API = config.FUND_EM_API
 EM_HEADERS = {"Referer": "https://data.eastmoney.com/", "Accept": "application/json, text/plain, */*"}
@@ -181,8 +182,17 @@ class FundamentalFetcher:
         url = config.FUND_PPI_URL.format(date=ds)
         table = None
         try:
-            r = http.get(url, headers={"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                                       "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
+            # B4（第94轮，对标 scrapling 反爬思路）：生意社 JS-cookie 反爬——先 GET 首页
+            # 拿会话 cookie（每源独立会话持久化，重启续用），再带 cookie 请求数据页。
+            ppi = _get_session("100ppi")
+            try:
+                ppi.get("https://www.100ppi.com/", timeout=10,
+                        headers={"User-Agent": config.HEADERS_COMMON["User-Agent"]})
+            except Exception:
+                pass
+            r = http.get(url, source="100ppi",
+                         headers={"User-Agent": config.HEADERS_COMMON["User-Agent"],
+                                  "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
                          timeout=12)
             text = r.content.decode(r.apparent_encoding or "utf-8", errors="replace")
             if r.status_code != 200 or "HW_CHECK" in text or text.count("<tr") < 5 or len(text) < 8000:
@@ -195,7 +205,26 @@ class FundamentalFetcher:
             # 找含"现货/主力"表头、且行数最多的那张表
             cands = [t for t in g.tables if any(
                 any(("现货" in c or "主力" in c) for c in row) for row in t[:3])]
-            table = max(cands, key=len) if cands else (max(g.tables, key=len) if g.tables else None)
+            # A2（第94轮，对标 scrapling mutation）：主=含"现货/主力"表头、备=最大表；
+            # 主表校验失败自动降级到备选，走备选时登记 parser_health（改版早期信号）
+            _label, _tbl = html_text.first_valid(
+                [("primary", lambda: max(cands, key=len) if cands else []),
+                 ("fallback", lambda: max(g.tables, key=len) if g.tables else [])],
+                lambda t: t and len(t) > 1)
+            table = _tbl if _tbl else None
+            if _label == "fallback" and table:
+                try:
+                    import parser_health
+                    parser_health.record("em_inventory_fallback", True, len(table))
+                except Exception:
+                    pass
+            # A1（第94轮）：解析健康探针——库存主表命中行数（改版/被反爬=0 早期信号）
+            try:
+                import parser_health
+                parser_health.record("em_inventory", table is not None and len(table) > 1,
+                                     len(table) if table else 0)
+            except Exception:
+                pass
         except Exception:
             table = None
         out = {}

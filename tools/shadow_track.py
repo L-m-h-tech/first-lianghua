@@ -345,14 +345,29 @@ def daily(panel_db=None, shadow_db=None, txt_path=None, json_path=None,
     import term_history as th
     import backtest as _bt
     items = _bt.resolve_codes("", None)
+    # B6（第94轮，对标 scrapling checkpoint）：term top-up / 长面板重建 按自然日登记阶段进度，
+    # 中断后重启从断点续（重活不重算）；run()（记录当日信号）永不跳过。
+    import checkpoint
+    _day = checkpoint.today_str()
     tstore = th.TermHistoryStore(th.TERM_DB_PATH)
     try:
-        stats = th.topup_varieties(items, tstore, verbose=verbose)
+        if checkpoint.done(_day, "topup"):
+            if verbose:
+                print("top-up：已由今日早前任务完成（checkpoint 跳过）")
+            stats = {"skipped": 1}
+        else:
+            stats = th.topup_varieties(items, tstore, verbose=verbose)
+            checkpoint.mark(_day, "topup")
     finally:
         tstore.close()
     if verbose:
         print("top-up：%s" % {k: v for k, v in stats.items() if k != "errors"})
-    lpb.run(verbose=verbose)
+    if not checkpoint.done(_day, "panel"):
+        lpb.run(verbose=verbose)
+        checkpoint.mark(_day, "panel")
+    else:
+        if verbose:
+            print("长面板重建：已由今日早前任务完成（checkpoint 跳过）")
     return run(panel_db=panel_db, shadow_db=shadow_db, txt_path=txt_path,
                json_path=json_path, h=h, verbose=verbose)
 

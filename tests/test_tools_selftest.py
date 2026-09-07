@@ -262,3 +262,41 @@ def test_tushare_harvest_selftest():
 def test_orderbook_snapshot_selftest():
     """G14（第92轮）一档盘口快照：零网络合成断言（桶/软降级/upsert去重/节流/门控/统计）。"""
     assert orderbook_snapshot.selftest() == 0
+
+
+def test_html_text_selftest():
+    """第94轮 A3：lxml/stdlib 双后端无断言后手算验证（clean_text/extract_tables）。"""
+    import html_text
+    ok = (html_text.clean_text("<p>A</p>") == "A"
+          and html_text.extract_tables("<table><tr><td>1</td></tr></table>") == [[["1"]]])
+    assert ok
+
+
+def test_parser_health_selftest():
+    """第94轮 A1：滚动窗口告警（fail_streak/structure_change）+节流+报告输出。"""
+    import parser_health
+    assert parser_health.selftest() == 0
+
+
+def test_selector_heal_selftest():
+    """第94轮 B2：LLM 修选择器（prompt/JSON提取/无key降级/报告），零网络。"""
+    import selector_heal
+    assert selector_heal.selftest() == 0
+
+
+def test_page_archive_selftest():
+    """第94轮 B7：HTML→markdown 归档 + manifest（零网络）。"""
+    import page_archive
+    assert page_archive.selftest() == 0
+
+
+def test_iv_official_check_selftest():
+    """第94轮 B5：官方IV交叉校验（零网络合成）。"""
+    import iv_official_check
+    assert iv_official_check.selftest() == 0
+
+
+def test_checkpoint_selftest():
+    """第94轮 B6：阶段 checkpoint 幂等/容错（零网络）。"""
+    import checkpoint
+    assert checkpoint.selftest() == 0

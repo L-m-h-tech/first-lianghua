@@ -110,6 +110,12 @@ def fetch_option_calendar(timeout=10):
             months[exp] = {"exp_date": ymd}
         if months:
             out[sym] = months
+    # A1（第94轮）：解析健康探针——期权日历覆盖品种数归零=接口结构变化/失效早期信号
+    try:
+        import parser_health
+        parser_health.record("openvlab_calendar", bool(out), len(out))
+    except Exception:
+        pass
     return out
 
 

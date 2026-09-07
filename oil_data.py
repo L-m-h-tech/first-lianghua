@@ -56,6 +56,12 @@ def fetch_oil_quotes():
             "day_chg": (price / prev - 1.0) if prev > 0 else 0.0,
             "time": (f[12] or "") + " " + (f[6] or ""),
         }
+    # A1（第94轮）：解析健康探针——原油行情归零=限流/结构变化早期信号
+    try:
+        import parser_health
+        parser_health.record("oil_quotes", bool(quotes), len(quotes))
+    except Exception:
+        pass
     return quotes
 
 

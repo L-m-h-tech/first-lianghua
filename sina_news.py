@@ -73,4 +73,10 @@ def fetch_all_news():
             news.extend(fn())
         except Exception as e:
             LOG.warning("新闻源 %s 获取失败: %s", fn.__name__, e)
+    # A1（第94轮）：解析健康探针——新闻条数归零=结构变化/接口失效早期信号
+    try:
+        import parser_health
+        parser_health.record("sina_news", bool(news), len(news))
+    except Exception:
+        pass
     return news
