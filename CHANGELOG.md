@@ -3,6 +3,22 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 直接依赖（requests/uiautomation/websocket-client；第94轮决策门收编 lxml 为单例外，缺失自动回退 stdlib）；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.96.0] — 2026-09-08 · 第96轮 结合「网页学习探索」三网站深度优化数据层（openvlab_map + jiaoyikecha_collector + 资源地图）
+- **① tools/openvlab_map.py（OpenVLab 全市场期权波动率地图，匿名 GET）**：`/api/ctamap-all?add_overseas=true` 83 品种（含海外）——ATM隐波/隐波百分位/1日变化/偏度/偏度百分位/RV22/carry/frontfwd_mom。落 reports/openvlab_map.txt/.json（看板研究报告页签自动可见）+ cache/openvlab_map.db（option_vol_map 按 sym 当日幂等）；与本地 iv_surface.json（T链反推 ATM IV）交叉校验，偏差>2vol 标注。**真实采集 83 品种验证通过**（按隐波百分位排序，可做全市场隐波异动扫描）。
+- **② tools/jiaoyikecha_collector.py（jiaoyikecha 交易可查，会话三步）**：GET 首页 → POST /ajax/session.php 拿 PHPSESSID（http_client A4 会话持久化）→ 带参 POST 数据端点。真实采集：all_varieties 89 品种 / daily_wr 76 仓单日报（量化侧新仓单源）/ hg 77 支撑压力位 / broker_trend 70 席位资金动向 / longhu 10 龙虎榜 / niuxiong 10 牛熊榜。落 reports/jykt_*.json + reports/jykt_summary.txt + cache/jiaoyikecha.db（jykt_wr/hg/broker_trend/longhu 幂等）；礼貌限速 0.6~1.2s；A1 探针记录。
+- **③ qhqqbk 资源地图入库**：219 链接（8 分类）归档 docs/resource_map/（qhqqbk_links.json + RESOURCE_MAP.md 索引 + stats.json）——新增数据源前先查此地图；海外站（彭博/路透/CME/CFTC 等 32 个）国内网络不可直连已标注。
+- **④ 研究层结合**：research_review SOURCES 登记 openvlab_map.json + jykt_summary.txt 两新 sidecar；openvlab_map 隐波地图与 iv_surface/option_chain 联动；jykt 仓单与东财库存跨源对照。
+- **工程护栏（复用第94轮 scrapling 对标）**：A4 会话+cookie 持久化、A5 限流退避、A1 探针、B1 浏览器头——两采集器零新增依赖。研究侧纪律：只采集+报告+研究对照，不进综合分、不接 main 常驻。
+- 测试：两采集器 selftest + tests/test_data_source_collectors.py 4 例；**pytest 821→829 全绿**；两采集器真实验证通过。
+
+## [0.95.1] — 2026-09-07 · 第95轮 hotfix paper_broker 合约回填 NULL 安全 + 内存同步
+- **补丁**：修复旧 main 空合约 NULL 被忽略导致补仓失效 + restore 后内存 Position 未同步合约的显示问题。pytest 820→821。
+
+## [0.95.0] — 2026-09-07 · 第95轮 计划任务注册 + 交易日历年度维护工具
+- **TermTopup/ShadowTrack 计划任务注册**：修正 backup/futures_monitor_shadow_task.xml 命令路径 `"shadow_track.py"` → `"tools\shadow_track.py"`（原相对路径在 WorkingDirectory 根下找不到）；两条 schtasks /Create 注册成功（rc=0，09-08 18:00/18:15 首跑）；shadow_track.py --selftest 6 组全过。
+- **交易日历年度维护（制度化）**：新增 tools/holiday_updater.py——按证监会官方休市安排生成/更新 STATIC_HOLIDAY_RANGES（--from-calendar 官方日历自动推导 / --paste 手动粘贴；--apply 写回 .bak 备份+锚点断言+幂等查重）；2027 官方安排未发布（诚实提示）；年度 CronCreate 每年 12 月 1 日自动检查提醒。
+- **重启 main 提醒与验证**：第 93/94 轮新功能需重启生效；用户 22:43 重启后 10分钟节奏/G14 盘口/纸面合约/解析探针全验证通过。pytest 818→820。
+
 ## [0.94.0] — 2026-09-07 · 第94轮 对标 scrapling 的全链路抓取/解析工程增强（A1-A6+B1-B7，用户拍板全做）
 - **P0 底座（纯标准库+收编 lxml）**
   - **A1 解析健康探针**（parser_health.py）：各解析器 record(ok,字段数) → 滚动窗口尾部连续失败≥4 或字段数骤降 → alerts 告警 + reports/parser_health.txt/.jsonl；已接入新浪行情/新闻/原油/东财库存/OpenVlab 日历五源，main run_cycle 每轮 emit（异常全吞）。网站改版从"静默出错"变"当天告警"。

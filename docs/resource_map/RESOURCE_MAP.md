@@ -1,0 +1,242 @@
+# 数据源资源地图（qhqqbk 期货期权百科 · 219 链接）
+
+> 来源：https://www.qhqqbk.com/（期货资源综合导航站，纯静态 app-data.js）。
+> 学习/归档详见 `界面操作收集装置/网页学习探索/03_qhqqbk/`（HTML归档按域名存放，187/219 可访问）。
+> 用途：新增数据源前先查此地图定位官方入口/产业数据站；国外站点（彭博/路透/CME/BLS/CFTC 等）国内网络无法直连。
+
+共 219 条链接 · 8 个分类：
+
+## 海外资讯（94）
+- **彭博 Bloomberg** — 全球市场、宏观和大宗商品新闻与行情入口；国内无法直连  `https://www.bloomberg.com/`
+- **官网** — 彭博全球官网  `https://www.bloomberg.com/`
+- **全球市场** — 全球资产行情与市场新闻  `https://www.bloomberg.com/markets`
+- **大宗商品** — 能源金属农产品行情与新闻  `https://www.bloomberg.com/markets/commodities`
+- **经济日历** — 全球重要经济数据发布日历  `https://www.bloomberg.com/markets/economic-calendar`
+- **路透 Reuters** — 全球突发、市场和大宗商品新闻入口；部分地区限量阅读。  `https://www.reuters.com/`
+- **官网** — 路透全球官网  `https://www.reuters.com/`
+- **全球市场** — 全球股票债券外汇与商品市场新闻  `https://www.reuters.com/markets/`
+- **大宗商品** — 全球能源金属和农产品市场报道  `https://www.reuters.com/markets/commodities/`
+- **环球新闻** — 全球重大政治经济事件报道  `https://www.reuters.com/world/`
+- **美国劳工统计局 BLS** — 美国非农就业、通胀和劳动力数据的一手发布机构。国内无法直连  `https://www.bls.gov/`
+- **官网** — 美国劳工统计局官网  `https://www.bls.gov/`
+- **非农就业** — 就业形势报告与非农就业数据  `https://www.bls.gov/news.release/empsit.htm`
+- **CPI** — 美国消费者价格指数官方发布  `https://www.bls.gov/news.release/cpi.htm`
+- **发布日程** — 就业形势报告发布日期和时间  `https://www.bls.gov/schedule/news_release/empsit.htm`
+- **美国经济分析局 BEA** — 美国 GDP、PCE 通胀与国民经济账户的一手数据。  `https://www.bea.gov/`
+- **官网** — 美国经济分析局官网  `https://www.bea.gov/`
+- **GDP** — 美国国内生产总值官方数据  `https://www.bea.gov/data/gdp/gross-domestic-product`
+- **PCE** — 美联储关注的个人消费支出价格指数  `https://www.bea.gov/data/personal-consumption-expenditures-price-index`
+- **发布日程** — BEA 重要经济数据发布日期  `https://www.bea.gov/news/schedule`
+- **美联储 Federal Reserve** — 美国货币政策、利率决议和经济状况的一手来源。  `https://www.federalreserve.gov/`
+- **官网** — 美联储官网  `https://www.federalreserve.gov/`
+- **FOMC 日程** — 议息会议日程声明与会议纪要  `https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm`
+- **新闻发布** — 货币政策与监管新闻发布  `https://www.federalreserve.gov/newsevents/pressreleases.htm`
+- **褐皮书** — 美国各地区经济状况调查  `https://www.federalreserve.gov/monetarypolicy/publications/beige-book-default.htm`
+- **美国商品期货交易委员会 CFTC** — 美国期货监管、分类持仓与大户仓位的一手数据。  `https://www.cftc.gov/`
+- **官网** — 美国商品期货交易委员会官网  `https://www.cftc.gov/`
+- **COT 持仓** — 每周交易商持仓报告与分类说明  `https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm`
+- **COT 查询** — COT 历史数据筛选下载与公开接口  `https://publicreporting.cftc.gov/stories/s/r4w3-av2u`
+- **新闻发布** — 美国期货监管动态与执法新闻  `https://www.cftc.gov/PressRoom/PressReleases`
+- **欧洲中央银行 ECB** — 欧元区利率决议、政策发布和会议日历的一手来源。  `https://www.ecb.europa.eu/`
+- **官网** — 欧洲中央银行官网  `https://www.ecb.europa.eu/`
+- **货币政策决议** — 欧洲央行货币政策决议  `https://www.ecb.europa.eu/press/govcdec/mopo/html/index.en.html`
+- **新闻发布会** — 利率决议后的新闻发布会材料  `https://www.ecb.europa.eu/press/press_conference/html/index.en.html`
+- **会议日历** — 欧洲央行管理委员会会议安排  `https://www.ecb.europa.eu/press/calendars/mgcgc/html/index.en.html`
+- **美国能源信息署 EIA** — 美国原油、成品油、天然气库存与能源供需预测的一手数据。  `https://www.eia.gov/`
+- **官网** — 美国能源信息署官网  `https://www.eia.gov/`
+- **原油库存** — 每周石油状况报告与表格数据  `https://www.eia.gov/petroleum/supply/weekly/`
+- **天然气库存** — 美国地下天然气库存周报  `https://www.eia.gov/naturalgas/storage/`
+- **能源展望** — 短期能源价格与供需月度预测  `https://www.eia.gov/outlooks/steo/`
+- **美国农业部 USDA** — 全球农产品供需、美国作物进度、库存与出口销售的一手报告。  `https://www.usda.gov/`
+- **官网** — 美国农业部官网  `https://www.usda.gov/`
+- **WASDE** — 世界农产品供需月报及表格  `https://www.usda.gov/about-usda/general-information/staff-offices/office-chief-economist/commodity-markets/wasde-report`
+- **作物进度** — 美国主要作物生长进度与优良率周报  `https://data.nass.usda.gov/Publications/National_Crop_Progress/index.php`
+- **出口销售** — 美国农产品每日与每周出口销售查询  `https://apps.fas.usda.gov/esrqs/`
+- **全球供需** — 全球农产品生产供应与消费数据库  `https://apps.fas.usda.gov/psdonline/app/index.html#/app/home`
+- **石油输出国组织 OPEC** — 全球石油需求、供应、产量、库存与炼厂运行官方报告。  `https://www.opec.org/`
+- **官网** — OPEC 官方网站  `https://www.opec.org/`
+- **石油月报** — OPEC 月度石油市场报告与历史归档  `https://publications.opec.org/momr`
+- **统计年报** — OPEC 原油天然气产量贸易与储量统计  `https://publications.opec.org/asb`
+- **国际能源署 IEA** — 全球能源供需、库存、炼厂与中长期趋势研究。  `https://www.iea.org/`
+- **官网** — 国际能源署官网  `https://www.iea.org/`
+- **原油月报** — 原油市场月报摘要与发布日期；完整报告需订阅  `https://www.iea.org/data-and-statistics/data-product/oil-market-report-omr`
+- **能源数据** — 全球能源数据与统计入口  `https://www.iea.org/data-and-statistics`
+- **贝克休斯钻机数** — 全球油气活跃钻机数量与历史数据官方来源。  `https://rigcount.bakerhughes.com/`
+- **官网** — 最新钻机数概览  `https://rigcount.bakerhughes.com/`
+- **北美钻机** — 美国与加拿大每周钻机报告  `https://rigcount.bakerhughes.com/na-rig-count`
+- **全球钻机** — 各国与地区月度活跃钻机报告  `https://rigcount.bakerhughes.com/intl-rig-count/`
+- **NOAA 美国国家气象局** — 美国官方短中期天气、降水、灾害与热带气旋入口。  `https://www.weather.gov/`
+- **官网** — 美国国家气象局官网  `https://www.weather.gov/`
+- **天气预测中心** — 美国降水与中期天气预测中心  `https://www.wpc.ncep.noaa.gov/`
+- **降水预报** — 美国定量降水预报图  `https://www.wpc.ncep.noaa.gov/qpf/qpf2.shtml`
+- **飓风展望** — 大西洋与东太平洋热带天气展望  `https://www.nhc.noaa.gov/gtwo.php`
+- **ECMWF 欧洲中期天气预报中心** — 全球集合、中期、次季节与季节预测图表。  `https://charts.ecmwf.int/`
+- **预测图表** — ECMWF 开放预测图表  `https://charts.ecmwf.int/`
+- **预报总览** — 全球中期与延伸期预报入口  `https://www.ecmwf.int/en/forecasts`
+- **季节预报** — 长期季节天气预测说明与产品  `https://www.ecmwf.int/en/forecasts/documentation-and-support/seasonal`
+- **世界气象组织 WMO** — 联合国体系的全球天气、气候与 ENSO 权威评估。  `https://wmo.int/`
+- **官网** — 世界气象组织官网  `https://wmo.int/`
+- **全球季节气候** — 全球季节气候更新与展望  `https://wmo.int/publication-series/global-seasonal-climate-update`
+- **ENSO 更新** — 厄尔尼诺与拉尼娜全球评估  `https://wmo.int/publication-series/el-ninola-nina-updates`
+- **美国干旱监测 USDM** — NOAA、USDA 与国家干旱减灾中心联合发布的周度干旱图。  `https://droughtmonitor.unl.edu/`
+- **官网** — 美国干旱监测首页  `https://droughtmonitor.unl.edu/`
+- **当前地图** — 最新美国各地区干旱等级地图  `https://droughtmonitor.unl.edu/CurrentMap.aspx`
+- **数据下载** — 干旱监测历史数据与下载入口  `https://droughtmonitor.unl.edu/Data.aspx`
+- **芝商所 CME Group** — CME、CBOT、NYMEX 与 COMEX 期货期权官方市场数据。  `https://www.cmegroup.com/`
+- **官网** — 芝商所官网  `https://www.cmegroup.com/`
+- **农产品** — 谷物油籽畜牧与软商品期货入口  `https://www.cmegroup.com/markets/agriculture.html`
+- **交易日报** — 结算价成交量和持仓量官方日报  `https://www.cmegroup.com/market-data/daily-bulletin.html`
+- **成交持仓** — 每日与月度成交量和持仓报告  `https://www.cmegroup.com/market-data/volume-open-interest.html`
+- **洲际交易所 ICE** — 布伦特原油、天然气与软商品期货官方市场入口。  `https://www.ice.com/`
+- **官网** — 洲际交易所官网  `https://www.ice.com/`
+- **报告中心** — 结算交割库存成交量与持仓报告目录  `https://www.ice.com/report-center`
+- **美国期货** — 美国软商品和金融期货入口  `https://www.ice.com/futures-us`
+- **欧洲期货** — 布伦特原油与欧洲能源期货入口  `https://www.ice.com/futures-europe`
+- **伦敦金属交易所 LME** — 铜铝锌镍铅锡等工业金属价格与仓库库存官方来源。  `https://www.lme.com/`
+- **官网** — 伦敦金属交易所官网  `https://www.lme.com/`
+- **官方价格** — LME 官方现货与期货参考价格  `https://www.lme.com/market-data/reports-and-data/lme-official-prices`
+- **库存仓单** — 仓库库存注销仓单与进出库汇总  `https://www.lme.com/market-data/reports-and-data/warehouse-and-stocks-reports`
+- **市场数据** — 价格成交持仓和市场报告入口  `https://www.lme.com/market-data/reports-and-data`
+- **新加坡交易所 SGX** — 铁矿石、炼焦煤、橡胶与航运等亚洲商品衍生品入口。  `https://www.sgx.com/`
+- **官网** — 新加坡交易所官网  `https://www.sgx.com/`
+- **铁矿石** — 铁矿石期货掉期合约与官方行情  `https://www.sgx.com/zh-hans/derivatives/products/iron-ore?cc=FE`
+- **橡胶** — SICOM 橡胶期货入口  `https://www.sgx.com/derivatives/products/sicom-rubber?cc=TF`
+
+## 交易所官方（35）
+- **中国金融期货交易所** — 股指期货、股指期权和国债期货官方入口。  `http://www.cffex.com.cn/cn/index.html`
+- **官网** — 中金所官网首页  `http://www.cffex.com.cn/cn/index.html`
+- **持仓排名** — 会员成交持仓排名数据  `http://www.cffex.com.cn/cn/ccpm.html`
+- **公告** — 交易所公告与业务通知  `http://www.cffex.com.cn/cn/jysgg.html`
+- **上海期货交易所** — 有色、贵金属、黑色和能源化工期货官方入口。  `https://www.shfe.com.cn/`
+- **官网** — 上期所官网首页  `https://www.shfe.com.cn/`
+- **持仓排名** — 每日成交持仓和会员排名数据  `https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_params=pm`
+- **公告** — 上期所公告与通知  `https://www.shfe.com.cn/publicnotice/notice/`
+- **仓单** — 上期所仓单  `https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_params=dailystock`
+- **上海国际能源交易中心** — 原油、低硫燃料油、国际铜等国际化期货和期权品种官方入口。  `https://www.ine.cn/`
+- **官网** — 能源中心官网首页  `https://www.ine.cn/`
+- **交易排名** — 日交易排名及会员成交持仓数据  `https://www.ine.cn/reports/tradedata/dailyandweeklydata/?query_params=pm`
+- **公告** — 能源中心公告与通知  `https://www.ine.cn/publicnotice/notice/`
+- **仓单** — 仓单日报数据  `https://www.ine.cn/reports/tradedata/dailyandweeklydata/?query_params=dailystock`
+- **郑州商品交易所** — 农产品、能源化工及期权品种官方入口。  `https://www.czce.com.cn/`
+- **官网** — 郑商所官网首页  `https://www.czce.com.cn/`
+- **持仓排名** — 会员持仓排名和交易数据  `https://www.czce.com.cn/cn/jysj/ccpm/H077003004index_1.htm`
+- **公告** — 郑商所公告与通知  `https://www.czce.com.cn/cn/gyjys/jysdt/ggytz/H077001003001index_1.htm`
+- **仓单** — 郑商所仓单  `https://www.czce.com.cn/cn/jysj/cdrb/H077003010index_1.htm`
+- **大连商品交易所** — 农产品、黑色、化工及期权品种官方入口。  `http://www.dce.com.cn/dce/`
+- **官网** — 大商所官网首页  `http://www.dce.com.cn/dce/`
+- **持仓排名** — 会员成交持仓排名数据  `http://www.dce.com.cn/dce/channel/list/176.html`
+- **公告** — 大商所公告与业务通知  `http://www.dce.com.cn/dce/channel/list/244.html`
+- **仓单** — 大商所仓单  `http://www.dce.com.cn/dce/channel/list/187.html`
+- **广州期货交易所** — 工业硅、碳酸锂等新兴品种官方入口。  `http://www.gfex.com.cn/`
+- **官网** — 广期所官网首页  `http://www.gfex.com.cn/`
+- **持仓排名** — 日成交持仓排名数据  `http://www.gfex.com.cn/gfex/rcjccpm/hqsj_tjsj.shtml`
+- **公告** — 广期所业务公告与通知  `http://www.gfex.com.cn/gfex/tzts/list_yw.shtml`
+- **仓单** — 广期所仓单  `http://www.gfex.com.cn/gfex/cdrb/hqsj_tjsj.shtml`
+- **中国证监会** — 资本市场监管政策和法规公告入口。  `https://www.csrc.gov.cn/csrc/index.shtml`
+- **官网** — 证监会官网首页  `https://www.csrc.gov.cn/csrc/index.shtml`
+- **中国期货业协会** — 期货行业自律、从业考试和投资者教育入口。  `https://www.cfachina.org/`
+- **官网** — 中期协官网首页  `https://www.cfachina.org/`
+- **期货公司app查询** — 期货公司app查询  `https://neris.csrc.gov.cn/pubrecord-front/#/cfachina`
+- **品种手册** — 商品品种手册，各期货品种基础知识学习  `https://www.cfachina.org/servicesupport/sspz/`
+
+## 分板块专业机构（26）
+- **上海钢联** — 钢材、铁矿、焦煤焦炭等黑色产业链入口。  `https://www.mysteel.com/`
+- **官网** — 上海钢联黑色产业资讯和数据  `https://www.mysteel.com/`
+- **兰格钢铁** — 钢铁行业价格、库存和资讯入口。  `https://www.lgmi.com/`
+- **官网** — 兰格钢铁价格和行业资讯  `https://www.lgmi.com/`
+- **隆众资讯** — 能源化工产业数据和资讯入口。  `https://www.oilchem.net/`
+- **官网** — 隆众能源化工数据资讯  `https://www.oilchem.net/`
+- **卓创资讯** — 大宗商品价格、数据和产业资讯入口。  `https://www.sci99.com/`
+- **官网** — 卓创大宗商品产业数据资讯  `https://www.sci99.com/`
+- **涌益资讯** — 农产品和养殖产业链资讯入口。  `https://www.yongyizixun.com/`
+- **数据终端** — 涌益农产品和养殖产业数据  `https://data.yongyizixun888.com/`
+- **中国粮油信息网** — 粮油市场资讯、价格和供需数据入口。  `https://www.chinagrain.cn/`
+- **官网** — 粮油市场价格和资讯  `https://www.chinagrain.cn/`
+- **上海有色网** — 有色金属、贵金属和新能源金属入口。  `https://www.smm.cn/`
+- **官网** — 上海有色金属价格和资讯  `https://www.smm.cn/`
+- **长江有色金属网** — 有色金属现货价格和资讯入口。  `https://www.ccmn.cn/`
+- **官网** — 长江有色现货价格和行业资讯  `https://www.ccmn.cn/`
+- **百川盈孚** — 能源化工、有色和新能源产业数据入口。  `https://www.baiinfo.com/`
+- **官网** — 百川盈孚产业数据和价格资讯  `https://www.baiinfo.com/`
+- **金联创** — 能源、化工和大宗商品产业资讯入口。  `https://www.315i.com/`
+- **官网** — 金联创能源化工产业资讯  `https://www.315i.com/`
+- **生意社** — 大宗商品现货价格和走势入口。  `https://www.100ppi.com/`
+- **官网** — 生意社大宗商品价格和现货走势  `https://www.100ppi.com/`
+- **钢之家** — 钢铁行业价格、库存和资讯入口。  `https://www.steelhome.com/`
+- **官网** — 钢之家钢铁价格和行业资讯  `https://www.steelhome.com/`
+- **openvlab** — 期权专业网站  `https://www.openvlab.cn/`
+- **官网** — 期权  `https://www.openvlab.cn/`
+
+## 期货比赛（25）
+- **第二十届全国期货（期权）实盘交易大赛** — 主办单位：期货日报、证券时报。类型：实盘。比赛时间：2026-03-27至2026-09-30。  `https://ds.qhrb.com.cn/`
+- **官网** — 第二十届全国期货（期权）实盘交易大赛官网  `https://ds.qhrb.com.cn/`
+- **报名** — 第二十届全国期货（期权）实盘交易大赛报名入口  `https://spsbm.qhrb.com.cn/`
+- **排名** — 第二十届全国期货（期权）实盘交易大赛排行榜  `https://spdspc.qhrb.com.cn/#/`
+- **大盘手网全国期货实盘争霸赛** — 主办方：大盘手网。类型：实盘。报名开始：2026-05-10；比赛时间：2026-06-01至2027-05-31。  `https://www.dpswang.com/futures`
+- **官网** — 大盘手网全国期货实盘争霸赛规则与赛事安排  `https://www.dpswang.com/futures`
+- **报名** — 大盘手网全国期货实盘争霸赛登录及报名入口  `https://www.dpswang.com/login`
+- **排名** — 大盘手网全国期货实盘争霸赛排行榜  `https://www.dpswang.com/futures/rank`
+- **夺冠高手第九届全国期货实盘大赛** — 赛事平台：夺冠高手。类型：实盘。比赛时间：2025-12-29至2026-10-31。  `https://www.dggaoshou.com/`
+- **官网** — 夺冠高手第九届全国期货实盘大赛官网  `https://www.dggaoshou.com/`
+- **报名** — 夺冠高手官网登录及报名入口  `https://www.dggaoshou.com/login.html`
+- **排名** — 夺冠高手第九届全国期货实盘大赛排行榜  `https://www.dggaoshou.com/futures.html`
+- **规则** — 夺冠高手第九届全国期货实盘大赛规则  `https://www.dggaoshou.com/futures_rules.html`
+- **首届“金牛至赢”期货大赛** — 主办方：中国证券报；协办方：北京至易赢教育科技有限公司。类型：实盘/模拟盘。报名时间：2026-05-07至2026-09-30；比赛时间：2026-05-18至2026-10-31。  `https://ifutures.cs.com.cn/`
+- **官网** — 首届金牛至赢期货大赛官网  `https://ifutures.cs.com.cn/`
+- **报名** — 首届金牛至赢期货大赛报名入口  `https://ifutures.cs.com.cn/trader/apply/contest`
+- **排名** — 首届金牛至赢实盘和模拟大赛排行榜  `https://ifutures.cs.com.cn/trader/contestList`
+- **“期航杯”粤港澳大湾区高校期货模拟交易大赛** — 指导单位：中共广州市委金融委员会办公室；主办方：广州金融人才协会、广东证券期货业协会；承办方：广州期货、期货日报；特邀支持：广州期货交易所。类型：模拟盘。报名时间：2026-06-03至2026-10-23；比赛时间：2026-09-07至2026-11-06。  `https://www.cfachina.org/inv/index/mtkqs2/202606/t20260623_88874.html`
+- **介绍** — 期航杯官方启动报道和赛事介绍  `https://www.cfachina.org/inv/index/mtkqs2/202606/t20260623_88874.html`
+- **报名说明** — 期航杯报名时间、参赛对象及说明（该页面不是在线报名表）  `https://www.cfachina.org/inv/index/mtkqs2/202606/t20260623_88874.html`
+- **“期货寻星”投顾选拔赛** — 举办方：投顾网；支持方：期货日报。类型：实盘。当前赛季：2025-11-01至2026-10-31。  `https://www.touguwang.cn/`
+- **官网** — 期货寻星投顾选拔赛官网  `https://www.touguwang.cn/`
+- **报名** — 期货寻星投顾选拔赛报名入口  `https://www.touguwang.cn/goJoinRace`
+- **排名** — 期货寻星投顾选拔赛当前赛季排行榜  `https://www.touguwang.cn/match_rank`
+- **规则** — 期货寻星投顾选拔赛比赛规则  `https://www.touguwang.cn/futures_rule`
+
+## 交易软件（14）
+- **文华财经** — 期货行情、交易和程序化工具入口。  `https://wh6.wenhua.com.cn/`
+- **官网** — 文华财经 WH6 产品与下载入口  `https://wh6.wenhua.com.cn/`
+- **博易大师** — 期货行情交易终端和下载入口。  `https://www.boyidashi.com/`
+- **官网** — 博易大师官网和软件下载入口  `https://www.boyidashi.com/`
+- **同花顺期货通** — 期货行情、交易、资讯与移动端工具。  `https://download.10jqka.com.cn/index/list?id=1`
+- **官网** — 同花顺期货通下载入口  `https://download.10jqka.com.cn/index/list?id=1`
+- **易信快期** — 快期系列期货交易终端入口。  `https://www.shinnytech.com/products/q73`
+- **官网** — 易信快期产品介绍和下载入口  `https://www.shinnytech.com/products/q73`
+- **无限易** — 期货交易和期权策略终端入口。  `https://infinitrader.quantdo.com.cn/`
+- **官网** — 无限易产品与下载入口  `https://infinitrader.quantdo.com.cn/`
+- **交易开拓者** — 程序化交易、策略开发和交易终端入口。  `https://tbq.tbquant.net/`
+- **官网** — 交易开拓者官网入口  `https://tbq.tbquant.net/`
+- **极星** — 易盛期货行情交易终端下载入口。  `https://epolestar.esunny.com.cn/download`
+- **官网** — 极星客户端下载入口  `https://epolestar.esunny.com.cn/download`
+
+## 新闻资讯（11）
+- **金十期货** — 期货快讯、行情和日历入口。  `https://qihuo.jin10.com/`
+- **官网** — 金十期货首页  `https://qihuo.jin10.com/`
+- **期货日历** — 期货相关日历和事件提醒  `https://qihuo.jin10.com/calendar.html#/`
+- **新浪期货** — 国内外期货新闻和行情频道。  `https://finance.sina.com.cn/futuremarket/`
+- **官网** — 新浪期货频道首页  `https://finance.sina.com.cn/futuremarket/`
+- **外盘期货** — 外盘期货行情页面  `https://finance.sina.com.cn/money/future/hf.html`
+- **现货** — 大宗商品现货价格入口  `https://finance.sina.com.cn/futuremarket/spotprice.shtml#titlePos_1`
+- **东方财富期货** — 期货行情、资讯和报价入口。  `https://futures.eastmoney.com/`
+- **官网** — 东方财富期货频道首页  `https://futures.eastmoney.com/`
+- **华尔街见闻** — 宏观市场资讯和全球资产快讯入口。  `https://wallstreetcn.com/`
+- **官网** — 华尔街见闻首页  `https://wallstreetcn.com/`
+
+## 数据渠道（8）
+- **AKShare** — 开源金融数据接口库。  `https://akshare.akfamily.xyz/`
+- **文档** — AKShare 中文文档和接口说明  `https://akshare.akfamily.xyz/`
+- **GitHub** — AKShare 源码和更新记录  `https://github.com/akfamily/akshare`
+- **Tushare** — 金融数据开放社区和数据接口。  `https://tushare.pro/`
+- **官网** — Tushare Pro 首页  `https://tushare.pro/`
+- **天勤量化** — 期货程序化交易和 Python 量化工具。  `https://www.shinnytech.com/tianqin/`
+- **官网** — 天勤量化产品介绍  `https://www.shinnytech.com/tianqin/`
+- **文档** — TqSdk API 文档  `https://doc.shinnytech.com/tqsdk/latest/`
+
+## 期货金融终端（6）
+- **Wind** — 金融数据、资讯和终端系统。  `https://www.wind.com.cn/`
+- **终端** — Wind 金融终端介绍  `https://www.wind.com.cn/portal/zh/WFT/index.html`
+- **同花顺 iFinD** — 金融数据终端与投研系统。  `https://www.51ifind.com/`
+- **终端** — iFinD 金融终端介绍  `https://www.51ifind.com/index.php?c=index&a=iFinDPC`
+- **上海钢联终端** — 黑色、有色、能源化工等产业数据终端。  `https://www.mysteel.com/`
+- **终端** — 钢联产业数据终端入口  `https://data.mysteel.com/mysteeldata/?from=https://mri.mysteel.com/`

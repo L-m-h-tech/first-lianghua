@@ -27,8 +27,9 @@
 
 | 第14轮 分钟K自采库（WP-D0，为日内/平今回测积累自有分钟数据） | `intraday_bars.py`（**新浪主连为主+东财补1m+通达信可选冗余**的三源选源、周期聚合纯函数）+新增 `tdx_bars.py`（pytdx延迟导入、启动并发探测、取不到期货零成本降级）；`storage`新增第8张表`minute_bars`（唯一键去重、保留400天）；`main`启动小回填+后台线程交易5分钟/非交易30分钟增量自采；实测回填261888根（64品种×5/15/30/60m×1023根），60m回溯约12.5月。选型证据见《数据源选型与通达信替换可行性分析.md》 |
 
-### 近期轮次关键能力（第81-95轮，2026-09）
+### 近期轮次关键能力（第81-96轮，2026-09）
 
+- **第96轮 新数据源深度结合（网页学习探索）**：`tools/openvlab_map.py`（OpenVLab 83 品种全市场期权波动率地图：ATM隐波/百分位/偏度/RV22，与本地 iv_surface 交叉校验）；`tools/jiaoyikecha_collector.py`（jiaoyikecha 交易可查：会话三步+仓单日报76/席位资金70/支撑压力77/龙虎牛熊，落 cache/jiaoyikecha.db）；qhqqbk 219 链接资源地图入库 `docs/resource_map/`（新增数据源先查地图）。全部研究侧采集、零新增依赖、复用 A1/A4/A5/B1 工程护栏。
 - **第95轮 计划任务+日历维护**：TermTopup/ShadowTrack 计划任务注册（修正 shadow 路径，实测脚本路径正确）；`tools/holiday_updater.py` 交易日历年度维护工具（生成/更新 STATIC_HOLIDAY_RANGES，支持官方日历自动推导或手动粘贴，--apply 写回带备份/幂等）；年度 CronCreate 每年 12 月 1 日自动检查提醒。
 - **第94轮 抓取/解析工程增强（对标 scrapling）**：`parser_health.py` 解析健康探针（改版当天告警）；`html_text.py` 统一 HTML 文本/表格提取（lxml 收编+stdlib 回退）；`http_client` 每源会话+cookie 持久化、限流退避、dev 缓存重放；`checkpoint.py` 长任务断点续传；LLM 修选择器建议（`tools/selector_heal.py`）、官方IV交叉校验（`tools/iv_official_check.py`）、页面 markdown 归档（`tools/page_archive.py`）、生意社 cookie 初始化。零评分/撮合口径改动。
 - **第93轮 纸面合约标注+节奏**：纸面账户（影子）开仓/持仓/成交均标注具体合约（如 RB2610，落 paper_orders/paper_trades 表并显示在 paper_account.txt）；交易时段开盘30分钟后轮动节奏 20→10 分钟（前30分钟仍每5分钟，纸面与主循环同节奏）。

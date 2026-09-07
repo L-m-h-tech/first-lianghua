@@ -306,3 +306,15 @@ def test_holiday_updater_selftest():
     """第95轮：节假日年度维护工具（区间解析/官方日历推导/查重/渲染，零网络）。"""
     import holiday_updater
     assert holiday_updater.selftest() == 0
+
+
+def test_openvlab_map_selftest():
+    """第96轮：OpenVLab 全市场波动率地图采集（合成ctamap解析/落库幂等/降级）。"""
+    import openvlab_map
+    assert openvlab_map.selftest() == 0
+
+
+def test_jiaoyikecha_selftest():
+    """第96轮：jiaoyikecha 交易可查采集（合成端点解析/落库幂等）。"""
+    import jiaoyikecha_collector
+    assert jiaoyikecha_collector.selftest() == 0
