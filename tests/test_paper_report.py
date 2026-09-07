@@ -11,9 +11,11 @@ _FEE = {"multiplier": 10, "open_amt_rate": 1e-4, "open_per_lot": 3.0,
 _MARGIN = {"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}}
 
 
-def row(sym="RB", name="螺纹钢", cat="黑色", score=5.0, price=3000.0):
+def row(sym="RB", name="螺纹钢", cat="黑色", score=5.0, price=3000.0,
+          contract_code="", main_month=""):
     return {"sym": sym, "name": name, "cat": cat, "score": score, "price": price,
-            "code": sym + "0", "atr": 20.0}
+            "code": sym + "0", "atr": 20.0,
+            "contract_code": contract_code, "main_month": main_month}
 
 
 def make_broker(fill="close", db=None):
@@ -132,3 +134,22 @@ def test_research_reports_tab_and_aggregator(tmp_path, monkeypatch):
     # 4) _dashboard_html 注入研究页签 + research-panel 容器
     html = report._dashboard_html()
     assert '__research__' in html and 'research-panel' in html
+
+
+def test_account_text_shows_contract(tmp_db):
+    """第93轮：paper_account.txt 持仓/成交显示具体合约列（开仓说明是哪个时间段的合约）。"""
+    st = _active_state()
+    st.last_paper = st.paper.on_cycle(
+        "2026-09-02 10:00:00",
+        [row(contract_code="RB2610", main_month="2610")])
+    text = report.paper_account_text(st)
+    assert "合约" in text and "RB2610" in text          # 表头"合约"列 + 持仓行具体合约
+    # 带 DB：开+平后，最近成交表同样带合约
+    st2 = _State()
+    st2.paper = make_broker("close", db=tmp_db)
+    st2.last_paper = st2.paper.on_cycle("2026-09-02 11:00:00",
+                                        [row(score=5.0, contract_code="RB2610")])
+    st2.last_paper = st2.paper.on_cycle("2026-09-02 11:05:00",
+                                        [row(score=1.0, contract_code="RB2610")])
+    text2 = report.paper_account_text(st2)
+    assert "RB2610" in text2

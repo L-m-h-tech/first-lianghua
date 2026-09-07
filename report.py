@@ -749,12 +749,13 @@ def paper_account_text(state):
     pos_rows = pb.positions_view()
     L.append("【当前持仓】%s" % ("（空仓）" if not pos_rows else ""))
     if pos_rows:
-        L.append(" " + pad("品种", 9) + pad("名称", 10) + pad("方向", 4) + pad("手数", 5)
-                 + pad("开仓时间", 20) + pad("开仓价", 11) + pad("最新价", 11) + pad("浮动盈亏", 12)
-                 + pad("占用保证金", 13) + "开仓结算交易日")
+        L.append(" " + pad("品种", 9) + pad("合约", 12) + pad("名称", 10) + pad("方向", 4)
+                 + pad("手数", 5) + pad("开仓时间", 16) + pad("开仓价", 11) + pad("最新价", 11)
+                 + pad("浮动盈亏", 12) + pad("占用保证金", 13) + "开仓结算交易日")
         for p in pos_rows:
-            L.append(" " + pad(p["sym"], 9) + pad(p["name"], 10) + pad(p["dir"], 4)
-                     + pad(str(p["lots"]), 5) + pad(p["entry_dt"], 20)
+            L.append(" " + pad(p["sym"], 9) + pad(p.get("contract_code") or "—", 12)
+                     + pad(p["name"], 10) + pad(p["dir"], 4)
+                     + pad(str(p["lots"]), 5) + pad(p["entry_dt"][:16], 16)
                      + pad("%.2f" % p["entry_price"], 11) + pad("%.2f" % p["last"], 11)
                      + pad(format(p["float_yuan"], "+,.0f"), 12) + pad(_yuan(p["margin"]), 13)
                      + p["entry_owner"])
@@ -762,12 +763,12 @@ def paper_account_text(state):
     pend = pb.pending_view()
     L.append("【在途挂单】%s" % ("（无）" if not pend else ""))
     if pend:
-        L.append(" " + pad("品种", 9) + pad("动作", 10) + pad("买卖", 5) + pad("挂单时间", 20)
-                 + pad("信号价", 11) + pad("综合分", 7) + "排队原因")
+        L.append(" " + pad("品种", 9) + pad("合约", 12) + pad("动作", 10) + pad("买卖", 5)
+                 + pad("挂单时间", 20) + pad("信号价", 11) + pad("综合分", 7) + "排队原因")
         for o in pend:
             sig_price = "%.2f" % o["signal_price"] if o["signal_price"] else "-"
             score_txt = "%+.1f" % o["score"] if o["score"] is not None else "-"
-            L.append(" " + pad(o["sym"], 9)
+            L.append(" " + pad(o["sym"], 9) + pad(o.get("contract_code") or "—", 12)
                      + pad(_PAPER_ACTION_CN.get(o["action"], o["action"]), 10)
                      + pad(_PAPER_SIDE_CN.get(o["side"], o["side"]), 5) + pad(o["ts"], 20)
                      + pad(sig_price, 11) + pad(score_txt, 7)
@@ -782,11 +783,12 @@ def paper_account_text(state):
     L.append("【最近成交（最多20笔；全量见 SQLite paper_trades 表）】%s"
              % ("（暂无成交）" if not recent else ""))
     if recent:
-        L.append(" " + pad("时间", 20) + pad("品种", 9) + pad("方向", 4) + pad("手数", 5)
-                 + pad("开平", 5) + pad("成交价", 11) + pad("手续费", 9) + pad("净盈亏", 11)
-                 + pad("强平", 4) + "原因")
+        L.append(" " + pad("时间", 20) + pad("品种", 9) + pad("合约", 12) + pad("方向", 4)
+                 + pad("手数", 5) + pad("开平", 5) + pad("成交价", 11) + pad("手续费", 9)
+                 + pad("净盈亏", 11) + pad("强平", 4) + "原因")
         for t in recent:
             L.append(" " + pad(str(t["ts"])[:19], 20) + pad(t["sym"], 9)
+                     + pad(t.get("contract_code") or "—", 12)
                      + pad(t.get("dir_text", ""), 4) + pad(str(t["lots"]), 5)
                      + pad(t.get("leg", ""), 5) + pad("%.2f" % (t["price"] or 0), 11)
                      + pad("%.1f" % (t.get("fee_yuan") or 0), 9)

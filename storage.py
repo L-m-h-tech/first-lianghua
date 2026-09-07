@@ -228,6 +228,7 @@ class MonitorDB:
                     score REAL, band TEXT, fill_mode TEXT, status TEXT,
                     fill_ts TEXT, fill_price REAL, raw_price REAL,
                     reason TEXT, order_ref TEXT, pos_ref TEXT,
+                    contract_code TEXT, main_month TEXT,
                     raw_json TEXT, created_real REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_po_sym ON paper_orders(sym, created_real);
@@ -241,7 +242,8 @@ class MonitorDB:
                     slip_yuan REAL DEFAULT 0, fee_yuan REAL DEFAULT 0, realized_yuan REAL DEFAULT 0,
                     leg TEXT, reason TEXT, forced INTEGER DEFAULT 0,
                     order_id INTEGER, entry_ts TEXT, entry_price REAL,
-                    score REAL, margin_rate REAL, created_real REAL
+                    score REAL, margin_rate REAL,
+                    contract_code TEXT, main_month TEXT, created_real REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_pt_sym ON paper_trades(sym, created_real);
                 CREATE INDEX IF NOT EXISTS idx_pt_pos ON paper_trades(pos_ref);
@@ -272,6 +274,18 @@ class MonitorDB:
                 CREATE INDEX IF NOT EXISTS idx_ts_sym ON tick_snapshots(sym, created_real);
                 """
             )
+            self.conn.commit()
+            # G1续（第93轮）：存量库幂等补列（CREATE TABLE IF NOT EXISTS 不会改已存在的表；
+            # paper_orders/paper_trades 增 contract_code/main_month 记录具体开平仓合约）
+            for _tbl in ("paper_orders", "paper_trades"):
+                try:
+                    cols = {r["name"] for r in self.conn.execute(
+                        f"PRAGMA table_info({_tbl})").fetchall()}
+                    for _col in ("contract_code", "main_month"):
+                        if _col not in cols:
+                            self.conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} TEXT")
+                except Exception:
+                    pass
             self.conn.commit()
 
     # ---------------- 写入：行情 ----------------
@@ -810,8 +824,8 @@ class MonitorDB:
             cur = self.conn.execute(
                 """INSERT INTO paper_orders(ts,sym,name,sector,action,side,direction,lots,
                    signal_price,score,band,fill_mode,status,fill_ts,fill_price,raw_price,
-                   reason,order_ref,pos_ref,raw_json,created_real)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   reason,order_ref,pos_ref,contract_code,main_month,raw_json,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (str(order.get("ts"))[:19], str(order.get("sym") or "")[:16],
                  str(order.get("name") or "")[:24], str(order.get("sector") or "")[:16],
                  str(order.get("action") or "")[:20], str(order.get("side") or "")[:8],
@@ -824,6 +838,8 @@ class MonitorDB:
                  str(order.get("reason") or "")[:80],
                  str(order.get("order_ref") or "")[:40],
                  str(order.get("pos_ref") or "")[:40],
+                 str(order.get("contract_code") or "")[:20],
+                 str(order.get("main_month") or "")[:8],
                  _json(order["raw"]) if order.get("raw") is not None else None, now_real))
             self.conn.commit()
             return cur.lastrowid
@@ -855,8 +871,9 @@ class MonitorDB:
             cur = self.conn.execute(
                 """INSERT INTO paper_trades(ts,pos_ref,sym,name,sector,side,dir_text,direction,
                    lots,price,raw_price,notional,slip_yuan,fee_yuan,realized_yuan,leg,reason,
-                   forced,order_id,entry_ts,entry_price,score,margin_rate,created_real)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   forced,order_id,entry_ts,entry_price,score,margin_rate,
+                   contract_code,main_month,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (str(t.get("ts"))[:19], str(t.get("pos_ref") or "")[:40],
                  str(t.get("sym") or "")[:16], str(t.get("name") or "")[:24],
                  str(t.get("sector") or "")[:16], str(t.get("side") or "")[:8],
@@ -866,7 +883,9 @@ class MonitorDB:
                  str(t.get("leg") or "")[:8], str(t.get("reason") or "")[:40],
                  1 if t.get("forced") else 0, t.get("order_id"),
                  str(t.get("entry_ts") or "")[:19] if t.get("entry_ts") else None,
-                 t.get("entry_price"), t.get("score"), t.get("margin_rate"), now_real))
+                 t.get("entry_price"), t.get("score"), t.get("margin_rate"),
+                 str(t.get("contract_code") or "")[:20],
+                 str(t.get("main_month") or "")[:8], now_real))
             self.conn.commit()
             return cur.lastrowid
 

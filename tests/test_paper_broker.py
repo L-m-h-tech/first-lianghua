@@ -47,9 +47,10 @@ def make_broker(fill_mode="next", equity0=10_000_000, slip=0.0001, db=None,
                        sector_of=SECTOR, restore=restore)
 
 
-def row(sym, name, cat, score, price, atr=10.0):
+def row(sym, name, cat, score, price, atr=10.0, contract_code="", main_month=""):
     return {"sym": sym, "name": name, "cat": cat, "code": sym + "0",
-            "score": score, "price": price, "atr": atr}
+            "score": score, "price": price, "atr": atr,
+            "contract_code": contract_code, "main_month": main_month}
 
 
 def quote(price, prev, move, locked=False):
@@ -525,3 +526,36 @@ def test_reconcile_against_db_roundtrip(loose, tmp_db):
     # 重启后内存台账/成交流水回填
     b2 = make_broker("close", db=tmp_db, restore=True, slip=0.0)
     assert len(b2.orders_view()) >= 1 and len(b2.fills_view()) == 1
+
+
+def test_paper_contract_recorded(loose, tmp_db):
+    """第93轮：开仓要说明具体合约——contract_code/main_month 透传委托/成交/持仓/DB/报告视图。"""
+    b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
+    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0, contract_code="RB2610", main_month="2610")])
+    # 委托（已成交）带合约
+    orders = b.orders_view()
+    assert orders and orders[0]["contract_code"] == "RB2610"
+    assert orders[0]["main_month"] == "2610"
+    # 成交（开仓）带合约
+    fills = b.fills_view()
+    assert fills and fills[0]["contract_code"] == "RB2610" and fills[0]["main_month"] == "2610"
+    # 持仓带合约
+    pv = b.positions_view()
+    assert len(pv) == 1 and pv[0]["contract_code"] == "RB2610"
+    # DB 行带合约
+    dbrow = tmp_db.conn.execute(
+        "SELECT contract_code, main_month FROM paper_trades WHERE side='open'").fetchone()
+    assert dbrow["contract_code"] == "RB2610" and dbrow["main_month"] == "2610"
+    # 平仓腿继承开仓合约（从持仓对象取）
+    b.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 1.0, 3050.0, contract_code="RB2610", main_month="2610")])
+    close_fill = [t for t in b.fills_view() if t["side"] == "close"]
+    assert close_fill and close_fill[0]["contract_code"] == "RB2610"
+
+
+def test_paper_restore_keeps_contract(loose, tmp_db):
+    """第93轮：重启 restore 重建持仓仍带具体合约（paper_account 持仓表据此显示）。"""
+    b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
+    b.on_cycle("t1", [row("CU", "铜", "有色", 6.0, 70000.0, contract_code="CU2610", main_month="2610")])
+    b2 = make_broker("close", db=tmp_db, restore=True, slip=0.0)
+    pv = b2.positions_view()
+    assert len(pv) == 1 and pv[0]["contract_code"] == "CU2610"

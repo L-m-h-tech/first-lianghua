@@ -317,6 +317,7 @@ class PaperBroker:
                 "fill_mode": self.fill_mode, "status": status,
                 "fill_ts": "", "fill_price": None, "raw_price": None,
                 "reason": "", "order_ref": "", "pos_ref": self.pos_ref.get(row["sym"], ""),
+                "contract_code": row.get("contract_code") or "", "main_month": row.get("main_month") or "",
                 "raw": {"atr": row.get("atr")}}
 
     def _next_pos_ref(self, sym):
@@ -358,7 +359,9 @@ class PaperBroker:
 
         if is_open:
             pos = pf.open(sym, order["name"], order["sector"], direction, fill_price, ts,
-                          atr=atr, score=order.get("score"), owner=self._owner_of(ts))
+                          atr=atr, score=order.get("score"), owner=self._owner_of(ts),
+                          contract_code=order.get("contract_code") or "",
+                          main_month=order.get("main_month") or "")
             if pos is None:
                 why = pf.skipped[-1]["reason"] if pf.skipped else "未成交"
                 # next 档临时约束（持仓上限/资金/板块）：保持挂单顺延，等约束缓解再成交
@@ -383,7 +386,9 @@ class PaperBroker:
                  "reason": "信号开仓" if action == "open" else "反手开仓",
                  "forced": 0, "order_id": order.get("id"), "entry_ts": ts,
                  "entry_price": fill_price, "score": order.get("score"),
-                 "margin_rate": pos.margin_rate}
+                 "margin_rate": pos.margin_rate,
+                 "contract_code": order.get("contract_code") or pos.contract_code or "",
+                 "main_month": order.get("main_month") or pos.main_month or ""}
             self._ins_trade(t)
             self._upd_order(order, status="filled", fill_ts=ts, fill_price=fill_price,
                             raw_price=raw_price, lots=lots, pos_ref=pos_ref)
@@ -419,7 +424,9 @@ class PaperBroker:
              "reason": rec["reason"], "forced": 1 if rec.get("forced") else 0,
              "order_id": order.get("id"), "entry_ts": str(rec["entry_dt"]),
              "entry_price": rec["entry_px"], "score": rec.get("entry_score"),
-             "margin_rate": rec.get("margin_rate")}
+             "margin_rate": rec.get("margin_rate"),
+             "contract_code": getattr(held, "contract_code", "") or order.get("contract_code") or "",
+             "main_month": getattr(held, "main_month", "") or order.get("main_month") or ""}
         self._ins_trade(t)
         self._upd_order(order, status="filled", fill_ts=ts, fill_price=fill_price,
                         raw_price=raw_price, lots=lots)
@@ -514,13 +521,16 @@ class PaperBroker:
             self.pos_ref.pop(sym, None)
             self._cancel_pending(sym, "风控强平撤销挂单")
             held_dir = 1 if rec["dir"] == "多" else -1
+            held = pf.positions.get(sym)
             order = self._make_order(ts, {"sym": sym, "name": rec.get("name", ""),
                                           "cat": rec.get("sector", ""), "score": rec.get("entry_score")},
                                      "liquidate", _side_of(held_dir, "close"), held_dir,
                                      rec["exit_px"], status="filled")
             order.update({"fill_ts": ts, "fill_price": rec["exit_px"],
                           "raw_price": rec["exit_px"], "lots": rec["lots"],
-                          "pos_ref": "", "reason": rec["reason"]})
+                          "pos_ref": "", "reason": rec["reason"],
+                          "contract_code": getattr(held, "contract_code", "") or "",
+                          "main_month": getattr(held, "main_month", "") or ""})
             self._ins_order(order)
             mult = pf.mult_of(sym)
             t = {"ts": ts, "pos_ref": "", "sym": sym, "name": rec.get("name", ""),
@@ -531,7 +541,9 @@ class PaperBroker:
                  "realized_yuan": rec["net_yuan"], "leg": rec["leg"], "reason": rec["reason"],
                  "forced": 1, "order_id": order.get("id"), "entry_ts": str(rec["entry_dt"]),
                  "entry_price": rec["entry_px"], "score": rec.get("entry_score"),
-                 "margin_rate": rec.get("margin_rate")}
+                 "margin_rate": rec.get("margin_rate"),
+                 "contract_code": rec.get("contract_code") or order.get("contract_code") or "",
+                 "main_month": rec.get("main_month") or order.get("main_month") or ""}
             self._ins_trade(t)
             events.append(t)
             ord_events.append(order)
@@ -726,7 +738,9 @@ class PaperBroker:
                 stop=None, target=None, atr=None, score=t.get("score"),
                 margin_rate=t.get("margin_rate") or pf.margin_rate_of(sym),
                 mult=mult, open_fee_yuan=t.get("fee_yuan") or 0.0,
-                entry_owner=self._owner_of(t["ts"]), entry_i=0, block=0, calib_mult=1.0)
+                entry_owner=self._owner_of(t["ts"]), entry_i=0, block=0, calib_mult=1.0,
+                contract_code=t.get("contract_code") or "",
+                main_month=t.get("main_month") or "")
             pf.positions[sym] = pos
             pf._last_prices[sym] = t["price"]
             self.pos_ref[sym] = t["pos_ref"]
@@ -804,7 +818,9 @@ class PaperBroker:
                          "lots": p.lots, "entry_dt": str(p.entry_dt), "entry_price": p.entry_price,
                          "last": last, "float_yuan": float_yuan, "margin": margin,
                          "entry_owner": str(getattr(p, "entry_owner", "") or ""),
-                         "score": p.score})
+                         "score": p.score,
+                         "contract_code": getattr(p, "contract_code", "") or "",
+                         "main_month": getattr(p, "main_month", "") or ""})
         return rows
 
     def pending_view(self):
@@ -815,7 +831,9 @@ class PaperBroker:
                 rows.append({"sym": sym, "name": o.get("name", ""), "action": o.get("action", ""),
                              "side": o.get("side", ""), "direction": o.get("direction", 0),
                              "ts": o.get("ts", ""), "signal_price": o.get("signal_price"),
-                             "score": o.get("score"), "reason": o.get("reason", "")})
+                             "score": o.get("score"), "reason": o.get("reason", ""),
+                             "contract_code": o.get("contract_code") or "",
+                             "main_month": o.get("main_month") or ""})
         return rows
 
     def account_summary(self):

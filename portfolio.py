@@ -82,7 +82,8 @@ def load_margin_schedule(path=None, force=False):
 class Position:
     __slots__ = ("sym", "name", "sector", "direction", "lots", "entry_price", "entry_dt",
                  "stop", "target", "atr", "score", "margin_rate", "mult", "open_fee_yuan",
-                 "entry_owner", "entry_i", "block", "calib_mult", "mfe", "mae")
+                 "entry_owner", "entry_i", "block", "calib_mult", "mfe", "mae",
+                 "contract_code", "main_month")   # G1续（第93轮）：纸面侧透传具体开仓合约
 
     def __init__(self, **kw):
         for s in self.__slots__:
@@ -285,7 +286,8 @@ class Portfolio:
 
     # ---------- 开/平仓 ----------
     def open(self, sym, name, sector, direction, price, dt, *, atr=None, score=None,
-             owner=None, i=0, stop=None, target=None, parts=None):
+             owner=None, i=0, stop=None, target=None, parts=None,
+             contract_code=None, main_month=None):
         if sym in self.positions or price <= 0:
             return None
         mult = self.mult_of(sym)
@@ -304,7 +306,8 @@ class Portfolio:
         pos = Position(sym=sym, name=name, sector=sector, direction=direction, lots=lots,
                        entry_price=price, entry_dt=dt, stop=stop, target=target, atr=atr,
                        score=score, margin_rate=rate, mult=mult, open_fee_yuan=open_fee,
-                       entry_owner=owner, entry_i=i, block=0, calib_mult=self._last_calib_mult)
+                       entry_owner=owner, entry_i=i, block=0, calib_mult=self._last_calib_mult,
+                       contract_code=contract_code, main_month=main_month)
         if self._last_calib_mult != 1.0 and self.calibrator is not None:
             _ci = self.calibrator.lookup(score, direction_int=direction, parts=parts)
             self.calib_log.append({"dt": dt, "sym": sym, "score": score,

@@ -52,14 +52,14 @@ def test_weekend_closed(flat_calendar):
 def test_next_cycle_grid(flat_calendar):
     assert utils.next_cycle_time(D(9, 5)) == D(9, 10)       # 开盘前30分钟：5分钟刻度
     assert utils.next_cycle_time(D(9, 29)) == D(9, 30)      # 早段末点对齐09:30
-    assert utils.next_cycle_time(D(9, 35)) == D(9, 50)      # 之后20分钟刻度
+    assert utils.next_cycle_time(D(9, 35)) == D(9, 40)      # 之后10分钟刻度（第93轮 1200→600）
     assert utils.next_cycle_time(D(11, 31)) == D(11, 32)    # 非交易：下一整分钟
     assert utils.next_cycle_time(D(14, 59)) == D(15, 1)     # 收盘后一轮安排在15:01
 
 
 def test_cycle_interval(flat_calendar):
     assert utils.cycle_interval(D(9, 10)) == 300           # 前30分钟5分钟
-    assert utils.cycle_interval(D(10, 0)) == 1200          # 之后20分钟
+    assert utils.cycle_interval(D(10, 0)) == 600           # 之后10分钟（第93轮 1200→600）
     assert utils.cycle_interval(D(12, 0)) == 60            # 非交易60秒
 
 

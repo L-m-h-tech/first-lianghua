@@ -141,7 +141,7 @@ def is_variety_trading(meta, now=None):
 
 def cycle_interval(now=None):
     """当前应使用的轮动间隔（秒）：
-    交易时段前30分钟每5分钟一轮，之后每20分钟一轮；非交易时段每1分钟一轮"""
+    交易时段前30分钟每5分钟一轮，之后每10分钟一轮；非交易时段每1分钟一轮"""
     import config
     now = now or datetime.now()
     sess = current_session(now)
@@ -171,7 +171,7 @@ def next_session_start(now, within_days=12):
 def next_cycle_time(now=None):
     """下一轮轮动的计划时刻（真实 datetime 计算，天然支持跨零点夜盘与周六凌晨）：
       - 交易时段开盘前30分钟：对齐开盘后 5 分钟刻度；
-      - 交易时段30分钟之后：对齐 20 分钟刻度（首档=开盘后30分钟）；
+      - 交易时段30分钟之后：对齐 10 分钟刻度（首档=开盘后30分钟）；
       - 时段最后一轮之后安排在收盘后1分钟；
       - 非交易时段：下一整分钟；若1分钟内将开盘则直接对齐开盘时刻。"""
     import config
@@ -186,7 +186,7 @@ def next_cycle_time(now=None):
             nxt = s + timedelta(seconds=n * step)
             if nxt > early_end:
                 nxt = early_end
-        else:                                                # 之后：20分钟刻度
+        else:                                                # 之后：10分钟刻度
             step = config.SESSION_INTERVAL
             n = int((now - early_end).total_seconds() // step) + 1
             nxt = early_end + timedelta(seconds=n * step)
@@ -270,7 +270,7 @@ def rotation_desc(now=None):
     if elapsed_min < config.SESSION_EARLY_MINUTES:
         return (f"{win} {kind}·开盘前{config.SESSION_EARLY_MINUTES}分钟每5分钟轮动"
                 f"（本轮{cur}，下一轮约{nxt}）")
-    return f"{win} {kind}·每20分钟轮动（本轮{cur}，下一轮约{nxt}）"
+    return f"{win} {kind}·每{config.SESSION_INTERVAL // 60}分钟轮动（本轮{cur}，下一轮约{nxt}）"
 
 
 def sanitize(text):

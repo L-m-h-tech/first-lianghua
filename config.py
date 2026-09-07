@@ -5,7 +5,7 @@
 【需求功能对照】
   需求①  新闻60s/原油10s刷新      -> NEWS_INTERVAL / OIL_INTERVAL
   需求⑤  四大交易所全品种+对应期权 -> ANALYZE_EXCHANGES / VARIETIES / OPTION_VARIETIES
-  需求⑩  轮动节奏(时段前30分钟每5分钟、之后每20分钟)与复盘 -> SESSIONS / SESSION_EARLY_*
+  需求⑩  轮动节奏(时段前30分钟每5分钟、之后每10分钟)与复盘 -> SESSIONS / SESSION_EARLY_*
          / SESSION_INTERVAL / DAILY_REVIEW_FILE / REALTIME_HTML / KEEP_ROUNDS
   增强⑪  原油急动紧急轮动         -> OIL_JUMP_WINDOW_SEC / OIL_JUMP_REL / OIL_JUMP_COOLDOWN_SEC
   增强⑫  全网数据查找(3分钟)      -> WEB_SCAN_* / WEB_IMPACT_TRIGGER / WEB_DOUBTFUL_WORDS 等
@@ -41,8 +41,8 @@ SESSIONS = [(9 * 60, 11 * 60 + 30),
             (13 * 60 + 30, 15 * 60),
             (21 * 60, 24 * 60 + 2 * 60 + 30)]     # 21:00 - 次日02:30（全局最晚收市）
 SESSION_EARLY_MINUTES = 30    # 时段开头按"快速轮动"处理的前多少分钟
-SESSION_EARLY_INTERVAL = 300  # 5分钟
-SESSION_INTERVAL = 1200       # 20分钟
+SESSION_EARLY_INTERVAL = 300  # 5分钟（第93轮用户确认保持：开盘后前30分钟每5分钟一轮）
+SESSION_INTERVAL = 600        # 第93轮用户拍板：开盘30分钟之后每10分钟一轮（原1200秒=20分钟）
 THS_LAUNCH_WAIT = 45          # 期货通启动后等待窗口出现的最长秒数
 
 # ---------------- 夜盘分档（结束时间为"分钟轴"，跨日 >1440；来源：上期所/INE/大商所/郑商所官网交易时间） ----------------
