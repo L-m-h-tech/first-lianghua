@@ -196,10 +196,12 @@ _DASHBOARD_TABS = [
     ("portfolio_report.txt", "组合账户回测"),
     ("portfolio_trades.csv", "组合交易CSV"),
     ("paper_account.txt", "纸面账户(影子)"),  # 第28轮 G1（二）：PaperBroker 影子账户快照
+    ("device_status.txt", "数据采集装置(界面操作)"),  # 第N轮：装置 save_report 实时写入（量化报告集成遗留项）
     ("history_report.txt", "交易时段·当日归档"),
     ("offhours_report.txt", "非交易时段·最近5轮"),
     ("offhours_history.txt", "非交易时段·当日归档"),
     ("daily_review.txt", "每日复盘(永久)"),
+    ("__newdata__", "新数据因子"),  # 第97轮：openvlab隐波/匿名仓单等新数据源因子研究（静态注入）
     ("__research__", "研究报告(全部)"),  # 第87轮：内嵌聚合全部 reports/*.txt 研究/监控报告（不走 iframe）
 ]
 # 报告写出比轮动刻度晚的缓冲秒数（分析耗时），看板在"刻度+缓冲"后刷新
@@ -254,6 +256,7 @@ def _dashboard_html():
 <iframe id="view" src="%s"></iframe>
 <div id="charts-panel">/*__CP_DOM__*/</div>
   <div id="research-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;">/*__RP_DOM__*/</div>
+  <div id="newdata-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;color:#e8e8e8;padding:16px;font-size:14px;line-height:1.6;">/*__ND_DOM__*/</div>
 <script>
   var cur = "%s";
   var CHARTS_VIEW = "__charts__";   // 图表页签为同页内嵌面板，不走 iframe
@@ -264,14 +267,18 @@ def _dashboard_html():
     cur = src;
     var isCp = src === CHARTS_VIEW;
     var isRp = src === '__research__';
+    var isNd = src === '__newdata__';
     var view = document.getElementById('view');
     var panel = document.getElementById('charts-panel');
     var rpanel = document.getElementById('research-panel');
-    view.style.display = (isCp || isRp) ? 'none' : 'block';
+    view.style.display = (isCp || isRp || isNd) ? 'none' : 'block';
     panel.style.display = isCp ? 'block' : 'none';
     rpanel.style.display = isRp ? 'block' : 'none';
+    var ndpanel = document.getElementById('newdata-panel');
+    if (ndpanel) ndpanel.style.display = isNd ? 'block' : 'none';
     if (isCp) { if (window.ChartPanel) window.ChartPanel.activate(); }
     else if (isRp) { /* 研究聚合为静态注入，无需重载 */ }
+    else if (isNd) { /* 新数据因子为静态注入，无需重载 */ }
     else { view.src = src + '?t=' + Date.now(); }
     var btns = document.querySelectorAll('.tab');
     for (var i = 0; i < btns.length; i++)
@@ -376,7 +383,8 @@ def _dashboard_html():
     return (html.replace("/*__CP_STYLE__*/", _cp_style)
                 .replace("/*__CP_DOM__*/", _cp_dom)
                 .replace("/*__CP_JS__*/", _cp_js)
-                .replace("/*__RP_DOM__*/", _research_reports_html()))
+                .replace("/*__RP_DOM__*/", _research_reports_html())
+                .replace("/*__ND_DOM__*/", _newdata_panel_html()))
 
 
 # =========================== 第87轮：研究报告聚合页签（全部 reports/*.txt 融入实时看板） ===========================
@@ -397,6 +405,33 @@ _REPORT_CATEGORY = {
     "llm_review": "G13 LLM复核", "experiment_ledger_view": "G27 实验台账",
     "research_panel_manifest": "G21 面板清单", "backtest_validation": "G4 回测严谨性",
 }
+
+
+def _newdata_panel_html():
+    """第97轮：新数据因子研究页签——读 reports/newdata_factor_research.txt 并格式化为 HTML 面板。"""
+    txt_path = os.path.join(config.BASE_DIR, "reports", "newdata_factor_research.txt")
+    try:
+        with open(txt_path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        raw = "暂无数据——因子研究需 main 运行后自动积累。"
+    lines = raw.splitlines()
+    parts = []
+    in_table = False
+    for ln in lines:
+        s_esc = ln.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if ln.startswith("===="):
+            parts.append(f'<div style="font-weight:bold;font-size:16px;margin-top:24px;border-bottom:1px solid #444;padding-bottom:6px;">{s_esc}</div>')
+        elif ln.startswith("【"):
+            title = s_esc.strip("【】").split("】")[0] if "】" in s_esc else s_esc
+            parts.append(f'<div style="font-weight:bold;font-size:15px;margin-top:18px;color:#8cf;">{s_esc}</div>')
+        elif ln.startswith("  ") or ln.startswith(" "):
+            parts.append(f'<div style="font-family:monospace;font-size:13px;color:#b8b8b8;">{s_esc}</div>')
+        elif ln.startswith("-") and len(ln) < 10:
+            parts.append('<hr style="border:none;border-top:1px solid #444;margin:12px 0 0;">')
+        else:
+            parts.append(f'<p style="margin:8px 0 0;">{s_esc}</p>')
+    return "\n".join(parts)
 
 
 def _research_reports_html(max_rows=14, max_bytes=2200):

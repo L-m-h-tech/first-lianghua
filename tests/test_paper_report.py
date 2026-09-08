@@ -153,3 +153,20 @@ def test_account_text_shows_contract(tmp_db):
                                         [row(score=1.0, contract_code="RB2610")])
     text2 = report.paper_account_text(st2)
     assert "RB2610" in text2
+
+
+def test_dashboard_newdata_tab():
+    """第97轮：实时看板含"新数据因子"页签（__newdata__ 静态注入，不走 iframe）。"""
+    html = report._dashboard_html()
+    assert "新数据因子" in html                      # 页签标题
+    assert "data-src=\"__newdata__\"" in html         # 页签绑定
+    assert "newdata-panel" in html                    # 面板 DOM
+    assert "__ND_DOM__" not in html                   # 占位符已替换
+    assert "atmv_percentile" in html or "暂无数据" in html   # 因子内容注入
+
+
+def test_newdata_panel_html_fallback(tmp_path, monkeypatch):
+    """报告缺失时页签显示占位文案而非崩溃。"""
+    monkeypatch.setattr(report.config, "BASE_DIR", str(tmp_path))
+    out = report._newdata_panel_html()
+    assert "暂无数据" in out
