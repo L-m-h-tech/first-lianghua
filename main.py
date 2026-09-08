@@ -545,6 +545,58 @@ def _maybe_snapshot(state):
 
 
 
+def _maybe_newdata(state):
+    """第96/97轮：新数据源跟随 main 每日采集（openvlab_map + jiaoyikecha）。
+    用 checkpoint 按自然日防重（一天一次）、daemon 线程零阻塞、异常全吞。
+    采集器自带幂等落库 + A1 探针；研究侧纪律：只采集落库，不进综合分。"""
+    try:
+        import checkpoint
+        day = checkpoint.today_str()
+        import threading as _th
+        for stage, run in (("openvlab_map", _run_openvlab_map),
+                           ("jiaoyikecha", _run_jiaoyikecha)):
+            if checkpoint.done(day, stage):
+                continue
+            _th.Thread(target=run, kwargs={"day": day, "stage": stage},
+                       daemon=True).start()
+    except Exception:
+        LOG.warning("新数据源调度失败（已吞掉）: %s", traceback.format_exc())
+
+
+def _run_openvlab_map(day, stage):
+    try:
+        import sys as _sys
+        _tools_dir = os.path.join(config.BASE_DIR, "tools")
+        if _tools_dir not in _sys.path:
+            _sys.path.insert(0, _tools_dir)
+        import openvlab_map
+        rows = openvlab_map.fetch_map()
+        n = openvlab_map.store(rows=rows)
+        checks = openvlab_map.cross_check(rows)
+        openvlab_map.render(rows, checks)
+        import checkpoint
+        checkpoint.mark(day, stage)
+        LOG.info("openvlab_map 每日采集: %d 品种 / 落库 %d / 交叉校验 %d", len(rows), n, len(checks))
+    except Exception:
+        LOG.warning("openvlab_map 每日采集失败（已吞掉，明日重试）: %s", traceback.format_exc())
+
+
+def _run_jiaoyikecha(day, stage):
+    try:
+        import sys as _sys
+        _tools_dir = os.path.join(config.BASE_DIR, "tools")
+        if _tools_dir not in _sys.path:
+            _sys.path.insert(0, _tools_dir)
+        import jiaoyikecha_collector as jykt
+        res = jykt.run(verbose=False)
+        import checkpoint
+        checkpoint.mark(day, stage)
+        eps = {k: v["n"] for k, v in res["endpoints"].items()}
+        LOG.info("jiaoyikecha 每日采集: 会话%s %s", "OK" if res["session_ok"] else "FAIL", eps)
+    except Exception:
+        LOG.warning("jiaoyikecha 每日采集失败（已吞掉，明日重试）: %s", traceback.format_exc())
+
+
 def run_cycle(state):
     state.cycle += 1
     beat_heartbeat(state)
@@ -803,6 +855,7 @@ def run_cycle(state):
     _maybe_review(state, fut_rows)
     _maybe_shadow(state)
     _maybe_snapshot(state)
+    _maybe_newdata(state)
     try:
         import parser_health
         parser_health.emit_health_alerts(state)

@@ -318,3 +318,21 @@ def test_jiaoyikecha_selftest():
     """第96轮：jiaoyikecha 交易可查采集（合成端点解析/落库幂等）。"""
     import jiaoyikecha_collector
     assert jiaoyikecha_collector.selftest() == 0
+
+
+def test_openvlab_map_selftest():
+    """第96轮：OpenVLab 83品种波动率地图采集（合成解析/落库幂等/降级）。"""
+    import openvlab_map
+    assert openvlab_map.selftest() == 0
+
+
+def test_jiaoyikecha_collector_selftest():
+    """第96轮：jiaoyikecha 交易可查采集（合成端点解析/落库幂等）。"""
+    import jiaoyikecha_collector
+    assert jiaoyikecha_collector.selftest() == 0
+
+
+def test_newdata_factor_research_selftest():
+    """第96/97轮：新数据源因子研究（spearman/对齐/样本天数判定）。"""
+    import newdata_factor_research
+    assert newdata_factor_research.selftest() == 0
