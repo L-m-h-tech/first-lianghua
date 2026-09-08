@@ -32,10 +32,13 @@ REPORT_JSON = os.path.join(_ROOT, "reports", "iv_official_check.json")
 TIMEOUT = 12
 VOL_DIFF_THRESH = 2.0           # 偏差超过 2vol 标注
 
-# SHFE（上期所）期权行情公开页面（仅供参考，路径可能随官网改版）
-_SHFE_URL = ("https://www.shfe.com.cn/statements/delaymarket_cl_3_4.html")  # 螺纹钢期权行情
-# GFEX（广期所）期权行情
-_GFEX_URL = ("https://www.gfex.com.cn/qhgg/lspc/qqp/kqp/hyq.html")        # 工业硅期权行情
+# SHFE（上期所）日周数据页面——AJAX动态渲染，纯requests可能拿到外壳但表格为空；实测200/520KB但表内容为0
+_SHFE_URL = "https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_params=options3_4"
+# GFEX（广期所）期权行情——国内网络连接超时
+_GFEX_URL = "https://www.gfex.com.cn/qhgg/lspc/qqp/kqp/hyq.html"
+# OpenVlab 波动率曲面（匿名可靠，83品种）：可靠补充对照源（第94轮实测稳定）
+_OVL_SURFACE_URL = "https://www.openvlab.cn/api/volatility-surface/"
+_OVL_HEADERS = {"User-Agent": config.HEADERS_COMMON.get("User-Agent", ""), "Referer": "https://www.openvlab.cn/market"}
 
 
 def _fetch_shfe_iv():
@@ -102,14 +105,45 @@ def _cross_check(user_iv, source):
     return checks
 
 
+def _fetch_ovl_surface(sym):
+    """OpenVlab volatility-surface/{sym}（匿名可靠，83品种ATM IV）→ {品种: [{"atm_iv":x}]}"""
+    try:
+        r = http.get(_OVL_SURFACE_URL + sym, headers=_OVL_HEADERS, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return {}, "http_%d" % r.status_code
+        data = (r.json() or {}).get("result") or {}
+        out = {}
+        for exp, m in data.items():
+            atm = m.get("atmvol_tday")
+            if atm is None:
+                continue
+            if sym not in out:
+                out[sym] = []
+            out[sym].append({"atm_iv": float(atm) if atm else None, "exp": exp})
+        if out:
+            return out, "ok(%d品种)" % len(out)
+        return {}, "no_atm"
+    except Exception as e:
+        return {}, "error:%s" % str(e)[:80]
+
+
 def run(render=True):
     results = {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "sources": {}}
-    for name, fetcher in [("shfe", _fetch_shfe_iv), ("gfex", _fetch_shfe_iv)]:  # gfex 共享提取逻辑
+    # 交易所官网（AJAX动态渲染，成功率取决于页面结构，可能拿到0品种）
+    for name, fetcher in [("shfe", _fetch_shfe_iv), ("gfex", _fetch_shfe_iv)]:
         iv, status = fetcher() if fetcher == _fetch_shfe_iv else ({}, "未实现")
         results["sources"][name] = {"status": status, "n": len(iv)}
         if iv:
             results.setdefault("iv_raw", {})[name] = iv
+    # OpenVlab surface 作为可靠补充对照源
+    ovl_iv, ovl_status = _fetch_ovl_surface("RB")
+    results["sources"]["openvlab_surface"] = {"status": ovl_status, "n": len(ovl_iv)}
+    if ovl_iv:
+        results.setdefault("iv_raw", {})["openvlab"] = ovl_iv
+    # 交叉校验：优先shfe，降级到openvlab
     checks = _cross_check(results.get("iv_raw", {}).get("shfe", {}), "shfe")
+    if not checks and results.get("iv_raw", {}).get("openvlab"):
+        checks = _cross_check(results["iv_raw"]["openvlab"], "openvlab")
     results["checks"] = checks
     if render:
         _render(results)

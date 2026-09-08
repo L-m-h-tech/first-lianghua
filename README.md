@@ -27,8 +27,9 @@
 
 | 第14轮 分钟K自采库（WP-D0，为日内/平今回测积累自有分钟数据） | `intraday_bars.py`（**新浪主连为主+东财补1m+通达信可选冗余**的三源选源、周期聚合纯函数）+新增 `tdx_bars.py`（pytdx延迟导入、启动并发探测、取不到期货零成本降级）；`storage`新增第8张表`minute_bars`（唯一键去重、保留400天）；`main`启动小回填+后台线程交易5分钟/非交易30分钟增量自采；实测回填261888根（64品种×5/15/30/60m×1023根），60m回溯约12.5月。选型证据见《数据源选型与通达信替换可行性分析.md》 |
 
-### 近期轮次关键能力（第81-97轮，2026-09）
+### 近期轮次关键能力（第81-98轮，2026-09）
 
+- **第98轮 G17 期权遗留增强**：成交量PCR（pcr_vol）字段+展示+表列（诚实标注待交易所日行情）；官方IV交叉校验改进——修正上期所URL+新增 OpenVlab surface 可靠对照源；期权精确保证金标记待真实账户数据。pytest 836 全绿。
 - **第97轮 新数据源跟随main+因子研究**：openvlab_map / jiaoyikecha_collector 随 main 每日自动采集（checkpoint 防重、daemon 零阻塞）；`tools/newdata_factor_research.py` 新数据因子横截面体检（隐波百分位/溢价/偏度/隐波变化 + 仓单总量，与面板 ret1d 秩相关，按交易日数≥30 才正式评估，首日诚实"样本不足"）。
 - **第96轮 新数据源深度结合（网页学习探索）**：`tools/openvlab_map.py`（OpenVLab 83 品种全市场期权波动率地图：ATM隐波/百分位/偏度/RV22，与本地 iv_surface 交叉校验）；`tools/jiaoyikecha_collector.py`（jiaoyikecha 交易可查：会话三步+仓单日报76/席位资金70/支撑压力77/龙虎牛熊，落 cache/jiaoyikecha.db）；qhqqbk 219 链接资源地图入库 `docs/resource_map/`（新增数据源先查地图）。全部研究侧采集、零新增依赖、复用 A1/A4/A5/B1 工程护栏。
 - **第95轮 计划任务+日历维护**：TermTopup/ShadowTrack 计划任务注册（修正 shadow 路径，实测脚本路径正确）；`tools/holiday_updater.py` 交易日历年度维护工具（生成/更新 STATIC_HOLIDAY_RANGES，支持官方日历自动推导或手动粘贴，--apply 写回带备份/幂等）；年度 CronCreate 每年 12 月 1 日自动检查提醒。

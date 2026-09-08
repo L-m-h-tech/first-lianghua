@@ -115,6 +115,7 @@ def build_summary(sym, ex, yy, mm, calls, puts):
              "n_call": len(calls), "n_put": len(puts),
              "call_oi": call_oi, "put_oi": put_oi,
              "pcr_oi": pcr_oi, "pcr": pcr_oi,          # pcr=持仓量PCR主口径，兼容分析器取值
+             "pcr_vol": None,             # G17第98轮：成交量PCR（需交易所日行情，当前数据源缺口）
              "max_call_oi_strike": _max_oi_strike(calls),
              "max_put_oi_strike": _max_oi_strike(puts),
              "bid_vol": call_bid_vol, "ask_vol": call_ask_vol,

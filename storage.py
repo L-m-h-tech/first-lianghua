@@ -275,6 +275,13 @@ class MonitorDB:
                 """
             )
             self.conn.commit()
+            # G17（第98轮）：期权链表补 pcr_vol 列
+            try:
+                cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(option_chains)").fetchall()}
+                if "pcr_vol" not in cols:
+                    self.conn.execute("ALTER TABLE option_chains ADD COLUMN pcr_vol REAL")
+            except Exception:
+                pass
             # G1续（第93轮）：存量库幂等补列（CREATE TABLE IF NOT EXISTS 不会改已存在的表；
             # paper_orders/paper_trades 增 contract_code/main_month 记录具体开平仓合约）
             for _tbl in ("paper_orders", "paper_trades"):
