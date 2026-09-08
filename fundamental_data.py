@@ -205,8 +205,6 @@ class FundamentalFetcher:
             # 找含"现货/主力"表头、且行数最多的那张表
             cands = [t for t in g.tables if any(
                 any(("现货" in c or "主力" in c) for c in row) for row in t[:3])]
-            # A2（第94轮，对标 scrapling mutation）：主=含"现货/主力"表头、备=最大表；
-            # 主表校验失败自动降级到备选，走备选时登记 parser_health（改版早期信号）
             _label, _tbl = html_text.first_valid(
                 [("primary", lambda: max(cands, key=len) if cands else []),
                  ("fallback", lambda: max(g.tables, key=len) if g.tables else [])],
@@ -218,13 +216,23 @@ class FundamentalFetcher:
                     parser_health.record("em_inventory_fallback", True, len(table))
                 except Exception:
                     pass
-            # A1（第94轮）：解析健康探针——库存主表命中行数（改版/被反爬=0 早期信号）
             try:
                 import parser_health
                 parser_health.record("em_inventory", table is not None and len(table) > 1,
                                      len(table) if table else 0)
             except Exception:
                 pass
+            # 如果主表解析器只拿到标题行（嵌套table切割），用 html_text+正则兜底
+            if table is None or (len(table) <= 4 and any('商品' in str(c) for row in table[:1] for c in row)):
+                import html_text as _ht
+                full_tables = _ht.extract_tables(text)
+                big = None
+                for _t in full_tables:
+                    if _t and len(_t) > 10 and any('现货' in str(c) for c in _t[0]):
+                        big = _t
+                        break
+                if big:
+                    table = big
         except Exception:
             table = None
         out = {}

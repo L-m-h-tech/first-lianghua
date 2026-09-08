@@ -135,11 +135,21 @@ def run(render=True):
         results["sources"][name] = {"status": status, "n": len(iv)}
         if iv:
             results.setdefault("iv_raw", {})[name] = iv
-    # OpenVlab surface 作为可靠补充对照源
-    ovl_iv, ovl_status = _fetch_ovl_surface("RB")
-    results["sources"]["openvlab_surface"] = {"status": ovl_status, "n": len(ovl_iv)}
-    if ovl_iv:
-        results.setdefault("iv_raw", {})["openvlab"] = ovl_iv
+    # OpenVlab surface 多品种批量（第99轮扩展）——主力合约全覆盖
+    ovl_all = {}
+    ovl_ok, ovl_fail = 0, 0
+    for sym in ["RB", "CU", "AU", "AG", "I", "M", "TA", "MA", "SC", "EG"]:
+        iv, status = _fetch_ovl_surface(sym)
+        if iv:
+            ovl_all.update(iv)
+            ovl_ok += 1
+        else:
+            ovl_fail += 1
+    results["sources"]["openvlab_surface"] = {
+        "status": "ok(%d品种)/fail(%d)" % (ovl_ok, ovl_fail),
+        "n": len(ovl_all)}
+    if ovl_all:
+        results.setdefault("iv_raw", {})["openvlab"] = ovl_all
     # 交叉校验：优先shfe，降级到openvlab
     checks = _cross_check(results.get("iv_raw", {}).get("shfe", {}), "shfe")
     if not checks and results.get("iv_raw", {}).get("openvlab"):
