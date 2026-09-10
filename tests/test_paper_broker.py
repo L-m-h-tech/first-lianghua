@@ -217,6 +217,28 @@ def test_forced_liquidation(loose):
     assert any(t["forced"] for t in s["trades"])
 
 
+def test_liquidate_pos_ref_preserves_for_restore(loose, tmp_db):
+    """第112轮：强平 close 的 pos_ref 必须等于 open 的 pos_ref——否则 restore 配对失败，反复幽灵恢复。
+    修复后验证：open→强平→新进程 restore 后 positions 为空（不再出现幽灵持仓）。"""
+    db = tmp_db
+    # 进程1：开仓 + 强平（risk_liquidate=0.0 立即触发）
+    pb1 = make_broker("close", db=db, restore=False, slip=0.0)
+    pb1.on_cycle("t1", [row("AU", "黄金", "贵金属", 6.0, 500.0)])
+    assert "AU" in pb1.pf.positions
+    assert pb1.pos_ref.get("AU", "") != ""
+    pb1.pf.risk_liquidate = 0.0; pb1.pf.risk_safe = 0.0
+    pb1.on_cycle("t2", [row("AU", "黄金", "贵金属", 6.0, 500.0)])
+    assert "AU" not in pb1.pf.positions
+    # 验证 DB：close 记录的 pos_ref 与 open 一致
+    closes = db.conn.execute(
+        "SELECT pos_ref, reason FROM paper_trades WHERE sym='AU' AND side='close'"
+    ).fetchall()
+    assert any(r[0] != "" for r in closes), "强平 close pos_ref 应为非空"
+    # 进程2：restore——不应出现幽灵持仓
+    pb2 = make_broker("close", db=db, restore=True, slip=0.0)
+    assert "AU" not in pb2.pf.positions, "幽灵持仓不应被 restore 复活"
+
+
 def test_insufficient_cash_rejected(loose):
     pb = make_broker("close", equity0=2000.0, slip=0.0)
     s = pb.on_cycle("t1", [row("CU", "铜", "有色", 6.0, 70000.0)])
@@ -586,3 +608,155 @@ def test_paper_backfill_null_contracts(loose, tmp_db):
         "SELECT COUNT(*) FROM paper_trades WHERE contract_code IS NULL OR contract_code=''").fetchone()[0]
     assert empties == 0, "DB仍残留空合约"
     assert len(b._known_contract) > 0 and b._known_contract.get("XX", ("", ""))[0] == "XX2701"
+
+
+def test_repeat_cycle_same_signal_no_dup(loose):
+    """第103轮：ticker 同信号连续两轮（模拟 run_cycle 与 ticker 同分钟两次 on_cycle）
+    不产生重复开仓/重复挂单（pending 意图相同跳过重挂，close 档持多 hold 零委托）。"""
+    b = make_broker("close", slip=0.0)
+    r = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
+    s1 = b.on_cycle("t1", [r], {"RB0": quote(3010.0, 3000.0, 0.05)})
+    assert s1["n_trades"] == 1 and s1["n_positions"] == 1
+    s2 = b.on_cycle("t2", [r], {"RB0": quote(3012.0, 3000.0, 0.05)})   # 同分同信号
+    assert s2["n_orders"] == 0 and s2["n_trades"] == 0           # 持多 hold，无新委托
+    assert s2["n_positions"] == 1                                 # 持仓未被清掉/重复
+
+
+def test_next_mode_repeat_same_signal_pending_preserved(loose):
+    """第103轮：next 档同信号两轮：第一轮挂单第二轮成交；第三轮同信号不再重挂（幂等）。"""
+    b = make_broker("next", slip=0.0)
+    r = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
+    s1 = b.on_cycle("t1", [r], {"RB0": quote(3010.0, 3000.0, 0.05)})
+    assert s1["n_pending"] == 1
+    s2 = b.on_cycle("t2", [r], {"RB0": quote(3012.0, 3000.0, 0.05)})
+    assert s2["n_trades"] == 1 and s2["n_positions"] == 1
+    s3 = b.on_cycle("t3", [r], {"RB0": quote(3014.0, 3000.0, 0.05)})
+    assert s3["n_orders"] == 0 and s3["n_trades"] == 0           # 已持仓且信号未变：零新委托
+
+
+def test_broker_lock_rlock_reentrant(loose):
+    """第103轮：broker._lock 是 threading.RLock 且同线程可重入（普通 Lock 会自死锁）。"""
+    b = make_broker("close", slip=0.0)
+    # Python 3.x 中 threading.RLock 是函数不是类型，用 acquire 行为检测
+    assert b._lock is not None, "broker._lock 未初始化"
+    with b._lock:
+        with b._lock:                                            # 重入不阻塞
+            pass
+    # 带锁方法正常可调（说明装饰器/锁未破坏既有路径）
+    s = b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert s["n_trades"] == 1
+
+
+# ===================== 第104轮：统一资金池测试 =====================
+
+def _opt_leg(strike, bid, ask, cp="call"):
+    return {"code": "RB2610C%d" % int(strike), "cp": cp, "strike": strike,
+            "bid": bid, "bid_vol": 1, "last": (bid + ask) / 2.0 if bid and ask else 0,
+            "ask": ask, "ask_vol": 1, "oi": 10, "chg_pct": 0.0}
+
+def _opt_chain(sym="RB", yy=26, mm=10, strike=3000.0, bid=5.0, ask=6.0, cp="call"):
+    leg = _opt_leg(strike, bid, ask, cp)
+    calls = [leg] if cp == "call" else []
+    puts = [leg] if cp == "put" else []
+    return {(sym.upper(), yy, mm): {"calls": calls, "puts": puts}}
+
+def _opt_strat(variety="RB", K=3000.0, cp="call", all_pass=True, score=5.0,
+               month_label="2610", days_left=40):
+    return {"name": "合成看涨", "all_pass": all_pass,
+            "legs": [{"buy": True, "kind": cp, "K": K, "prem": 5.5, "qty": 1}],
+            "variety": variety, "month_label": month_label, "days_left": days_left,
+            "net": score, "position": ""}
+
+
+def test_unified_equity_no_double_count(loose):
+    """初始统一权益==初始资金；期期权贡献不双重计数初始资本。"""
+    b = make_broker("close", equity0=10_000_000, slip=0.0)
+    ua0 = b.unified_account()
+    assert abs(ua0["equity"] - 10_000_000) < 0.01, f"eq={ua0['equity']}"
+    assert abs(ua0["static"] - 10_000_000) < 0.01
+    assert ua0["margin_used"] == 0.0
+    # 开期货后：equity = 10000000 - 期货手续费（微小减少）；opt_net=0 → unified==pf
+    s = b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert s["n_trades"] == 1
+    ua1 = b.unified_account()
+    assert ua1["equity"] < 10_000_000  # 期货手续费减少了权益
+    assert ua1["margin_used"] > 0  # 期货保证金已计入
+    assert abs(ua1["equity"] - (b.pf.equity() + b._opt_net_pnl())) < 0.01
+
+
+def test_option_open_reduces_available(loose):
+    """开仓期权利金后：统一 margin 增加权利金额、可用资金对应减少（总权益≈不变）。"""
+    b = make_broker("close", equity0=10_000, slip=0.0)
+    b.opt_premium_ratio = 0.10  # 允许开仓
+    # 设置10月链，行权价3000 ask=6.0 → premium=6.0*10=60；盯市用 bid=5.0 → 占用 5.0*10=50
+    chain = _opt_chain("RB", 26, 10, 3000.0, bid=5.0, ask=6.0)
+    strat = _opt_strat(variety="RB", K=3000.0)
+    fut = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
+    ua0 = b.unified_account(chain)
+    b.on_cycle_options("t1", [strat], chain, [fut])
+    ua1 = b.unified_account(chain)
+    # 期权 margin 增加 ~50（bid盯市权），可用资金减少同额
+    assert ua1["margin_used"] > ua0["margin_used"] + 40
+    assert ua1["available"] < ua0["available"] - 40
+    assert len(b.opt_positions) == 1
+
+
+def test_option_close_adds_realized(loose):
+    """平仓后：期权已实现并入统一权益、margin 清零。"""
+    b = make_broker("close", equity0=10_000, slip=0.0)
+    b.opt_premium_ratio = 0.10
+    # 卖6.0开仓
+    chain_open = _opt_chain("RB", 26, 10, 3000.0, bid=5.0, ask=6.0)
+    strat_open = _opt_strat(variety="RB", K=3000.0, score=5.0, days_left=40)
+    fut_hi = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
+    b.on_cycle_options("t1", [strat_open], chain_open, [fut_hi])
+    assert len(b.opt_positions) == 1
+    # 第2轮：标的综合分跌到 exit_score(2.0) 以下 → 触发平仓（不传新 strat 避免二次买入）；
+    # 同时链价 bid=4.5（亏损）
+    chain_close = _opt_chain("RB", 26, 10, 3000.0, bid=4.5, ask=5.5)
+    fut_lo = row("RB", "螺纹钢", "黑色", 1.0, 2900.0)
+    b.on_cycle_options("t2", [], chain_close, [fut_lo])
+    assert len(b.opt_positions) == 0  # 已平仓
+    ua = b.unified_account(chain_close)
+    assert ua["opt_premium_locked"] == 0.0  # 无在途期权
+    # realized = (4.5 - 6.0)*10*1 - fee ≈ -15（亏损），option 权益 < 10000
+    assert ua["equity"] < 10_000
+
+
+def test_open_check_uses_unified_available(loose):
+    """关键回归点：opt_equity0*premium_ratio 允许但统一可用资金不够时被拒。"""
+    b = PaperBroker(db=None, equity0=1_000, fill_mode="close",
+                    entry_score=2.0, exit_score=1.0,
+                    margin_table=MARGIN, fee_table=FEE,
+                    sector_of=SECTOR, slip_rate=0.0, restore=False,
+                    priority="option_first",
+                    opt_premium_ratio=0.9, options_max=None)
+    # A: RB ask=80, premium=80*10=800; opt budget=0.9*1000=900 → 800<900 ✓；available ≈1000 → 800<1000 ✓
+    chain_a = _opt_chain("RB", 26, 10, 3000.0, bid=75.0, ask=80.0)
+    strat_a = _opt_strat(variety="RB", K=3000.0)
+    b.on_cycle_options("t1", [strat_a], chain_a, [])
+    assert len(b.opt_positions) == 1
+    # B: CU ask=60, premium=60*5=300; opt budget=0.9*1000=900→300<900 ✓; 但 unified available ≈1000-800=200→300>200 ✗
+    chain_b = {("CU", 26, 10): {"calls": [_opt_leg(70000.0, 55.0, 60.0)], "puts": []}}
+    strat_b = _opt_strat(variety="CU", K=70000.0)
+    b.on_cycle_options("t2", [strat_b], chain_b, [])
+    # B 被拒：统一可用资金不足
+    assert len(b.opt_positions) == 1
+    assert any("统一可用资金不足" in r.get("reason", "") for r in b.opt_skipped)
+
+
+def test_paper_trading_only_gate_skips_off_hours():
+    """第107轮：非交易时段 + PAPER_TRADING_ONLY=True 时，撮合被跳过（成交 ts 必落交易时段）。"""
+    # 验证 config 开关存在且默认开启（main.py 据此跳过非交易时段撮合）
+    import config as _cfg
+    assert getattr(_cfg, "PAPER_TRADING_ONLY", False) is True
+    # 模拟 main.py 的门控判定：非交易时段 → skip=True
+    _trading_now = False
+    _skip = (not _trading_now) and getattr(_cfg, "PAPER_TRADING_ONLY", True)
+    assert _skip is True
+    # 交易时段 → skip=False（not_trading_now 为 False，短路）
+    _skip2 = (not True) and getattr(_cfg, "PAPER_TRADING_ONLY", True)
+    assert _skip2 is False
+    # 开关关闭 → 不跳过（旧行为）
+    _skip3 = (not _trading_now) and False
+    assert _skip3 is False

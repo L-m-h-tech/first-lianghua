@@ -179,6 +179,14 @@ HTTP_THROTTLE_MAX = 120.0         # 退避封顶秒数
 # ---------------- 同花顺期货通 ----------------
 THS_EXE = r"E:\同花顺期货通\bin\happ.exe"   # 第91轮：随用户 C→E 盘迁移更新
 THS_AUTO_LAUNCH = True                      # 每次启动程序时自动打开期货通
+# 调试模式（2026-09-10 实测）：DataCenter.xml 开 <Debug><Cef><Console enable="true"/></Cef>
+# 后重启 happ 即弹独立 DevTools 窗口（Chromium 全套面板）；CDP 端口对该客户端无效
+THS_DEBUG_MODE = True                       # 启动前自动确保 DataCenter.xml 调试开关（幂等、改前备份 .bak）
+THS_DEBUG_RESTART = True                    # 已运行但无 DevTools 调试窗口时自动重启 happ 应用调试开关
+THS_DATA_CENTER_XML = r"E:\同花顺期货通\bin\workspace\DataCenter.xml"  # 调试开关所在配置
+
+# ---------------- 浏览器页面直读（需求⑦） ----------------
+BROWSER_DEBUG_LAUNCH = True  # 每次启动程序时自动以调试端口(9222)拉起浏览器打开 OpenVlab市场页+交易可查（页面直读数据源）
 
 # ---------------- 期货分析阈值（综合分范围 -10 ~ +10） ----------------
 SCORE_NEUTRAL = 2.0    # |分| < 2        -> 观望
@@ -208,7 +216,7 @@ OPT_IV_HV_RATIO_MAX = 1.35   # 估计隐波/历史波动率 超过该值说明�
 OPT_MIN_DAYS = 14            # 买入期权距到期最少天数（避免临近到期的Gamma/Theta风险）
 OPT_ASSUMED_DAYS = 35        # 探测不到合约月份时的兜底假设剩余天数
 OPT_EXPECT_COVER = 1.5       # 预期行情幅度需覆盖 1.5 倍平值权利金（时间价值）
-OPT_DELTA_BAND = (0.35, 0.60)  # 建议买入合约的 |Delta| 区间
+OPT_DELTA_BAND = (0.30, 0.45)  # 建议买入合约的 |Delta| 区间（第102轮：tastytrade 买方最优区间，从(0.35,0.60)缩窄，delta>0.45 theta 损耗大）
 OPT_THETA_DAY_MAX = 0.03     # 每天时间价值损耗占权利金比例上限 3%
 OPT_IV_PCT_BUY_MAX = 0.75    # 裸买/跨式：真实IV或HV代理分位高于75%视为偏贵
 OPT_IV_PCT_SPREAD_MAX = 0.85 # 价差结构可容忍更高IV分位
@@ -681,6 +689,178 @@ PAPER_LIMIT_EPS = 0.0008          # 实时锁板判定的贴板容差（与 INTR
 PAPER_ALLOW_ADD = False           # 持仓且同向更强信号是否加仓（默认False=只持有/反手/离场，不反复加仓）
 PAPER_RETENTION_DAYS = 3650       # paper_orders/trades/equity 保留天数（纸面需长期影子对照，默认约10年）
 PAPER_ACCOUNT_TXT = os.path.join(BASE_DIR, "reports", "paper_account.txt")  # 第28轮纸面账户报告路径
+PAPER_ACCOUNT_DB_DIR = os.path.join(BASE_DIR, "data", "paper_accounts")    # 第102轮：多账户独立SQLite目录
+PAPER_OPT_PREMIUM_MAX_RATIO = 0.03  # 第102轮：单笔买方权利金占权益上限3%（tastytrade共识：买方≤3-5%总资金）
+PAPER_OPT_STOP_LOSS_RATIO = 0.50   # 第102轮：权利金止损线（亏损≥50%权利金即平仓，激进版可在实例层覆盖为0.40）
+
+# ========== 第107轮：非交易时段跳过纸面撮合（正规交易时段才能成交） ==========
+# 非交易时段（盘后/周末/节假日）run_cycle 仍正常跑分析/报告，但 paper_broker 撮合完全跳过，
+# 成交 ts 必落真实交易时段；账户状态在非交易时段冻结（不盯市/不开仓/不平仓）。
+PAPER_TRADING_ONLY = True          # True=非交易时段跳过纸面撮合；False=旧行为（时刻无关撮合）
+
+# ========== 第103轮：纸面撮合独立 ticker 线程（与主分析循环解耦） ==========
+# 交易时段（含夜盘）由 paper_ticker.tick_loop 每 PAPER_TICK_INTERVAL 秒驱动一次
+# on_cycle（拉最新行情撮合/盯市/equity入库）；主循环 run_cycle 5.5 段照旧每轮也撮合一次，
+# 分析/报告节奏与内容完全不动。0=关闭=逐字节旧行为（run_cycle 同步驱动）。
+PAPER_TICK_INTERVAL = 60           # 交易时段纸面撮合线程间隔（秒）；0=关闭=逐字节旧行为
+PAPER_TICK_TRADING_ONLY = True     # True=仅交易时段（含夜盘）ticker 生效；非交易 run_cycle 已每分钟且行情冻结
+PAPER_TICK_ANNOTATION = "自2026-09-09(第103轮)起交易时段纸面撮合粒度由5/10分钟改为1分钟(ticker线程)"
+# 第108轮：True=ticker 每分钟用 analyzer.analyze_all_varieties 完整重算综合分产生新信号
+# （与主报告同一评分路径，开仓口径一致；只读共享缓存，不写报告/signals 表）；
+# False=ticker 沿用 run_cycle 落下的 _paper_stash.fut_rows 快照（第103轮旧行为）。
+PAPER_TICK_REPRICE = True
+
+# ========== 第104轮：期权与期货统一资金池（一个钱包，两张持仓表） ==========
+# 期权开仓权利金从统一可用资金里扣、期权盈亏并入统一权益曲线、风控/展示指标统一口径
+# （期货强平仍按期货池独立风险度触发，保护不减弱）；False=完全回退两池分离旧行为。
+PAPER_UNIFIED_POOL = True          # True=期权期货共享一个资金池；False=两池独立（第102轮行为）
+PAPER_UNIFIED_POOL_ANNOTATION = "自2026-09-09(第104轮)起期权与期货统一资金池（权利金同扣、盈亏同计）"
+
+# ========== 第105轮：纸面基准 & 对比看板重构（5档分组 + 下钻 + 二级详情页） ==========
+PAPER_DETAIL_ENABLED = True     # True=每轮生成 paper_detail_{name}.html 静态详情页（供对比页点账户名下钻）
+
+# ========== 第110轮：纸面账户保证金口径 sizing（target_basis="margin"） ==========
+# 第110轮（2026-09-10）：小资金档位等名义口径 raw=权益×per_symbol/一手名义 全<1手导致永久空仓
+# （448次"策略目标不足1手"），改用保证金口径：raw=权益×per_symbol/一手保证金+开仓费。
+# 保证金表已替换为交易所标准档（信查期货 wj.xcqihuo.cn API，手续费每手+0.01元），
+# per_symbol 按新表最低品种（玉米C：现价~2269×0.07×10≈1588元/手）逐档核算，确保目标≥1手。
+# risk_liquidate/risk_safe 无需上调（新表保证金率低，风险度远低于强平线）。
+#
+# 档位核算（玉米C现价2269，保证金0.07，乘数10，一手保证金≈1588元）：
+#   1万_激进：0.35×10000=3500 → 3500/1588≈2.2手 ✓（不改）
+#   1万_保守：0.16×10000=1600 → 1600/1588≈1.01手 ✓（0.15→0.16）
+#   5000_激进/赌徒：0.40×5000=2000 → 2000/1588≈1.26手 ✓（不改）
+#   5000_基准：0.32×5000=1600 → 1600/1588≈1.01手 ✓（0.30→0.32）
+#   5000_保守：0.32×5000=1600 → 1600/1588≈1.01手 ✓（0.18→0.32）
+#   3000_激进/赌徒：0.54×3000=1620 → 1620/1588≈1.02手 ✓（0.45→0.54）
+#   3000_基准/保守：futures_max=0（纯期权），不需调期货 per_symbol。
+#   10万全档：保证金口径下仍然可开多手（3万/2万/1.2万 目标保证金），per_symbol 不改。
+#   1000全档：option_only（futures_max=0），期货永远不可开，走期权路径。
+# 第102轮：15→20 个影子纸面账户（5档资金×4风格：激进/基准/保守/赌徒）。
+# 说明：每项为一个 PaperBroker 实例配置；按 priority 分流期权/期货参与方式。
+# - option_only (1000档)：100%期权买方，期货不可用（保证金不足）
+# - option_first (3000档)：期权优先，仅当无期权机会时尝试玉米期货（futures_max=1/0）
+# - equal (5000档)：期权期货并重，各算各的持仓数
+# - futures_first (1万/10万档)：期货优先，期权作补充
+# entry_score：资金越少越高（小资金只做最强信号）；exit_score统一2.0；fill_mode激进close/基准保守next
+# per_symbol(opt)：期权权利金占权益比例（资金越少越集中）；max_symbol_weight = 资金越少越高（品种少集中投入）
+# risk_liquidate：小资金更早强平（0.70-1.00，避免权益归零）
+# risk_safe：强平后砍到的安全线，保守取 risk_liquidate - 0.10
+# 每账户独立数据库文件 data/paper_accounts/paper_{name}.db（零schema迁移、存量行为零破坏）
+PAPER_ACCOUNTS = [
+    # ====== 10万档（大资金）期货为主，期权补充 ======
+    # 第110轮：激进/赌徒每品种不限手数→max_symbol_weight/max_sector_weight放开(1.0)，
+    # 按 per_symbol 目标（保证金口径，玉米18手封顶）。
+    # 基准/保守 per_symbol 降为轻仓水平（margin口径下刚好1-3手），避免满杠杆。
+    {"name": "10万_激进", "equity0": 100_000, "fill_mode": "close", "entry_score": 3.0,
+     "per_symbol": 0.30, "max_symbol_weight": 1.0, "max_sector_weight": 1.0,
+     "max_concurrent": 999, "risk_liquidate": 1.00, "risk_safe": 0.90,
+     "opt_premium_ratio": 0.80, "stop_loss_ratio": 0.40, "priority": "futures_first",
+     "target_basis": "margin"},
+    {"name": "10万_基准", "equity0": 100_000, "fill_mode": "next", "entry_score": 4.0,
+     "per_symbol": 0.05, "max_symbol_weight": 0.08, "max_sector_weight": 0.15,
+     "max_concurrent": 10, "risk_liquidate": 1.00, "risk_safe": 0.90,
+     "opt_premium_ratio": 0.60, "stop_loss_ratio": 0.50, "priority": "futures_first",
+     "target_basis": "margin"},
+    {"name": "10万_保守", "equity0": 100_000, "fill_mode": "next", "entry_score": 5.0,
+     "per_symbol": 0.03, "max_symbol_weight": 0.05, "max_sector_weight": 0.15,
+     "max_concurrent": 6, "risk_liquidate": 1.00, "risk_safe": 0.90,
+     "opt_premium_ratio": 0.35, "stop_loss_ratio": 0.60, "priority": "futures_first",
+     "target_basis": "margin"},
+    {"name": "10万_赌徒", "equity0": 100_000, "fill_mode": "close", "entry_score": 3.0,
+     "per_symbol": 0.30, "max_symbol_weight": 1.0, "max_sector_weight": 1.0,
+     "max_concurrent": 999, "risk_liquidate": 1.00, "risk_safe": 0.90,
+     "opt_premium_ratio": 0.75, "stop_loss_ratio": 0.70, "priority": "option_first",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+
+    # ====== 1万档（正常资金）期货为主，per_symbol加高至能开1手 ======
+    {"name": "1万_激进", "equity0": 10_000, "fill_mode": "close", "entry_score": 3.5,
+     "per_symbol": 0.35, "max_symbol_weight": 0.50, "max_sector_weight": 0.60,
+     "max_concurrent": 999, "risk_liquidate": 0.90, "risk_safe": 0.80,
+     "opt_premium_ratio": 0.80, "stop_loss_ratio": 0.40, "priority": "futures_first",
+     "target_basis": "margin"},
+    {"name": "1万_基准", "equity0": 10_000, "fill_mode": "next", "entry_score": 4.5,
+     "per_symbol": 0.25, "max_symbol_weight": 0.45, "max_sector_weight": 0.50,
+     "max_concurrent": 3, "risk_liquidate": 0.90, "risk_safe": 0.80,
+     "opt_premium_ratio": 0.50, "stop_loss_ratio": 0.50, "priority": "futures_first",
+     "target_basis": "margin"},
+    {"name": "1万_保守", "equity0": 10_000, "fill_mode": "next", "entry_score": 5.5,
+     "per_symbol": 0.16, "max_symbol_weight": 0.35, "max_sector_weight": 0.40,
+     "max_concurrent": 1, "risk_liquidate": 0.90, "risk_safe": 0.80,
+     "opt_premium_ratio": 0.35, "stop_loss_ratio": 0.60, "priority": "futures_first",
+     "target_basis": "margin"},
+    {"name": "1万_赌徒", "equity0": 10_000, "fill_mode": "close", "entry_score": 3.5,
+     "per_symbol": 0.35, "max_symbol_weight": 0.50, "max_sector_weight": 0.60,
+     "max_concurrent": 999, "risk_liquidate": 0.90, "risk_safe": 0.80,
+     "opt_premium_ratio": 0.75, "stop_loss_ratio": 0.70, "priority": "option_first",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+
+    # ====== 5000档（小资金）期权期货并重 ======
+    {"name": "5000_激进", "equity0": 5_000, "fill_mode": "close", "entry_score": 3.5,
+     "per_symbol": 0.40, "max_symbol_weight": 0.60, "max_sector_weight": 0.70,
+     "max_concurrent": 999, "risk_liquidate": 0.80, "risk_safe": 0.70,
+     "opt_premium_ratio": 0.80, "stop_loss_ratio": 0.40, "priority": "equal",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+    {"name": "5000_基准", "equity0": 5_000, "fill_mode": "next", "entry_score": 4.5,
+     "per_symbol": 0.32, "max_symbol_weight": 0.50, "max_sector_weight": 0.60,
+     "max_concurrent": 999, "risk_liquidate": 0.80, "risk_safe": 0.70,
+     "opt_premium_ratio": 0.60, "stop_loss_ratio": 0.50, "priority": "equal",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+    {"name": "5000_保守", "equity0": 5_000, "fill_mode": "next", "entry_score": 5.5,
+     "per_symbol": 0.32, "max_symbol_weight": 0.40, "max_sector_weight": 0.50,
+     "max_concurrent": 999, "risk_liquidate": 0.80, "risk_safe": 0.70,
+     "opt_premium_ratio": 0.35, "stop_loss_ratio": 0.60, "priority": "equal",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+    {"name": "5000_赌徒", "equity0": 5_000, "fill_mode": "close", "entry_score": 3.5,
+     "per_symbol": 0.40, "max_symbol_weight": 0.60, "max_sector_weight": 0.70,
+     "max_concurrent": 999, "risk_liquidate": 0.80, "risk_safe": 0.70,
+     "opt_premium_ratio": 0.75, "stop_loss_ratio": 0.70, "priority": "option_first",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+
+    # ====== 3000档（极小资金）优先期权，仅玉米期货勉强 ======
+    {"name": "3000_激进", "equity0": 3_000, "fill_mode": "close", "entry_score": 4.0,
+     "per_symbol": 0.54, "max_symbol_weight": 0.60, "max_sector_weight": 0.60,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.80, "stop_loss_ratio": 0.40, "priority": "option_first",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+    {"name": "3000_基准", "equity0": 3_000, "fill_mode": "next", "entry_score": 5.0,
+     "per_symbol": 0.35, "max_symbol_weight": 0.50, "max_sector_weight": 0.50,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.50, "stop_loss_ratio": 0.50, "priority": "option_first",
+     "futures_max": 0, "options_max": None, "target_basis": "margin"},
+    {"name": "3000_保守", "equity0": 3_000, "fill_mode": "next", "entry_score": 6.0,
+     "per_symbol": 0.20, "max_symbol_weight": 0.40, "max_sector_weight": 0.40,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.35, "stop_loss_ratio": 0.60, "priority": "option_first",
+     "futures_max": 0, "options_max": None, "target_basis": "margin"},
+    {"name": "3000_赌徒", "equity0": 3_000, "fill_mode": "close", "entry_score": 4.0,
+     "per_symbol": 0.54, "max_symbol_weight": 0.60, "max_sector_weight": 0.60,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.75, "stop_loss_ratio": 0.70, "priority": "option_first",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+
+    # ====== 1000档（最小资金）纯期权买方，期货完全不可用 ======
+    {"name": "1000_激进", "equity0": 1_000, "fill_mode": "close", "entry_score": 4.0,
+     "per_symbol": 0.50, "max_symbol_weight": 0.55, "max_sector_weight": 0.55,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.80, "stop_loss_ratio": 0.40, "priority": "option_only",
+     "futures_max": 0, "options_max": None, "target_basis": "margin"},
+    {"name": "1000_基准", "equity0": 1_000, "fill_mode": "next", "entry_score": 5.0,
+     "per_symbol": 0.40, "max_symbol_weight": 0.50, "max_sector_weight": 0.50,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.50, "stop_loss_ratio": 0.50, "priority": "option_only",
+     "futures_max": 0, "options_max": None, "target_basis": "margin"},
+    {"name": "1000_保守", "equity0": 1_000, "fill_mode": "next", "entry_score": 6.0,
+     "per_symbol": 0.25, "max_symbol_weight": 0.35, "max_sector_weight": 0.35,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.35, "stop_loss_ratio": 0.60, "priority": "option_only",
+     "futures_max": 0, "options_max": None, "target_basis": "margin"},
+    {"name": "1000_赌徒", "equity0": 1_000, "fill_mode": "close", "entry_score": 4.0,
+     "per_symbol": 0.50, "max_symbol_weight": 0.55, "max_sector_weight": 0.55,
+     "max_concurrent": 999, "risk_liquidate": 0.70, "risk_safe": 0.60,
+     "opt_premium_ratio": 0.75, "stop_loss_ratio": 0.70, "priority": "option_first",
+     "futures_max": 1, "options_max": None, "target_basis": "margin"},
+]
 
 # ================= G14（第92轮）：一档盘口低频快照自采（新浪主连快照，5分钟级、非逐笔） =================
 # 用途：统计真实买卖价差、校准回测滑点、给 G1 纸面提供保守成交价。只采集不改任何评分/撮合口径。

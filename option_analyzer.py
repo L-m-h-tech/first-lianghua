@@ -81,7 +81,14 @@ def implied_vol_profile(fut_row):
     hv20 = fut_row.get("hv20") or config.DEFAULT_HV.get(fut_row.get("cat"), 0.25)
     hv60 = fut_row.get("hv60") or hv20
     page = fut_row.get("page") or {}
-    atm = (page.get("atm_iv") or {}).get(fut_row.get("name")) or {}
+    atm_raw = page.get("atm_iv") or {}
+    # 第107轮：兼容 page_info 的单品种 dict（含 atm_iv 键）与旧 {品种: dict} 映射结构
+    if isinstance(atm_raw, dict) and "atm_iv" in atm_raw:
+        atm = atm_raw  # page_info 已按品种取出单品种 dict
+    elif isinstance(atm_raw, dict):
+        atm = atm_raw.get(fut_row.get("name")) or {}  # 兜底：旧映射结构
+    else:
+        atm = {}
     surf = fut_row.get("iv_surface") or {}
     market_iv = surf.get("main_atm_iv")
     if atm.get("atm_iv"):

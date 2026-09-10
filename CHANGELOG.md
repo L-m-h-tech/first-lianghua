@@ -3,6 +3,58 @@
 本项目按"轮"迭代，版本号 `主.轮.补丁`，与 `VERSION` 对齐；详细过程见 `上下文摘要.md`。
 铁律：生产纯标准库 + 直接依赖（requests/uiautomation/websocket-client；第94轮决策门收编 lxml 为单例外，缺失自动回退 stdlib）；默认行为可回退；每轮合成断言 + 真实冒烟 + 负结果诚实呈现。
 
+## [0.99.2] — 2026-09-09 · 第102轮 15个纸面影子账户（5档资金×3风格）+ 期权多腿撮合 + 多账户对比查看
+- **① 15个影子账户（config.PAPER_ACCOUNTS）**：5档资金（10万/1万/5000/3000/1000）× 3风格（激进/基准/保守）；
+  每账户独立 SQLite（data/paper_accounts/paper_{name}.db，方案B零schema迁移、equity UNIQUE不冲突、restore天然隔离）。
+  参数按资金能力实测设计（一手保证金≤3000玉米/≤5000豆粕等小合约/≤8000纸浆等/≤12000菜油铁矿等/≤2万镍糖等）：
+  entry_score 资金越少越高（小资金只做最强信号，10万~3.0-5.0，1000档4.0-6.0）；
+  per_symbol 资金越少越集中（大资金15-30%/小资金25-50%）；risk_liquidate 小资金更早强平（0.70-1.00）；
+  fill_mode 激进close/基准保守next；激进档 max_concurrent 无上限。
+- **② 期权参与方式按资金档分流（priority）**：option_only（1000档纯期权，期货保证金不足）+ option_first
+  （3000档期权优先，仅无期权机会才尝试玉米期货）+ equal（5000档期权期货并重）+ futures_first（1万/10万档
+  期货优先期权补充）。最小开仓数整数手（min_lots=1），全天不下小数手。
+- **③ 期权撮合引擎（paper_broker.on_cycle_options）**：单腿买方（call/put）为主，all_pass 才执行；
+  成交价=期权链 ask/mid/last（复用 OptionChainCache），期权乘数=标的期货乘数；权利金=price×multiplier；
+  买方不需额外保证金（margin=权利金）；三触发离场（标的综合分反转<exit_score / 权利金止损≥stop_loss_ratio
+  激进0.40基准0.50保守0.60 / 临近到期 opt_expiry_days 前自动平仓）；独立资金池（opt_equity0）与期货权益互不干扰。
+- **④ storage 新增期权纸面表**：paper_option_trades（account维度，整数手，含 strike/cp/expiry/option_code/
+  legs_json）+ paper_option_equity（UNIQUE(account,ts)）；全部纯增量、不改现有 paper_orders/trades/equity。
+- **⑤ 报告/看板多账户查看**：report.py paper_block 循环15账户（带账户名/entry/priority）；每账户独立
+  reports/paper_account_{name}.txt；新增 __paper_cmp__「纸面账户对比」页签（读 paper_compare.json 渲染
+  按资金档分组对比表：初始资金/动态权益/收益率/风险度/期货持仓/期权持仓/期权权益/已实现/手续费/成交档/参与模式）；
+  图表看板新增 ⑤a 多账户净值对比（归一化，颜色按资金档红/绿/蓝/紫/粉、实线激进虚线基准保守）+ 多账户回撤对比。
+- **验证**：pytest 838/838 全绿（改一处测试断言适配【纸面·基准】新标题）；`main.py --once` 冒烟通过——
+  15账户全部初始化、10万_激进当轮开仓（风险度17.55%）、15份 paper_account_*.txt + paper_compare.json 生成、
+  调试浏览器自动拉起且随 main 退出自动关闭。
+
+## [0.99.1] — 2026-09-09 · 第101轮 浏览器页面直读全面增强（main 自动调试模式 + OpenVlab REST 全量 + 交易可查 5 类新数据）
+- **① main 启动自动拉起调试浏览器（需求⑦）**：config.py 新增 `BROWSER_DEBUG_LAUNCH = True`；main.py 新增
+  `startup_browser_debug()`——探测 9222/9223 已监听则跳过；否则以 `--remote-debugging-port=9222
+  --user-data-dir=%TEMP%/ovl_jykc_profile` 拉起 Edge/Chrome 打开 OpenVlab市场页+交易可查（短轮询确认端口，
+  最多15s），失败只告警不影响主链路。接入启动流程（与 THS_AUTO_LAUNCH 并列，`--no-launch` 可关）。
+  实测日志「调试浏览器已就绪（9222）」；端口占用时幂等跳过。
+- **② OpenVlab 全量品种 REST 兜底**：`parse_openvlab_ctamap()`——`/api/ctamap-all?add_overseas=true`
+  （83 品种，复用装置侧 openvlab_collector 已实测端点）→ 57 个国内标准品种 atm_iv 全量
+  （atm_iv/percentile/1dchg/skew/RV22/carry，`_map_name` 标准化、prodUnd 空跳过）；`refresh()` 增
+  `_refresh_openvlab_rest()` REST 优先、CDP 兜底、失败静默。**实测 57 品种 vs 原 CDP 主表仅 7 品种**。
+- **③ 交易可查 5 类新数据解析**：`parse_jiaoyikecha` 新增 `external` 外盘比价 17 品种（time/base/last/dev）、
+  `rating` 乾坤归一综合评级 76 条（contract/grade/price/chg + variety 标准品种名，重复块去重）、
+  `fundamentals` 最新基本面 10 项（item/metric/value/base/chg/date）、`feed` 信息流滚动消息窗口、
+  `mood` 市场氛围标签（偏多/震荡/偏空；SVG 仪表盘数值 0~100 不渲染为文本故只取方向标签）。
+- **④ analyzer 报告行扩展（detail_lines）**：「页面数据」行兼容 ctamap 字段（合约 code/百分位/偏度）；
+  新增「页面评级」行（按 variety 精确匹配，避免"铝"误匹配"氧化铝/铝合金"）、「外盘」行（_EXT_REL 精确映射：
+  黄金↔美黄金/铜↔伦铜/原油↔布原油等）、「基本面」行（同名项）。
+- **⑤ 调试浏览器生命周期管理（main 退出时跟随关闭）**：三重保障——
+  a) **Job Object**：把浏览器进程挂入 Windows Job Object（KILL_ON_JOB_CLOSE），
+     main 进程被强杀/PyCharm 停止时系统自动终止浏览器进程树（实测 9222 端口关闭确认）；
+  b) **finally 块**：正常退出/KeyboardInterrupt/--once 时显式 taskkill（PID/T/F）；
+  c) **看门狗兜底**：心跳超时 os._exit(3) 前也调用 close_debug_browser()；
+  仅管理"main 自己拉起的浏览器"（Popen 成功时记录 PID），端口已占用跳过的不误关。
+- **验证**：离线 cache/page_dump/ 两页文本逐项核对（external17/rating76/fundamentals10/feed29/mood）；
+  在线实测 ctamap-all HTTP 200→57 品种；重启 main 后第 1 轮即带全量数据，报告出现「页面评级」「外盘」
+  新行；**pytest 838/838 全绿**；调试浏览器由 main 内部拉起（系统进程不计账号并发），不改变 start_all.bat 3 进程结构；
+  强杀 main.py 实测浏览器跟随关闭。
+
 ## [0.96.0] — 2026-09-08 · 第96轮 结合「网页学习探索」三网站深度优化数据层（openvlab_map + jiaoyikecha_collector + 资源地图）
 - **① tools/openvlab_map.py（OpenVLab 全市场期权波动率地图，匿名 GET）**：`/api/ctamap-all?add_overseas=true` 83 品种（含海外）——ATM隐波/隐波百分位/1日变化/偏度/偏度百分位/RV22/carry/frontfwd_mom。落 reports/openvlab_map.txt/.json（看板研究报告页签自动可见）+ cache/openvlab_map.db（option_vol_map 按 sym 当日幂等）；与本地 iv_surface.json（T链反推 ATM IV）交叉校验，偏差>2vol 标注。**真实采集 83 品种验证通过**（按隐波百分位排序，可做全市场隐波异动扫描）。
 - **② tools/jiaoyikecha_collector.py（jiaoyikecha 交易可查，会话三步）**：GET 首页 → POST /ajax/session.php 拿 PHPSESSID（http_client A4 会话持久化）→ 带参 POST 数据端点。真实采集：all_varieties 89 品种 / daily_wr 76 仓单日报（量化侧新仓单源）/ hg 77 支撑压力位 / broker_trend 70 席位资金动向 / longhu 10 龙虎榜 / niuxiong 10 牛熊榜。落 reports/jykt_*.json + reports/jykt_summary.txt + cache/jiaoyikecha.db（jykt_wr/hg/broker_trend/longhu 幂等）；礼貌限速 0.6~1.2s；A1 探针记录。

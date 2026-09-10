@@ -13,6 +13,8 @@
   * 东财 push2his（具体合约兜底）：有全周期，但无主力连续、secid=市场号.具体合约；
     本机两晚实测该行情域名按 IP 临时限流/直接断连（RemoteDisconnected），故仅在新浪与
     通达信都失败时兜底；保留低并发+全局限流+镜像轮换+熔断，任何失败软降级 []。
+    第113轮实测发现封锁为**Python http 客户端 TLS 指纹级**（非IP级）——浏览器
+    （真实TLS指纹）fetch 同域名全部周期正常；故新增 CDP 浏览器 fetch 作为最终兜底。
     注意：东财 datacenter 基本面域名、push2 实时快照域名与此不同、实测稳定，互不影响。
   * 通达信 pytdx（可选冗余，tdx_bars.py）：公共 7709 只同步股票、期货所在 7727 不可达，
     probe() 自动探测，确认能取期货才启用，不可用零成本跳过；未装 pytdx 也不影响运行。
@@ -20,6 +22,7 @@
 能力天花板（诚实声明）：免费源无历史 L2 逐笔；新浪主连是比例复权连续序列（换月点为近似），
 具体合约真实价格由东财/通达信在可用时补充；分钟长期历史靠常驻自采滚动积累。
 """
+import json
 import threading
 import time
 from datetime import datetime, timedelta
@@ -115,6 +118,88 @@ def fetch_sina_minute(sina_code, ex, period, lmt=None):
 
 # ---------------- 东财采集器（线程安全：全局限流 + 镜像轮换 + 退避重试 + 熔断） ----------------
 
+def _cdp_eval(ws_url, expr, timeout=15):
+    """在调试浏览器页签里执行 awaitPromise 表达式（fetch 跨域用浏览器真实 TLS 指纹）。
+    供东财 kline 兜底：push2his 对 Python http 客户端按 TLS 指纹封锁(RemoteDisconnected)，
+    而浏览器环境实测可正常访问（第113轮验证）；CDP 不可用/失败返回 None。"""
+    import json as _json
+    import websocket as _ws
+    try:
+        ws = _ws.create_connection(ws_url, timeout=timeout, suppress_origin=True)
+        try:
+            ws.send(_json.dumps({"id": 1, "method": "Runtime.evaluate",
+                                 "params": {"expression": expr,
+                                            "returnByValue": True, "awaitPromise": True}}))
+            while True:
+                msg = _json.loads(ws.recv())
+                if msg.get("id") == 1:
+                    return msg.get("result", {}).get("result", {}).get("value")
+        finally:
+            ws.close()
+    except Exception:
+        return None
+
+
+def _find_cdp_page():
+    """找调试浏览器（9222/9223/9225）的一个页面 tab，返回 webSocketDebuggerUrl 或 None。"""
+    import socket
+    for port in (9222, 9223, 9225):
+        try:
+            s = socket.create_connection(("127.0.0.1", port), 1)
+            s.close()
+        except OSError:
+            continue
+        try:
+            import json as _json
+            import urllib.request
+            tabs = _json.loads(urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/json", timeout=2).read().decode("utf-8", "replace"))
+            page = next((t for t in tabs if t.get("type") == "page"), None)
+            if page:
+                return page.get("webSocketDebuggerUrl")
+        except Exception:
+            continue
+    return None
+
+
+def _em_kline_via_cdp(url, sym, ex, yy, mm, period):
+    """东财 kline 兜底：通过 CDP 调试浏览器 fetch（真实 TLS 指纹绕过 Python 客户端封锁）。
+    openvlab.cn 页签的 CSP 拦截跨域 fetch，故创建/复用空白页签（about:blank）做 fetch。
+    成功返回 bar 列表；任何失败/无浏览器返回 []。"""
+    # 优先创建独立空白页签（无 CSP 限制，与 openvlab 互不影响）；失败则回退到现有页签
+    ws_url = None
+    try:
+        import urllib.request as _urllib_req
+        import urllib.parse as _urllib_parse
+        _req = _urllib_req.Request(
+            "http://127.0.0.1:9222/json/new?" + _urllib_parse.quote("about:blank"), method="PUT")
+        _t = json.loads(_urllib_req.urlopen(_req, timeout=4).read().decode("utf-8", "replace"))
+        ws_url = _t.get("webSocketDebuggerUrl") if isinstance(_t, dict) else None
+    except Exception:
+        pass
+    if not ws_url:
+        ws_url = _find_cdp_page()
+    if not ws_url:
+        return []
+    url = url.replace("http://push2his.eastmoney.com", "https://push2his.eastmoney.com")
+    # 空白页无 CSP，fetch 无需 mode 配置；AbortController 限时 20s 避免挂起
+    expr = ("(async()=>{const c=new AbortController();const t=setTimeout(()=>c.abort(),20000);"
+            "try{var r=await fetch(%s,{signal:c.signal});clearTimeout(t);"
+            "var d=await r.json();return JSON.stringify((d&&d.data&&d.data.klines)||[]);"
+            "}catch(e){clearTimeout(t);return 'ERR '+e.name+' '+e.message}})()" % json.dumps(url))
+    try:
+        raw = _cdp_eval(ws_url, expr, timeout=25)
+    except Exception:
+        return []
+    if not raw or str(raw).startswith("ERR"):
+        return []
+    try:
+        lines = json.loads(raw)
+    except Exception:
+        return []
+    bars = [b for ln in lines if (b := _parse_line(ln, sym, ex, yy, mm, period))]
+    return bars
+
 class MinuteBarFetcher:
     def __init__(self):
         self.lock = threading.Lock()
@@ -158,9 +243,11 @@ class MinuteBarFetcher:
         return time.time() < self.cooldown_until
 
     def fetch(self, sym, ex, yy, mm, period, lmt):
-        """拉取某具体合约某周期最近 lmt 根分钟K，升序返回 bar dict 列表；任何失败软降级为 []。"""
+        """拉取某具体合约某周期最近 lmt 根分钟K，升序返回 bar dict 列表；任何失败软降级为 []。
+        注意：开头不因 Python 连接熔断(in_cooldown)短路——熔断只作用于 http 直连，CDP 浏览器
+        兜底是独立通道，阻塞期仍应尝试浏览器 fetch。"""
         secid = em_secid(sym, ex, yy, mm)
-        if not secid or self.in_cooldown:
+        if not secid:
             return []
         period, lmt = int(period), int(lmt)
         url_tpl = ("http://{host}/api/qt/stock/kline/get?secid=" + secid
@@ -168,12 +255,13 @@ class MinuteBarFetcher:
                      "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57")
         backoff = config.MINUTE_RETRY_WAIT
         last_note = ""
+        # 熔断/全部失败统一走到函数末尾的 CDP 浏览器兜底（CDP 是独立通道，不受 Python 连接熔断影响）
         for _round in range(config.MINUTE_RETRY):
             if self.in_cooldown:
-                return []
+                break
             for host in self._ordered_hosts():
                 if self.in_cooldown:
-                    return []
+                    break
                 self._throttle()
                 try:
                     resp = http.get(
@@ -200,9 +288,19 @@ class MinuteBarFetcher:
                     time.sleep(0.3 if conn_err else backoff)
                     if not conn_err:
                         backoff = min(backoff * 2, 8.0)
+            if self.in_cooldown:
+                break
             time.sleep(backoff)
             backoff = min(backoff * 2, 8.0)
-        LOG.debug("分钟K获取失败 %s %s 周期%d: %s", sym, secid, period, last_note)
+        LOG.debug("分钟K获取失败 %s %s 周期%d（Python http）: %s，尝试 CDP 浏览器兜底", sym, secid, period, last_note)
+        # 第113轮：东财 push2his 对 Python http 客户端按 TLS 指纹封锁（RemoteDisconnected），
+        # 浏览器（真实 TLS 指纹）实测可正常访问；调用调试浏览器 fetch 东财 kline 作为最终兜底。
+        cdp_bars = _em_kline_via_cdp(
+            url_tpl.format(host=config.MINUTE_EM_HOSTS[0]), sym, ex, yy, mm, period)
+        if cdp_bars:
+            self._throttle()
+            self._note_success()
+            return cdp_bars
         return []
 
 

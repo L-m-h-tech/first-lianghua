@@ -98,11 +98,15 @@ class Portfolio:
                  max_symbol_weight=0.30, max_sector_weight=0.60, risk_liquidate=1.0,
                  risk_safe=0.80, default_margin=0.12, max_concurrent=12,
                  fee_rate=0.00005, slip_rate=0.0001, use_real_fees=True, sector_of=None,
-                 calibrator=None, risk_sizing=None, risk_gross=1.0):
+                 calibrator=None, risk_sizing=None, risk_gross=1.0, target_basis=None):
         self.equity0 = float(equity0)
         self.margin_table = margin_table or {}
         self.fee_table = fee_table or {}
         self.sizing = sizing
+        # 第110轮（2026-09-10）：目标手数口径。None=等名义（现网/回测默认，逐字节等价旧版）；
+        # "margin"=保证金口径（目标手数 = 权益×per_symbol ÷ 一手保证金+开仓费，对齐 QuantConnect LEAN
+        # 购买力语义），供小资金纸面账户使用——等名义下"目标名义 < 一手名义"的低档位账户也能开 1 手。
+        self.target_basis = target_basis
         # 第41轮 G26续：横截面风险型目标权重（inv_vol/erc）。None=关闭、手数决策逐字节等价旧版；
         # 开启后由引擎在每个重估点用"仅当前bar之前"的收益序列算 {sym:目标名义权重} 经 set_risk_weights 注入，
         # 该宇宙内品种按权重定目标名义、宇宙外/未算出的品种安全回退等名义 per_symbol。
@@ -221,10 +225,23 @@ class Portfolio:
                 total += self._price_of(pos, prices) * pos.mult * pos.lots
         return total
 
+    def sector_margin(self, sector, prices=None):
+        """同板块持仓的保证金占用总额（与 sector_notional 对称，用于 target_basis='margin' 模式）。"""
+        prices = prices or self._last_prices
+        total = 0.0
+        for pos in self.positions.values():
+            if pos.sector == sector:
+                px = self._price_of(pos, prices)
+                rate = pos.margin_rate or self.default_margin
+                total += px * pos.mult * pos.lots * rate
+        return total
+
     # ---------- 手数决策 ----------
     def decide_lots(self, sym, direction, price, *, atr=None, score=None, prices=None,
-                    parts=None):
-        """返回 (手数≥0, 未成交原因或None)。约束链：策略目标 → 名义/板块上限 → 可用资金/持仓数。"""
+                    parts=None, min_lots=1):
+        """返回 (手数≥0, 未成交原因或None)。约束链：策略目标 → 名义/板块上限 → 可用资金/持仓数。
+        min_lots: 最小下单量（第102轮：默认1手整数；期权买方在 paper_broker 层直接指定 lots=1，
+        不走此方法。此参数仅用于未来扩展，当前保持向后兼容）。"""
         prices = prices or self._last_prices
         mult = self.mult_of(sym)
         if mult <= 0 or price <= 0:
@@ -235,6 +252,15 @@ class Portfolio:
         eq = self.equity(prices)
         per_lot_notional = price * mult
 
+        # 第110轮（2026-09-10）：保证金口径 —— 目标手数 = 权益×per_symbol ÷ 一手保证金+开仓费
+        # 与等名义（notional 口径）解耦：target_basis=None 逐字节等价旧版；"margin" 对齐 LEAN 购买力语义。
+        if self.target_basis == "margin":
+            rate_mb = self.margin_rate_of(sym)
+            fee_mb = self.fee_yuan(sym, price, "open", 1)
+            per_lot_margin = price * mult * rate_mb + fee_mb
+            if per_lot_margin <= 0:
+                per_lot_margin = per_lot_notional  # 极端兜底，不误入除零
+
         # 1) 策略目标手数（原始，未取整）
         if self.sizing == "equal_risk" and atr and atr > 0:
             per_lot_risk = self.stop_atr * atr * mult     # 单手打到止损的最大亏损
@@ -242,9 +268,9 @@ class Portfolio:
         elif self.sizing == "score" and score is not None:
             band = score_band(score)
             w = self.score_weights.get(band, self.per_symbol)
-            raw = eq * w / per_lot_notional
+            raw = eq * w / (per_lot_margin if self.target_basis == "margin" else per_lot_notional)
         else:  # equal_notional（也是其余模式数据不足时的回退）
-            raw = eq * self.per_symbol / per_lot_notional
+            raw = eq * self.per_symbol / (per_lot_margin if self.target_basis == "margin" else per_lot_notional)
         # 第41轮 G26续：横截面风险型权重覆盖目标名义（仅 risk_sizing 开启且该品种在最新权重宇宙内）；
         # 宇宙外/尚未估出 -> 保留上面的等名义 raw（安全回退，缺省 risk_sizing=None 时整段不进入、逐字节等价旧版）
         self._last_target_weight = None
@@ -261,17 +287,25 @@ class Portfolio:
             if _ci.get("calibrated"):
                 self._last_calib_mult = float(_ci["mult"])
                 raw *= self._last_calib_mult
-        if raw < 1.0:
-            return 0, "策略目标不足1手(高价品种/名义权重偏小)"
+        if raw < min_lots:
+            return 0, "策略目标不足%d手(高价品种/名义权重偏小)" % int(min_lots)
 
         # 2) 单品种名义上限
-        cap_symbol = self.max_symbol_weight * eq / per_lot_notional
+        if self.target_basis == "margin":
+            # 保证金口径：单品种保证金占用 ≤ max_symbol_weight × 权益
+            cap_symbol = self.max_symbol_weight * eq / per_lot_margin if per_lot_margin > 0 else 0
+        else:
+            cap_symbol = self.max_symbol_weight * eq / per_lot_notional
         # 3) 板块名义上限（扣掉同板块已占用名义）
         sector = self.sector_of.get(sym)
         cap_sector = math.inf
         if sector is not None:
-            room = self.max_sector_weight * eq - self.sector_notional(sector, prices)
-            cap_sector = max(0.0, room) / per_lot_notional
+            if self.target_basis == "margin":
+                room = self.max_sector_weight * eq - self.sector_margin(sector, prices)
+                cap_sector = max(0.0, room) / per_lot_margin if per_lot_margin > 0 else 0
+            else:
+                room = self.max_sector_weight * eq - self.sector_notional(sector, prices)
+                cap_sector = max(0.0, room) / per_lot_notional
         # 4) 可用资金：每手需保证金 + 开仓费（留 1% 现金缓冲，避免取整临界）
         rate = self.margin_rate_of(sym)
         need_per_lot = price * mult * rate + self.fee_yuan(sym, price, "open", 1)
@@ -283,6 +317,17 @@ class Portfolio:
         if lots <= 0:
             return 0, binding[0]
         return lots, None
+
+    # ---------- 期权 helper（第102轮） ----------
+    def option_multiplier(self, sym):
+        """返回标的期货合约乘数（供期权权利金/保证金计算）。复用多品种的 mult_of()。"""
+        return self.mult_of(sym)
+
+    def option_fee(self, sym, lots=1, premium=None):
+        """期权买方手续费：premium × lots × fee_rate（fee_rate 来自实例配置）。"""
+        if premium is None:
+            return 0.0
+        return premium * lots * self.fee_rate
 
     # ---------- 开/平仓 ----------
     def open(self, sym, name, sector, direction, price, dt, *, atr=None, score=None,

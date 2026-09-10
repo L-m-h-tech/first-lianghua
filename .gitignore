@@ -49,3 +49,9 @@ backup/*.before_restore_*
 
 # ===== 隐私：券商原始导出（含投资者账号），本地保留不入库 =====
 data/*.xlsx
+
+# ===== 隐私/运行产物：纸面账户库（含全部账户持仓与资金数据，子目录需显式覆盖 data/*.db 模式的盲区）=====
+data/paper_accounts/
+data/xcqihuo_raw/
+data/xcqihuo_preview/
+data/legacy_galaxy/

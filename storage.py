@@ -258,6 +258,35 @@ class MonitorDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_pe_ts ON paper_equity(created_real);
 
+                -- 第102轮：15个影子账户期权纸面交易（独立账户维度）
+                CREATE TABLE IF NOT EXISTS paper_option_trades(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL, account TEXT NOT NULL,
+                    pos_ref TEXT, sym TEXT, name TEXT, variety TEXT,
+                    action TEXT, side TEXT, direction INTEGER,
+                    lots INTEGER DEFAULT 1,
+                    strike REAL, cp TEXT, expiry TEXT,
+                    entry_prem REAL, fill_prem REAL, fill_ts TEXT,
+                    option_code TEXT, legs_json TEXT,
+                    notional REAL, margin_used REAL DEFAULT 0,
+                    fee_yuan REAL DEFAULT 0, realized_yuan REAL DEFAULT 0,
+                    status TEXT, entry_score REAL, fill_mode TEXT,
+                    created_real REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_pot_account ON paper_option_trades(account, created_real);
+                CREATE INDEX IF NOT EXISTS idx_pot_pos ON paper_option_trades(pos_ref);
+
+                CREATE TABLE IF NOT EXISTS paper_option_equity(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL, account TEXT NOT NULL,
+                    static_equity REAL, float_pnl REAL, equity REAL,
+                    margin_used REAL DEFAULT 0, available REAL,
+                    risk_degree REAL, drawdown REAL,
+                    n_positions INTEGER, realized REAL, fees_paid REAL,
+                    created_real REAL, UNIQUE(account, ts)
+                );
+                CREATE INDEX IF NOT EXISTS idx_poe_account ON paper_option_equity(account, created_real);
+
                 CREATE TABLE IF NOT EXISTS tick_snapshots(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sym TEXT NOT NULL, variety TEXT,
@@ -971,6 +1000,85 @@ class MonitorDB:
             if r["status"] in out:
                 out[r["status"]] = int(r["n"])
         return out
+
+    # ---------------- 第102轮：期权纸面交易（paper_option_trades/paper_option_equity） ----------------
+
+    def insert_paper_option_trade(self, account, t):
+        """落一条期权纸面成交（开/平各一条；account=账户名）。返回新行 id；字段缺失安全兜底。"""
+        now_real = datetime.now().timestamp()
+        with self.lock:
+            cur = self.conn.execute(
+                """INSERT INTO paper_option_trades(ts,account,pos_ref,sym,name,variety,action,side,
+                   direction,lots,strike,cp,expiry,entry_prem,fill_prem,fill_ts,option_code,legs_json,
+                   notional,margin_used,fee_yuan,realized_yuan,status,entry_score,fill_mode,created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(t.get("ts"))[:19], str(account)[:24], str(t.get("pos_ref") or "")[:40],
+                 str(t.get("sym") or "")[:16], str(t.get("name") or "")[:24],
+                 str(t.get("variety") or "")[:24], str(t.get("action") or "")[:20],
+                 str(t.get("side") or "")[:8], t.get("direction"),
+                 int(t.get("lots") or 1), t.get("strike"), str(t.get("cp") or "")[:4],
+                 str(t.get("expiry") or "")[:8], t.get("entry_prem"), t.get("fill_prem"),
+                 str(t.get("fill_ts") or "")[:19] if t.get("fill_ts") else None,
+                 str(t.get("option_code") or "")[:40],
+                 _json(t["legs"]) if t.get("legs") is not None else None,
+                 t.get("notional"), t.get("margin_used"), t.get("fee_yuan"),
+                 t.get("realized_yuan"), str(t.get("status") or "open")[:12],
+                 t.get("entry_score"), str(t.get("fill_mode") or "")[:8], now_real))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def paper_open_option_positions(self, account):
+        """返回某账户当前仍未平仓的【开仓期权成交】（有 open 无对应 close），供重启恢复。"""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT * FROM paper_option_trades t
+                   WHERE t.account=? AND t.side='open' AND NOT EXISTS(
+                       SELECT 1 FROM paper_option_trades c
+                       WHERE c.pos_ref=t.pos_ref AND c.side='close' AND c.account=t.account)
+                   ORDER BY t.id ASC""", (str(account),)).fetchall()
+        return [dict(r) for r in rows]
+
+    def paper_option_realized_fees(self, account):
+        """某账户期权历史已实现净盈亏与手续费（开仓费计入平仓 realized，直接累加成交金额）。"""
+        with self.lock:
+            row = self.conn.execute(
+                """SELECT COALESCE(SUM(realized_yuan),0.0) AS realized,
+                          COALESCE(SUM(fee_yuan),0.0) AS fees
+                   FROM paper_option_trades WHERE account=?""", (str(account),)).fetchone()
+        return float(row["realized"]), float(row["fees"])
+
+    def insert_paper_option_equity(self, account, snap):
+        """落某账户一轮期权权益快照（account+ts 唯一，重跑幂等）。"""
+        now_real = datetime.now().timestamp()
+        with self.lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO paper_option_equity(ts,account,static_equity,float_pnl,
+                   equity,margin_used,available,risk_degree,drawdown,n_positions,realized,fees_paid,
+                   created_real)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(snap.get("ts"))[:19], str(account)[:24], snap.get("static_equity"),
+                 snap.get("float_pnl"), snap.get("equity"), snap.get("margin_used"),
+                 snap.get("available"), snap.get("risk_degree"), snap.get("drawdown"),
+                 int(snap.get("n_positions") or 0), snap.get("realized"), snap.get("fees_paid"),
+                 now_real))
+            self.conn.commit()
+
+    def paper_option_equity_series(self, account, limit=2000):
+        """某账户最近 limit 条期权权益快照、按时间升序返回。"""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT * FROM (
+                       SELECT * FROM paper_option_equity WHERE account=? ORDER BY id DESC LIMIT ?
+                   ) ORDER BY id ASC""", (str(account), int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    def paper_option_trades_recent(self, account, limit=500):
+        """某账户最近 limit 条期权成交。"""
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT * FROM paper_option_trades WHERE account=? ORDER BY id DESC LIMIT ?""",
+                (str(account), int(limit))).fetchall()
+        return [dict(r) for r in rows]
 
     # ---------------- 信号到期评估 ----------------
 

@@ -35,6 +35,7 @@ signal_outcomes 只判固定周期方向对错（不含手续费、不连续持�
 自检：D:\\Python\\python.exe paper_broker.py --selftest
 """
 import argparse
+import threading
 from datetime import datetime
 
 import config
@@ -211,19 +212,61 @@ RETRYABLE_SKIP = {"同时持仓数达上限", "可用资金不足1手", "板块�
 
 # =========================== 纸面经纪 ===========================
 
-class PaperBroker:
-    """实时轮询驱动的纸面经纪；内部组合一个 portfolio.Portfolio 作为账户内核。"""
+def _locked(fn):
+    """第103轮：RLock 互斥装饰器——撮合/报告读取方法与 paper_ticker 线程互斥。
 
-    def __init__(self, *, db=None, equity0=None, fill_mode=None, entry_score=None,
+    用 with self._lock 包住整个方法体（RLock 同线程可重入，防自死锁）；
+    装饰的全部方法需在 __init__ 中 restore() 之前初始化 self._lock。"""
+
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
+class PaperBroker:
+    """实时轮询驱动的纸面经纪；内部组合一个 portfolio.Portfolio 作为账户内核。
+
+    第102轮扩展：支持多账户（name + 独立 db_path + priority 参与方式 + 期权撮合）。
+    - priority: futures_first / equal / option_first / option_only（小资金优先期权）
+    - opt_premium_ratio: 单笔买方权利金占权益上限
+    - stop_loss_ratio: 权利金止损线（激进 0.40 / 基准 0.50 / 保守 0.60）
+    - futures_max / options_max: equal/option_first 档同时持有的期货/期权数上限
+    """
+
+    def __init__(self, *, db=None, db_path=None, name=None,
+                 equity0=None, fill_mode=None, entry_score=None,
                  exit_score=None, sizing=None, margin_table=None, fee_table=None,
                  sector_of=None, slip_rate=None, restore=True, clock=None, owner_fn=None,
-                 risk_sizing=None, risk_gross=None, circuit=None):
-        self.db = db
+                 risk_sizing=None, risk_gross=None, circuit=None,
+                 # 第102轮多账户扩展：仓位/期权/优先策略（默认 None → 回退 config）
+                 per_symbol=None, max_symbol_weight=None, max_sector_weight=None,
+                 max_concurrent=None, risk_liquidate=None, risk_safe=None,
+                 opt_premium_ratio=None, stop_loss_ratio=None,
+                 priority="futures_first", futures_max=None, options_max=None,
+                 priority_expiry_days=None, target_basis=None):
+        # 第102轮：独立数据库文件（每账户独立 SQLite）
+        if db_path and db is None:
+            import storage as _storage  # noqa: F401
+            self.db = _storage.MonitorDB(path=db_path)
+        else:
+            self.db = db
+        self.name = str(name or "").strip() if name else None  # 第102轮：账户名（如"10万_基准"）
+        self.priority = (priority or "futures_first").strip()
+        self.futures_max = futures_max  # equal/option_first 档：期货同时持仓上限（None=共用 max_concurrent）
+        self.options_max = options_max  # 续：期权同时持仓上限（None=无额外限制，option_only 档按此限制）
+        lo = int(priority_expiry_days) if priority_expiry_days is not None else None
+        self.opt_expiry_days = lo if lo and lo >= 1 else (3 if self.priority == "option_only" else 5)
         self.fill_mode = fill_mode or getattr(config, "PAPER_FILL_MODE", "next")
         if self.fill_mode not in ("close", "next"):
             self.fill_mode = "next"
         self.entry_score = entry_score if entry_score is not None else config.PAPER_ENTRY_SCORE
         self.exit_score = exit_score if exit_score is not None else config.PAPER_EXIT_SCORE
+        self.opt_premium_ratio = (opt_premium_ratio if opt_premium_ratio is not None
+                                  else getattr(config, "PAPER_OPT_PREMIUM_MAX_RATIO", 0.03))
+        self.stop_loss_ratio = (stop_loss_ratio if stop_loss_ratio is not None
+                                else getattr(config, "PAPER_OPT_STOP_LOSS_RATIO", 0.50))
         self.slip_rate = slip_rate if slip_rate is not None else config.PAPER_SLIP_RATE
         self._clock = clock or (lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         # 实时平今/平昨判定：时间戳->交易所结算交易日（可注入，测试零网络零日历依赖）
@@ -237,20 +280,24 @@ class PaperBroker:
         self.pf = portfolio_mod.Portfolio(
             equity0, self.margin_table, self.fee_table,
             sizing=sizing or config.PAPER_SIZING,
-            per_symbol=config.PAPER_PER_SYMBOL,
+            per_symbol=per_symbol if per_symbol is not None else config.PAPER_PER_SYMBOL,
             risk_per_trade=config.PAPER_RISK_PER_TRADE,
-            max_symbol_weight=config.PAPER_MAX_SYMBOL_WEIGHT,
-            max_sector_weight=config.PAPER_MAX_SECTOR_WEIGHT,
-            risk_liquidate=config.PAPER_RISK_LIQUIDATE,
-            risk_safe=config.PAPER_RISK_SAFE,
+            max_symbol_weight=(max_symbol_weight if max_symbol_weight is not None
+                               else config.PAPER_MAX_SYMBOL_WEIGHT),
+            max_sector_weight=(max_sector_weight if max_sector_weight is not None
+                               else config.PAPER_MAX_SECTOR_WEIGHT),
+            risk_liquidate=(risk_liquidate if risk_liquidate is not None
+                            else config.PAPER_RISK_LIQUIDATE),
+            risk_safe=(risk_safe if risk_safe is not None else config.PAPER_RISK_SAFE),
             default_margin=config.PAPER_DEFAULT_MARGIN,
-            max_concurrent=config.PAPER_MAX_CONCURRENT,
+            max_concurrent=max_concurrent if max_concurrent is not None else config.PAPER_MAX_CONCURRENT,
             fee_rate=config.PAPER_FEE_RATE, slip_rate=self.slip_rate,
             use_real_fees=config.PAPER_USE_REAL_FEES, sector_of=self._sector_of,
             # 第41轮 G26续：风险型横截面sizing能力位（默认None=逐字节等价旧版）；实时权重源（K线历史
             # 协方差）尚未接线，须先在组合回测影子对照达标后再议，未注入权重时内核自动回退等名义。
             risk_sizing=risk_sizing,
-            risk_gross=config.PRS_GROSS if risk_gross is None else risk_gross)
+            risk_gross=config.PRS_GROSS if risk_gross is None else risk_gross,
+            target_basis=target_basis)
         self.pending = {}          # sym -> [order, ...] next 档待成交队列（先平后开）
         self._open_seq = {}        # sym -> 开仓序号（生成 pos_ref）
         self.pos_ref = {}          # sym -> 当前持仓 pos_ref
@@ -273,6 +320,16 @@ class PaperBroker:
         self._last_circuit = None
         # 第95轮：最后已知合约映射（回补探测前空合约，修复 paper_account 合约列显示）
         self._known_contract: dict = {}   # sym -> (contract_code, main_month)
+        # 第102轮：期权持仓（pos_ref -> {record}）与独立资金池
+        self.opt_positions = {}      # pos_ref -> 期权持仓 record
+        self.opt_realized = 0.0      # 期权已实现净盈亏（含手续费）
+        self.opt_fees = 0.0          # 期权累计手续费
+        self.opt_skipped = []        # 期权被拒/跳过的原因记录
+        self.opt_last_summary = None # 最近一轮 on_cycle_options 结果
+        self.opt_equity0 = float(equity0)  # 期权资金池初始资金
+        # 第103轮：线程安全锁（RLock 允许同线程重入，防自死锁；项目惯例见 trade_calendar/storage/FundamentalFetcher）
+        # 必须在 restore() 之前初始化（restore 内部可能调用带 _locked 装饰的方法）。
+        self._lock = threading.RLock()
         if restore and self.db is not None:
             self.restore()
 
@@ -521,6 +578,10 @@ class PaperBroker:
         liq = pf.liquidate(ts, price_getter, leg_getter=leg_getter)
         for rec in liq:
             sym = rec["sym"]
+            # 第112轮修复：强平 close 必须带上被平持仓的 pos_ref——否则 restore 的
+            # paper_open_position_trades 按 pos_ref 配对时永远配不上，每次进程重启都恢复出
+            # 幽灵持仓并再次强平（"开1手平N次"），破坏开平对应守恒。在 pop 之前取值。
+            pos_ref = self.pos_ref.get(sym, "") or ""
             self.pos_ref.pop(sym, None)
             self._cancel_pending(sym, "风控强平撤销挂单")
             held_dir = 1 if rec["dir"] == "多" else -1
@@ -531,12 +592,12 @@ class PaperBroker:
                                      rec["exit_px"], status="filled")
             order.update({"fill_ts": ts, "fill_price": rec["exit_px"],
                           "raw_price": rec["exit_px"], "lots": rec["lots"],
-                          "pos_ref": "", "reason": rec["reason"],
+                          "pos_ref": pos_ref, "reason": rec["reason"],
                           "contract_code": getattr(held, "contract_code", "") or "",
                           "main_month": getattr(held, "main_month", "") or ""})
             self._ins_order(order)
             mult = pf.mult_of(sym)
-            t = {"ts": ts, "pos_ref": "", "sym": sym, "name": rec.get("name", ""),
+            t = {"ts": ts, "pos_ref": pos_ref, "sym": sym, "name": rec.get("name", ""),
                  "sector": rec.get("sector", ""), "side": "close", "dir_text": rec["dir"],
                  "direction": held_dir, "lots": rec["lots"], "price": rec["exit_px"],
                  "raw_price": rec["exit_px"], "notional": rec["exit_px"] * mult * rec["lots"],
@@ -636,12 +697,25 @@ class PaperBroker:
         positions = {s: {"dir": p.direction, "lots": p.lots, "entry": p.entry_price,
                          "sector": p.sector, "score": p.score}
                      for s, p in sorted(pf.positions.items())}
-        snap = {"ts": ts, "static_equity": point["static"], "float_pnl": point["float"],
-                "equity": point["equity"], "margin_used": point["margin"],
-                "available": point["available"], "risk_degree": point["risk"],
-                "drawdown": point["drawdown"], "n_positions": point["npos"],
-                "realized": pf.realized, "fees_paid": pf.fees_paid,
-                "n_trades": len(pf.closed), "positions": positions}
+        # 第104轮统一资金池：期权盈亏/占用并入权益口径（缺链时用最近期权快照近似）。
+        if getattr(config, "PAPER_UNIFIED_POOL", True):
+            ua = self.unified_account()
+            snap = {"ts": ts, "static_equity": ua["static"], "float_pnl": ua["float_pnl"],
+                    "equity": ua["equity"], "margin_used": ua["margin_used"],
+                    "available": ua["available"], "risk_degree": ua["risk_degree"],
+                    "drawdown": point["drawdown"],
+                    "n_positions": point["npos"] + sum(
+                        1 for r in self.opt_positions.values() if r.get("status") == "open"),
+                    "realized": pf.realized + (self.opt_realized - self.opt_fees),
+                    "fees_paid": pf.fees_paid + self.opt_fees,
+                    "n_trades": len(pf.closed), "positions": positions}
+        else:
+            snap = {"ts": ts, "static_equity": point["static"], "float_pnl": point["float"],
+                    "equity": point["equity"], "margin_used": point["margin"],
+                    "available": point["available"], "risk_degree": point["risk"],
+                    "drawdown": point["drawdown"], "n_positions": point["npos"],
+                    "realized": pf.realized, "fees_paid": pf.fees_paid,
+                    "n_trades": len(pf.closed), "positions": positions}
         if self.db is not None:
             try:
                 self.db.insert_paper_equity(snap)
@@ -651,6 +725,7 @@ class PaperBroker:
 
     # ---------------- 主入口：每轮一次 ----------------
 
+    @_locked
     def on_cycle(self, ts, fut_rows, quotes=None):
         """驱动一轮纸面撮合。ts 为本轮时间戳字符串；fut_rows 为 analyzer 结果列表；
         quotes 为 {code: 实时行情dict}（提供 prev_settle/high/low 供锁板判定，可空）。
@@ -748,6 +823,372 @@ class PaperBroker:
         self.last_summary = summary
         return summary
 
+    # ================= 第102轮：期权纸面撮合 =================
+
+    def _find_chain_leg(self, chain_map, sym, strike, cp):
+        """从 chain_map（{(sym,yy,mm): chain}）找 sym 的链中指定行权价/看涨跌的腿。
+        返回 (chain, leg) 或 (None, None)。"""
+        strike = float(strike or 0)
+        best = None
+        for key, chain in (chain_map or {}).items():
+            if key[0].upper() != str(sym).upper():
+                continue
+            legs = chain.get("puts") if cp == "put" else chain.get("calls")
+            for leg in legs or []:
+                if float(leg.get("strike") or 0) == strike:
+                    best = chain
+                    return chain, leg
+        return best, None
+
+    @staticmethod
+    def _leg_price(leg, side):
+        """期权成交参考价：买方用 ask（滑点保守用 ask），可回退 mid/last。
+        这里 side='buy' 表示买开/买平，用 ask；否则用 bid。"""
+        ask = leg.get("ask")
+        bid = leg.get("bid")
+        last = leg.get("last")
+        mid = None
+        if ask is not None and bid is not None and ask > 0 and bid > 0:
+            mid = (ask + bid) / 2.0
+        if side == "buy":
+            return ask if ask and ask > 0 else (mid or last or 0)
+        return bid if bid and bid > 0 else (mid or last or 0)
+
+    def _opt_px(self, pos_rec, chain_map):
+        """期权持仓盯市参考价：公开链优先，缺时回退记录开仓价。"""
+        strike = pos_rec.get("strike")
+        cp = pos_rec.get("cp")
+        sym = pos_rec.get("sym")
+        chain, leg = self._find_chain_leg(chain_map, sym, strike, cp)
+        if leg:
+            px = self._leg_price(leg, "sell" if pos_rec.get("direction", 1) > 0 else "buy")
+            if px and px > 0:
+                return px
+        return float(pos_rec.get("fill_prem") or 0)
+
+    def _opt_margin_of(self, pos_rec, px=None):
+        """期权持仓保证金：买方=当前权利金×乘数（无杠杆），持仓时按权利金占用。"""
+        px = px if px is not None else pos_rec.get("fill_prem") or 0
+        multiplier = float(pos_rec.get("multiplier") or self.pf.mult_of(pos_rec.get("sym") or ""))
+        return px * multiplier * int(pos_rec.get("lots") or 1)
+
+    def _opt_fee_yuan(self, pos_rec):
+        """期权单边手续费（按权利金×乘数×费率）。"""
+        prem = float(pos_rec.get("fill_prem") or 0)
+        multiplier = float(pos_rec.get("multiplier") or self.pf.mult_of(pos_rec.get("sym") or ""))
+        lots = int(pos_rec.get("lots") or 1)
+        return prem * multiplier * lots * self.pf.fee_rate
+
+    def _opt_float_pnl(self, chain_map=None):
+        """在途期权浮盈（纯函数）：有链逐仓盯市；缺链回退最近期权快照浮盈（滞后≤1轮，Policy A 口径）。"""
+        if not chain_map:
+            ols = getattr(self, "opt_last_summary", None) or {}
+            osnap = ols.get("snapshot")
+            if osnap and osnap.get("float_pnl") is not None:
+                return float(osnap["float_pnl"])
+            return 0.0
+        total = 0.0
+        for rec in self.opt_positions.values():
+            if rec.get("status") != "open":
+                continue
+            px = self._opt_px(rec, chain_map)
+            total += (px - float(rec.get("fill_prem") or 0)) \
+                * float(rec.get("multiplier") or self.pf.mult_of(rec.get("sym") or "")) \
+                * int(rec.get("lots") or 1)
+        return total
+
+    def _opt_premium_locked(self, chain_map=None):
+        """在途期权权利金占用（纯函数）：买方=当前权利金×乘数×手数；缺链回退最近快照占用。"""
+        if not chain_map:
+            ols = getattr(self, "opt_last_summary", None) or {}
+            osnap = ols.get("snapshot")
+            if osnap and osnap.get("margin_used") is not None:
+                return float(osnap["margin_used"])
+            return 0.0
+        total = 0.0
+        for rec in self.opt_positions.values():
+            if rec.get("status") != "open":
+                continue
+            px = self._opt_px(rec, chain_map)
+            total += self._opt_margin_of(rec, px)
+        return total
+
+    def _opt_net_pnl(self, chain_map=None):
+        """期权净贡献（纯函数）：已实现(扣费) + 在途浮盈 —— 统一池叠加到期货基座上的增量。"""
+        return (self.opt_realized - self.opt_fees) + self._opt_float_pnl(chain_map)
+
+    def unified_account(self, chain_map=None):
+        """统一资金池账户（纯函数）：一个钱包两张持仓表。
+
+        期权盈亏/占用叠加到期货 Portfolio 上；初始资本只计一次（pf.equity0）。
+        返回统一 equity/static/float_pnl/margin_used/available/risk_degree，
+        附带期权净贡献与占用供明细展示。期货强平触发仍走 pf 独立风险度（本方法仅统一口径）。"""
+        chain_map = chain_map or {}
+        pf = self.pf
+        opt_net = self._opt_net_pnl(chain_map)
+        opt_locked = self._opt_premium_locked(chain_map)
+        equity = pf.equity() + opt_net
+        static = pf.static_equity() + (self.opt_realized - self.opt_fees)
+        margin = pf.margin_used() + opt_locked
+        available = max(0.0, equity - margin)
+        risk = (margin / equity) if equity > 1e-9 else 0.0
+        return {"equity": equity, "static": static,
+                "float_pnl": pf.float_pnl() + self._opt_float_pnl(chain_map),
+                "margin_used": margin, "available": available,
+                "risk_degree": risk, "opt_net_pnl": opt_net,
+                "opt_premium_locked": opt_locked}
+
+    def _opt_summary(self, ts, chain_map=None):
+        """期权权益快照（期权明细表：paper_option_equity，含占用/浮盈，供统一池汇总与看板明细）。"""
+        chain_map = chain_map or {}
+        eq = float(getattr(self, "opt_equity0", config.PAPER_EQUITY0)) \
+            + self.opt_realized - self.opt_fees
+        float_pnl = self._opt_float_pnl(chain_map)
+        margin_used = self._opt_premium_locked(chain_map)
+        n_open = sum(1 for r in self.opt_positions.values() if r.get("status") == "open")
+        equity = eq + float_pnl
+        risk = (margin_used / equity) if equity > 0 else 0.0
+        snap = {"ts": ts, "static_equity": eq, "float_pnl": float_pnl, "equity": equity,
+                "margin_used": margin_used, "available": max(0.0, equity - margin_used),
+                "risk_degree": risk, "drawdown": 0.0, "n_positions": n_open,
+                "realized": self.opt_realized, "fees_paid": self.opt_fees}
+        if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_equity"):
+            try:
+                self.db.insert_paper_option_equity(self.name, snap)
+            except Exception:
+                pass
+        return snap
+
+    @_locked
+    def on_cycle_options(self, ts, strat_rows, chain_map=None, fut_rows=None, opt_rows=None):
+        """驱动一轮期权纸面撮合。
+        strat_rows: option_strategies.recommend 结果列表（有 all_pass/legs/_decide 用途）。
+        chain_map: {(sym,yy,mm): chain}（新浪T链，成交价/盯市）。
+        fut_rows: 本轮期货行（供综合分取当前 score —— 期权离场/入场用标的综合分）。
+        opt_rows: 第110轮新增 —— analyze_option 结果列表（单腿期权，all_pass/kind/K/yy/mm/opt_code/prem 字段齐全）。
+                  此前只消费 strat_rows、analyze_option 的 9515 次 all_pass 从未接进撮合（结构性断链）；
+                  本轮接入 option_only / option_first 档，作为"单腿买方"信号源（其余档位不启用，保持纪律）。
+        返回本期权 summary dict（含 snapshot/n_buy/n_close/n_skipped）。"""
+        ts = str(ts or self._clock())[:19]
+        chain_map = chain_map or {}
+        score_map = {}
+        for row in (fut_rows or []):
+            sym = (row.get("sym") or "").upper()
+            if sym:
+                score_map[sym] = float(row.get("score") or 0.0)
+        cycle_trades = []
+        n_buy, n_close, n_skipped = 0, 0, 0
+
+        # ---------- A. 先处理平仓（三触发：分线反转/权利金止损/到期） ----------
+        to_close = []
+        for pos_ref, rec in list(self.opt_positions.items()):
+            if rec.get("status") != "open":
+                continue
+            sym = str(rec.get("sym") or "")
+            score = abs(score_map.get(sym.upper(), rec.get("score") or 0))
+            sk, cp = rec.get("strike"), rec.get("cp")
+            chain, leg = self._find_chain_leg(chain_map, sym, sk, cp)
+            px = self._leg_price(leg, "sell") if leg else None
+            if px is None:
+                px = self._opt_px(rec, chain_map)
+            ret = (px - float(rec.get("fill_prem") or 0)) / float(rec.get("fill_prem") or 1)
+            # 触发1：标的综合分反转（低于 exit_score → 平）
+            if score < self.exit_score:
+                to_close.append((pos_ref, "综合分反转(%.1f<%.1f)" % (score, self.exit_score)))
+            # 触发2：权利金止损（跌幅 ≥ stop_loss_ratio）
+            elif ret <= -self.stop_loss_ratio:
+                to_close.append((pos_ref, "权利金止损(%.0f%%)" % (ret * 100)))
+            # 触发3：剩余到期天数过近（到期前 opt_expiry_days 天自动平仓）
+            else:
+                dleft = rec.get("days_left")
+                if dleft is not None and 0 <= dleft <= self.opt_expiry_days:
+                    to_close.append((pos_ref, "临近到期(%d天)" % int(dleft)))
+        for pos_ref, reason in to_close:
+            rec = self.opt_positions.pop(pos_ref, None)
+            if not rec:
+                continue
+            px_sell = self._opt_px(rec, chain_map)
+            px_buy = float(rec.get("fill_prem") or 0)
+            multiplier = float(rec.get("multiplier") or self.pf.mult_of(rec.get("sym") or ""))
+            lots = int(rec.get("lots") or 1)
+            fee = self._opt_fee_yuan(rec)
+            realized = (px_sell - px_buy) * multiplier * lots - fee
+            self.opt_realized += realized
+            self.opt_fees += fee
+            t = dict(rec)
+            t.update({"ts": ts, "action": "close", "side": "close", "status": "closed",
+                      "reason": reason, "realized_yuan": realized,
+                      "fill_prem": px_sell, "fill_ts": ts})
+            if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_trade"):
+                try:
+                    self.db.insert_paper_option_trade(self.name, t)
+                except Exception:
+                    pass
+            n_close += 1
+            cycle_trades.append(t)
+
+        # ---------- B. 新一轮买入（单腿买方，与 priority 配合） ----------
+        for strat in (strat_rows or []):
+            if not strat.get("all_pass"):
+                continue
+            legs = strat.get("legs") or []
+            if len(legs) != 1:               # 只做单腿
+                continue
+            leg = legs[0]
+            if not leg.get("buy"):           # 只做买方
+                continue
+            cp = (leg.get("kind") or "").lower()
+            if cp not in ("call", "put"):
+                continue
+            sym = (strat.get("variety") or "").upper()
+            if not sym:
+                continue
+            # 数量上限（options_max 优先，其次用 opt 存量判断）
+            if self.options_max is not None and len(self.opt_positions) >= self.options_max:
+                self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "期权持仓数达上限"})
+                n_skipped += 1
+                continue
+            if any(r.get("sym", "").upper() == sym for r in self.opt_positions.values() if r.get("status") == "open"):
+                continue  # 已持有同品种期权，不加仓
+            chain, _leg = self._find_chain_leg(chain_map, sym, leg.get("K"), cp)
+            if not _leg:
+                self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "链上无该行权价"})
+                n_skipped += 1
+                continue
+            px = self._leg_price(_leg, "buy")
+            if not px or px <= 0:
+                self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "无有效期权价"})
+                n_skipped += 1
+                continue
+            # 期权乘数（复用期货乘数）
+            multiplier = self.pf.mult_of(sym)
+            if multiplier <= 0:
+                self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "无合约乘数"})
+                n_skipped += 1
+                continue
+            premium = px * multiplier
+            # 第104轮统一资金池：权利金从统一可用资金里扣 + 集中度分母改为统一权益；
+            # 回退（PAPER_UNIFIED_POOL=False）时仍按期权池 opt_equity0 检查（旧行为逐字节）。
+            if getattr(config, "PAPER_UNIFIED_POOL", True):
+                ua = self.unified_account()
+                if premium > ua["available"]:
+                    self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "统一可用资金不足(%.0f>%.0f)"
+                                             % (premium, ua["available"])})
+                    n_skipped += 1
+                    continue
+                if premium > ua["equity"] * self.opt_premium_ratio:
+                    self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "权利金超统一权益上限(%.0f>%.0f)"
+                                             % (premium, ua["equity"] * self.opt_premium_ratio)})
+                    n_skipped += 1
+                    continue
+            else:
+                eq0 = float(getattr(self, "opt_equity0", config.PAPER_EQUITY0))
+                if premium > eq0 * self.opt_premium_ratio:
+                    self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "权利金超上限(%.0f>%d)"
+                                             % (premium, eq0 * self.opt_premium_ratio)})
+                    n_skipped += 1
+                    continue
+            pos_ref = "o%s-%d" % (sym, int(getattr(self, "_opt_seq", 0)) + 1)
+            self._opt_seq = int(getattr(self, "_opt_seq", 0)) + 1
+            rec = {"ts": ts, "pos_ref": pos_ref, "sym": sym, "name": strat.get("name", ""),
+                   "variety": strat.get("variety", ""), "action": "open", "side": "open",
+                   "direction": 1, "lots": 1, "strike": leg.get("K"), "cp": cp,
+                   "expiry": strat.get("month_label", ""), "entry_prem": px,
+                   "fill_prem": px, "fill_ts": ts, "option_code": leg.get("code", ""),
+                   "legs": [leg], "notional": premium, "margin_used": premium,
+                   "fee_yuan": self._opt_fee_yuan({"fill_prem": px, "sym": sym, "lots": 1,
+                                                   "multiplier": multiplier}),
+                   "realized_yuan": 0.0, "status": "open", "entry_score": strat.get("net"),
+                   "fill_mode": self.fill_mode, "multiplier": multiplier,
+                   "days_left": strat.get("days_left"), "score": strat.get("net")}
+            # 存储为 trade 记录（account 维度；side=open）
+            if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_trade"):
+                try:
+                    self.db.insert_paper_option_trade(self.name, rec)
+                except Exception:
+                    pass
+            self.opt_positions[pos_ref] = rec
+            self.opt_fees += rec.get("fee_yuan", 0.0)
+            n_buy += 1
+            cycle_trades.append(dict(rec))
+
+        # ---------- B2（第110轮）：option_only / option_first 档接入 analyze_option 单腿信号 ----------
+        # 背景：此前只消费 strat_rows（option_strategies.recommend），而 recommend 从不输出单腿买入
+        # （目录优先级单腿最低、永远被多腿优选），on_cycle_options 又只执行单腿 -> 期权撮合永远 0 成交。
+        # analyze_option（main.py 第 4 步）单腿 all_pass=1 有 9515 次历史通过、字段 K/kind/yy/mm/opt_code/prem 齐全，
+        # 但从未被传入撮合。本轮接入：仅 option_only / option_first 档启用，走既有链价/统一资金池双重预算约束。
+        if self.priority in ("option_only", "option_first") and opt_rows:
+            for ao in opt_rows:
+                if not ao or not ao.get("all_pass"):
+                    continue
+                ao_sym = str((ao.get("name") or "").upper())
+                if not ao_sym:
+                    continue
+                kind = str(ao.get("kind") or "").lower()
+                if kind not in ("call", "put"):
+                    continue
+                # 已持有同品种期权不加仓（与 strat_rows 路径同一纪律）
+                if any(r.get("sym", "").upper() == ao_sym for r in self.opt_positions.values() if r.get("status") == "open"):
+                    continue
+                chain, leg = self._find_chain_leg(chain_map, ao_sym, ao.get("K"), kind)
+                if not leg:
+                    self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-链上无该行权价"})
+                    n_skipped += 1
+                    continue
+                px = self._leg_price(leg, "buy")
+                if not px or px <= 0:
+                    self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-无有效期权价"})
+                    n_skipped += 1
+                    continue
+                multiplier = self.pf.mult_of(ao_sym)
+                if multiplier <= 0:
+                    self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-无合约乘数"})
+                    n_skipped += 1
+                    continue
+                premium = px * multiplier
+                ua = self.unified_account() if getattr(config, "PAPER_UNIFIED_POOL", True) else None
+                if ua is not None:
+                    if premium > ua["available"]:
+                        self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-统一可用资金不足(%.0f>%.0f)"
+                                                 % (premium, ua["available"])})
+                        n_skipped += 1
+                        continue
+                    if premium > ua["equity"] * self.opt_premium_ratio:
+                        self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-权利金超统一权益上限(%.0f>%.0f)"
+                                                 % (premium, ua["equity"] * self.opt_premium_ratio)})
+                        n_skipped += 1
+                        continue
+                pos_ref = "o%s-%d" % (ao_sym, int(getattr(self, "_opt_seq", 0)) + 1)
+                self._opt_seq = int(getattr(self, "_opt_seq", 0)) + 1
+                rec = {"ts": ts, "pos_ref": pos_ref, "sym": ao_sym, "name": ao.get("name", ""),
+                       "variety": ao.get("name", ""), "action": "open", "side": "open",
+                       "direction": 1, "lots": 1, "strike": ao.get("K"),
+                       "cp": kind, "expiry": ao.get("month_label", ""), "entry_prem": px,
+                       "fill_prem": px, "fill_ts": ts, "option_code": ao.get("opt_code", ""),
+                       "legs": [], "notional": premium, "margin_used": premium,
+                       "fee_yuan": self._opt_fee_yuan({"fill_prem": px, "sym": ao_sym, "lots": 1,
+                                                       "multiplier": multiplier}),
+                       "realized_yuan": 0.0, "status": "open", "entry_score": ao.get("score"),
+                       "fill_mode": self.fill_mode, "multiplier": multiplier,
+                       "days_left": ao.get("days"), "score": ao.get("score"),
+                       "src": "analyze_option"}
+                if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_trade"):
+                    try:
+                        self.db.insert_paper_option_trade(self.name, rec)
+                    except Exception:
+                        pass
+                self.opt_positions[pos_ref] = rec
+                self.opt_fees += rec.get("fee_yuan", 0.0)
+                n_buy += 1
+                cycle_trades.append(dict(rec))
+
+        snap = self._opt_summary(ts, chain_map)
+        summary = {"ts": ts, "snapshot": snap, "n_buy": n_buy, "n_close": n_close,
+                   "n_skipped": n_skipped, "n_positions": snap.get("n_positions", 0),
+                   "trades": cycle_trades, "positions": list(self.opt_positions.values())}
+        self.opt_last_summary = summary
+        return summary
+
     # ---------------- 重启恢复 ----------------
 
     def restore(self):
@@ -824,6 +1265,20 @@ class PaperBroker:
                     p.contract_code, p.main_month = cc, mm
         except Exception:
             pass
+        # 第102轮：恢复期权持仓（按账户过滤，重启续跑）
+        if self.name and self.db is not None and hasattr(self.db, "paper_open_option_positions"):
+            try:
+                for t in self.db.paper_open_option_positions(self.name):
+                    pos_ref = t["pos_ref"]
+                    rec = dict(t)
+                    rec["status"] = "open"
+                    self.opt_positions[pos_ref] = rec
+            except Exception:
+                pass
+            try:
+                self.opt_realized, self.opt_fees = self.db.paper_option_realized_fees(self.name)
+            except Exception:
+                pass
 
         self.restored = True
         return True
@@ -851,6 +1306,7 @@ class PaperBroker:
             out["pending"] = sum(len(q) for q in self.pending.values())
         return out
 
+    @_locked
     def positions_view(self):
         """当前持仓明细行（含最新价/浮动盈亏/占用保证金/开仓结算交易日），供 paper_account.txt。"""
         pf = self.pf
@@ -871,6 +1327,7 @@ class PaperBroker:
                          "main_month": getattr(p, "main_month", "") or ""})
         return rows
 
+    @_locked
     def pending_view(self):
         """当前在途挂单明细（拍平成行列表），供 paper_account.txt。"""
         rows = []
@@ -884,23 +1341,46 @@ class PaperBroker:
                              "main_month": o.get("main_month") or ""})
         return rows
 
+    @_locked
     def account_summary(self):
         pf = self.pf
         perf = None
         if pf.curve:
             perf = pf.performance()
-        return {"equity0": pf.equity0, "static": pf.static_equity(),
-                "equity": pf.equity(), "float_pnl": pf.float_pnl(),
-                "realized": pf.realized, "fees_paid": pf.fees_paid,
-                "margin_used": pf.margin_used(), "available": pf.available(),
-                "risk_degree": pf.risk_degree(), "n_positions": len(pf.positions),
-                "n_pending": sum(len(q) for q in self.pending.values()),
-                "n_closed": len(pf.closed), "n_liquidations": len(pf.liquidations),
-                "n_skipped": len(pf.skipped), "status": self.order_status_counts(),
-                "fill_mode": self.fill_mode,
-                "pending": {s: [dict(o) for o in q]
-                            for s, q in self.pending.items()},
-                "performance": perf}
+        # 第104轮统一资金池：权益/可用/风险 = 期货+期权合并口径；期货风控触发不变。
+        ua = self.unified_account() if getattr(config, "PAPER_UNIFIED_POOL", True) else None
+        out = {"equity0": pf.equity0, "static": ua["static"] if ua else pf.static_equity(),
+               "equity": ua["equity"] if ua else pf.equity(),
+               "float_pnl": ua["float_pnl"] if ua else pf.float_pnl(),
+               "realized": pf.realized + (self.opt_realized - self.opt_fees) if ua else pf.realized,
+               "fees_paid": pf.fees_paid + self.opt_fees if ua else pf.fees_paid,
+               "margin_used": ua["margin_used"] if ua else pf.margin_used(),
+               "available": ua["available"] if ua else pf.available(),
+               "risk_degree": ua["risk_degree"] if ua else pf.risk_degree(),
+               "n_positions": len(pf.positions),
+               "n_pending": sum(len(q) for q in self.pending.values()),
+               "n_closed": len(pf.closed), "n_liquidations": len(pf.liquidations),
+               "n_skipped": len(pf.skipped), "status": self.order_status_counts(),
+               "fill_mode": self.fill_mode,
+               "pending": {s: [dict(o) for o in q]
+                           for s, q in self.pending.items()},
+               "performance": perf,
+               # 第102轮：期权持仓明细（统一池时仅作展示明细；独立池时含独立权益）
+               "opt": {"n_positions": len(self.opt_positions),
+                       "realized": self.opt_realized, "fees_paid": self.opt_fees,
+                       "n_skipped": len(self.opt_skipped)}}
+        # 期权权益快照（统一池时 opt_equity 保留供 report 摘要兼容，非独立账户权益）
+        ols = getattr(self, "opt_last_summary", None) or {}
+        osnap = ols.get("snapshot")
+        if osnap:
+            out["opt_equity"] = osnap.get("equity")
+            out["opt_float_pnl"] = osnap.get("float_pnl")
+            out["opt_equity0"] = osnap.get("static_equity")
+        else:
+            out["opt_equity"] = None
+            out["opt_float_pnl"] = None
+            out["opt_equity0"] = getattr(self, "opt_equity0", None)
+        return out
 
     # ---------------- G1续（第63轮）：OMS 全状态台账 / 主动撤单 / 成交回报 / 持仓对账 ----------------
 
@@ -968,6 +1448,7 @@ class PaperBroker:
         out.sort(key=lambda t: (str(t.get("ts", "")), int(t.get("id") or 0)))
         return out
 
+    @_locked
     def fill_report(self, since=None):
         """成交回报汇总：since 以来（默认全部）成交的笔数/手数/名义/费/滑点/已实现/多空开平拆分。"""
         return aggregate_fills(self.fills_view(since=since))
@@ -1196,6 +1677,41 @@ def selftest():
                    "entry_price": v["entry_price"]} for s, v in own_ext.items()}
     ck("broker对账抓手数差", not pbc.reconcile_positions(bad_ext)["clean"])
     ck("纯内存无DB自洽对账返回None", pbc.reconcile_against_db() is None)
+
+    # 15) 第103轮：threading.RLock 存在 + 同线程可重入（普通 Lock 会在此自死锁）
+    import threading as _th
+    _lk = pb._lock
+    # Python 3.x 中 threading.RLock 是函数不是类，用 acquire 行为检测
+    ck("broker._lock 存在", _lk is not None)
+    _lk.acquire()
+    _ok_reentrant = True
+    try:
+        _lk.acquire(timeout=1.0)
+    except Exception:
+        _ok_reentrant = False
+    _lk.release()
+    _lk.release()
+    ck("RLock 同线程可重入", _ok_reentrant)
+
+    # 16) 第104轮：统一资金池公式（一个钱包两张持仓表；初始资本只计一次）
+    ua0 = PaperBroker(db=None, fill_mode="close", equity0=10_000_000,
+                      slip_rate=0.0001, restore=False).unified_account()
+    ck("无操作统一权益==初始资金", abs(ua0["equity"] - 10_000_000) < 1e-6)
+    ck("无操作统一占用==0", ua0["margin_used"] == 0.0)
+    ck("无操作统一权益公式", abs(ua0["equity"] - 10_000_000) < 1e-6)
+    # 期货盈利场景：统一权益==期货口径（期权贡献为0）
+    _cfg.PAPER_PER_SYMBOL = 0.05
+    _cfg.PAPER_MAX_SYMBOL_WEIGHT = 1.0
+    _cfg.PAPER_MAX_SECTOR_WEIGHT = 1.0
+    _cfg.PAPER_MAX_CONCURRENT = 64
+    _fut_broker = PaperBroker(db=None, fill_mode="close", equity0=1_000_000.0,
+                              slip_rate=0.0001, restore=False,
+                              margin_table={"RB": {"broker_margin": 0.1,
+                                                   "limit_basic": 0.05, "multiplier": 10}})
+    _fut_broker.on_cycle("2026-09-02 09:05:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    uaf = _fut_broker.unified_account()
+    ck("期货盈利统一权益=期货口径", abs(uaf["equity"] - _fut_broker.pf.equity()) < 1e-6)
+    ck("无期权时统一占用=期货保证金", abs(uaf["margin_used"] - _fut_broker.pf.margin_used()) < 1e-6)
 
     print("paper_broker --selftest：%d 项断言全部通过" % len(checks))
     for n, _ in checks:

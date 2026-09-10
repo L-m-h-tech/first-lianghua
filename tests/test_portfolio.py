@@ -352,3 +352,55 @@ def test_engine_risk_cfg_injects_weights_and_none_equals_absent():
     assert len(pf_c.risk_meta_log) >= 1
     assert any(m.get("n", 0) >= 2 for m in pf_c.risk_meta_log)
     assert abs(sum(pf_c.risk_weights.values()) - 1.0) < 1e-9
+
+
+# ---------------- 第110轮：保证金口径 sizing（target_basis="margin"） ----------------
+
+def test_margin_basis_enables_small_account_one_lot():
+    """等名义下 1 万档玉米目标名义 <1 手拒开；保证金口径下可开 1 手以上（对齐 LEAN 购买力语义）。"""
+    margin = _margin(C=(0.07, 10))            # 玉米：价2269×10×0.07≈1588 一手保证金
+    # 等名义（旧）：1万×0.35=3500 名义预算 < 2269×10 一手名义 -> 拒开
+    pf_n = _pf(equity=10_000, margin=margin, per_symbol=0.35,
+               max_symbol_weight=0.50, max_sector_weight=0.60)
+    lots_n, why_n = pf_n.decide_lots("C", 1, 2269.0, score=6.0)
+    assert lots_n == 0 and "策略目标不足" in (why_n or "")
+    # 保证金口径（新）：1万×0.35=3500 保证金预算 / 1588 -> 2 手
+    pf_m = _pf(equity=10_000, margin=margin, per_symbol=0.35, target_basis="margin",
+               max_symbol_weight=0.50, max_sector_weight=0.60)
+    lots_m, why_m = pf_m.decide_lots("C", 1, 2269.0, score=6.0)
+    assert lots_m >= 1 and why_m is None
+
+
+def test_margin_basis_5000_and_3000_tiers():
+    """5000 档 per_symbol 0.32 可开 1 手；3000 档 0.54 可开 1 手（核算阈值）。"""
+    margin = _margin(C=(0.07, 10))
+    pf5 = _pf(equity=5_000, margin=margin, per_symbol=0.32, target_basis="margin",
+              max_symbol_weight=0.50, max_sector_weight=0.60)
+    assert pf5.decide_lots("C", 1, 2269.0, score=6.0)[0] >= 1
+    pf3 = _pf(equity=3_000, margin=margin, per_symbol=0.54, target_basis="margin",
+              max_symbol_weight=0.60, max_sector_weight=0.60)
+    lots3, why3 = pf3.decide_lots("C", 1, 2269.0, score=6.0)
+    assert lots3 >= 1 and why3 is None
+    # 3 千元开 1 手玉米风险度远低于强平线（新表保证金率低）
+    pf3.open("C", "玉米", "农产品", 1, 2269.0, "t0", score=6.0)
+    assert pf3.risk_degree() < 0.70
+
+
+def test_margin_basis_1000_tier_still_blocked():
+    """1000 档目标保证金预算（1000×0.50=500）< 一手保证金，期货仍拒开（走期权）。"""
+    margin = _margin(C=(0.07, 10))
+    pf1k = _pf(equity=1_000, margin=margin, per_symbol=0.50, target_basis="margin",
+               max_symbol_weight=0.55, max_sector_weight=0.55)
+    lots, why = pf1k.decide_lots("C", 1, 2269.0, score=6.0)
+    assert lots == 0 and "策略目标不足" in (why or "")
+
+
+def test_target_basis_none_is_byte_identical_legacy():
+    """target_basis=None（默认）与旧等名义逐值一致；显式传 None 与不传一致。"""
+    margin = _margin(RB=(0.10, 10), CU=(0.12, 5), C=(0.07, 10))
+    pf_a = _pf(equity=100_000, margin=margin, per_symbol=0.20)
+    pf_b = _pf(equity=100_000, margin=margin, per_symbol=0.20, target_basis=None)
+    for sym, px, sc in (("RB", 1000.0, 6.0), ("CU", 2000.0, -6.0), ("C", 2269.0, 6.0)):
+        la, wa = pf_a.decide_lots(sym, 1, px, score=sc)
+        lb, wb = pf_b.decide_lots(sym, 1, px, score=sc)
+        assert la == lb and wa == wb

@@ -59,3 +59,25 @@ def test_merge_strike_single_side():
     c = {"iv": 0.28, "oi": 10, "quality": 0}
     iv, q, warn = ivs._merge_strike(c, None)
     assert iv == 0.28 and q == 0 and warn is False
+
+
+def test_implied_vol_profile_uses_page_info_single_dict():
+    """第107轮：page_info 返回的单品种 dict 结构（含 atm_iv 键）
+    应被 implied_vol_profile 正确命中 OpenVlab 来源（修复旧映射假设的静默降级）。"""
+    from option_analyzer import implied_vol_profile
+    page = {"atm_iv": {"code": "rb", "price": 3200.0, "atm_iv": 18.5, "iv_chg": 1.2,
+                       "iv_pct": 60.0, "skew": 2.1, "skew_pct": 55.0, "hv": 22.0,
+                       "source": "ctamap"},
+            "option_chain": {}}
+    row = {"name": "螺纹钢", "cat": "黑色", "page": page,
+           "hv20": 0.22, "hv60": 0.22, "score": 3.0, "price": 3200.0,
+           "vol_cone": {}, "hv_percentile": 0.4}
+    r = implied_vol_profile(row)
+    assert r["iv_src"] == "OpenVlab真实", r["iv_src"]
+    assert abs(r["iv"] - 0.185) < 1e-9, r["iv"]
+    assert abs(r["skew"] - 2.1) < 1e-9
+    assert abs(r["iv_pct"] - 60.0) < 1e-9
+    # 缺键 / 空 page 时安静降级，不崩溃
+    row2 = dict(row, page={})
+    r2 = implied_vol_profile(row2)
+    assert r2["iv_src"] in ("T链反推", "HV估计"), r2["iv_src"]

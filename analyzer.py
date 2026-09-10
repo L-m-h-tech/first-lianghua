@@ -9,6 +9,8 @@
 【需求⑩】建议/报告上的时间与轮动节奏标注由 report.render + rotation_desc 提供。
 """
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import config
@@ -17,6 +19,10 @@ import trade_calendar
 import fundamental_factors
 from utils import clip, fmt_px
 from factors import sentiment_facets, facet_tags
+
+# 保护 _parts_via_plugins 模块级全局（factor_parts 注册表）——run_cycle 与 paper_ticker
+# 可能并发调用 analyze_all_varieties，必须互斥，否则两线程互踩 factor_parts/factor_plugin。
+_analyze_lock = threading.Lock()
 
 
 def rating(score):
@@ -354,8 +360,22 @@ def detail_lines(row):
     p = row.get("page") or {}
     if p.get("atm_iv"):
         a = p["atm_iv"]
-        lines.append(f"    页面数据: OpenVlab真实平值隐波 {a['atm_iv']:.1f}%"
-                     f"(变化{a['iv_chg']:+.2f}, 剩余{a['days']}天, 溢价{a.get('prem', 0):+.2f})")
+        # 第107轮修复：防御性取值——atm_iv 键可能不存在（页面结构多来源差异）或值为 None
+        _iv = a.get("atm_iv") if isinstance(a, dict) else None
+        if _iv is not None:
+            days_txt = f", 剩余{a.get('days')}天" if a.get("days") is not None else ""
+            prem_txt = f", 溢价{a.get('prem'):+.2f}" if a.get("prem") is not None else ""
+            first = f"    页面数据: OpenVlab真实平值隐波 {_iv:.1f}%"
+            if a.get("iv_chg") is not None and a.get("source") != "ctamap":
+                first += f"(变化{a.get('iv_chg'):+.2f}{days_txt}{prem_txt})"
+            else:
+                exp_txt = f", 合约{a.get('code')}" if a.get("code") else ""
+                first += f"{exp_txt}{days_txt}"
+                if a.get("iv_pct") is not None:
+                    first += f", 百分位{a.get('iv_pct'):.0f}%"
+                if a.get("skew") is not None:
+                    first += f", 偏度{a.get('skew'):+.2f}"
+            lines.append(first)
     elif p.get("rank"):
         r = p["rank"]
         lines.append(f"    页面数据: OpenVlab[{r['list']}] 隐波变化{r['iv_chg']:+.2f}")
@@ -366,8 +386,142 @@ def detail_lines(row):
     for h in p.get("headlines", []):
         d = "看多" if h["dir"] > 0 else "看空"
         lines.append(f"    页面动向: 交易可查[{h['label']}] {d} ({h['text']})")
+    # 新增：乾坤归一综合评级（按标准品种名精确匹配，避免"铝"误匹配"氧化铝/铝合金"）
+    for txt, rt in (p.get("rating") or {}).items():
+        if rt.get("variety") == row["name"]:
+            chg_txt = f", 涨跌幅{rt['chg']:+.2f}%" if rt.get("chg") is not None else ""
+            lines.append(f"    页面评级: 交易可查乾坤归一[{rt['grade']}]"
+                         f" {rt.get('contract','')} 评级{rt['grade']}"
+                         f" 价{rt.get('price','-')}{chg_txt}")
+            break
+    # 新增：外盘比价（仅展示与本品种精确相关的外盘品种，避免每个品种都带伦铜）
+    _EXT_REL = {"黄金": "美黄金", "白银": "美白银", "铜": "伦铜", "铝": "伦铝",
+                "锌": "伦锌", "镍": "伦镍", "铅": "伦铅", "锡": "伦锡",
+                "大豆": "美豆", "豆粕": "美豆粕", "豆油": "美豆油", "棉花": "美棉花",
+                "玉米": "美玉米", "原油": "布原油", "棕榈油": "马棕油",
+                "铁矿石": "铁矿FE"}
+    ext_map = p.get("external") or {}
+    ext_name = _EXT_REL.get(row["name"])
+    if ext_name and ext_name in ext_map:
+        xd = ext_map[ext_name]
+        dev = xd.get("dev")
+        dev_txt = f" 偏离{dev:+.2f}%" if dev is not None else ""
+        lines.append(f"    外盘: {ext_name} {xd.get('last','-')}{dev_txt}"
+                     f" (基准{xd.get('base','-')})")
+    # 新增：基本信息（仅展示与本品种同名的基本面项）
+    for f in (p.get("fundamentals") or []):
+        if f.get("item") == row["name"] or f.get("metric") == row["name"]:
+            chg_txt = f"（变动{f['chg']}）" if f.get("chg") is not None else ""
+            lines.append(f"    基本面: {f['metric']} {f.get('value','-')}{chg_txt}"
+                         f" ({f.get('date','')})")
     for r in row["risks"]:
         lines.append(f"    风险: {r}")
     if row.get("forecast"):
         lines.append(f"    {row['forecast']}")
     return lines
+
+
+# ================== 共享全品种分析入口（run_cycle 与 paper_ticker 共用） ==================
+
+def _prefetch_rank(state, watchlist):
+    """按各品种主力合约并发预取龙虎榜前20席多空合计（fetcher内日缓存，当天仅首轮产生请求）。"""
+    tasks = []
+    for key, meta in watchlist:
+        cinfo = state.contracts.get(meta["sym"])
+        mc = (cinfo or {}).get("main")
+        if not mc:
+            continue
+        emc = state.fetcher.em_code(meta["sym"])
+        if emc:
+            tasks.append((key, emc, mc["yy"], mc["mm"]))
+    out = {}
+
+    def one(t):
+        key, emc, yy, mm = t
+        try:
+            return key, state.fetcher.rank_totals(emc, yy, mm)
+        except Exception:
+            return key, None
+
+    if tasks:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for key, rk in ex.map(one, tasks):
+                if rk:
+                    out[key] = (rk["long"], rk["short"], rk["prev_long"], rk["prev_short"])
+    return out
+
+
+def _tick_momentum(hist):
+    """盘中动量：基于程序运行期间每轮记录的价格（10分钟+30分钟）。"""
+    if not hist or len(hist) < 12:
+        return 0.0
+    now_ts, now_px = hist[-1]
+    if now_ts - hist[0][0] < 600:   # 数据不足10分钟不计算
+        return 0.0
+
+    def ret_over(sec):
+        target = now_ts - sec
+        base = None
+        for ts, px in hist:
+            if ts >= target:
+                base = px
+                break
+        if not base:
+            return 0.0
+        return now_px / base - 1.0
+
+    r10, r30 = ret_over(600), ret_over(1800)
+    m = math.tanh(r10 * 2000) * 1.0 + math.tanh(r30 * 1000) * 1.0
+    return clip(m, -1.5, 1.5)
+
+
+def analyze_all_varieties(state, watchlist, quotes, flow_map):
+    """共享全品种分析：逐品种综合分 + 非交易时段预测走向（run_cycle 与 paper_ticker 共用）。
+
+    - 与主报告同一份评分路径（analyze_variety + forecast_line），保证开仓信号口径一致；
+    - 只读 state 缓存（oil/news/klines/contracts/webdata/breader/fund_* 均为后台/共享维护），
+      ticker 每分钟调用不产生高频网络（命中 TTL 缓存，唯一 fetch 是调用方传入的 quotes）；
+    - 不写 state.last_forecasts（由 run_cycle 调用方赋值，报告侧输出）；
+    - 不调用期权链预热（期权沿用 run_cycle 快照，Policy A）；
+    - 并发安全：内部持 _analyze_lock，与 run_cycle 互斥 factor_parts 注册表全局。
+    """
+    from utils import is_variety_trading  # 局部 import，避免 analyzer 顶层依赖 utils 循环
+    from utils import LOG
+    with _analyze_lock:
+        inst_map = state.webdata.views_snapshot()
+        intraday_map = state.klines.warm_intraday(
+            [(meta["code"], meta["cat"]) for _, meta in watchlist])
+        rank_map = _prefetch_rank(state, watchlist)
+        fut_rows = []
+        for key, meta in watchlist:
+            q = quotes.get(meta["code"]) or {}
+            ind, kline_ok = state.klines.get(meta["code"], meta["cat"])
+            ind = dict(ind)
+            ind["intraday"] = intraday_map.get(meta["code"], ({}, False))[0]
+            n_score, n_hits = state.news.score(meta["cat"], variety=key)
+            o_score = state.oil.combined_score() if meta["oil_w"] > 0 else 0.0
+            t_mom = _tick_momentum(state.var_hist.get(key))
+            cinfo = state.contracts.get(meta["sym"])
+            fund_raw = {"inv": state.fund_inv.get(meta["sym"]),
+                        "rank": rank_map.get(key),
+                        "basis": (state.fund_basis or {}).get(meta["sym"])}
+            try:
+                fut_rows.append(analyze_variety(
+                    key, meta, q, ind, kline_ok, n_score, n_hits, o_score, t_mom,
+                    cinfo, inst_map.get(key), state.breader.page_info(key),
+                    flow=flow_map.get(meta["code"]), fund_raw=fund_raw))
+            except Exception as e:
+                LOG.warning("品种分析失败 %s: %s", key, e)
+
+        # 非交易时段趋势（3.5 段）：仅对不在自身交易时段的品种附加预测走向
+        news_trend = state.news.trend()
+        oil_dir = state.oil.direction()
+        for row in fut_rows:
+            vmeta = config.VARIETIES.get(row["name"])
+            if vmeta and is_variety_trading(vmeta):
+                continue
+            try:
+                row["forecast"] = forecast_line(row, news_trend, oil_dir)
+            except Exception as e:
+                pass
+        return fut_rows

@@ -253,7 +253,8 @@ def outcomes_payload(db, days=None):
 
 def paper_payload(state=None, max_points=1200):
     """⑤ 纸面账户影子净值：从 storage.paper_equity 每轮快照取最近窗口（升序），结构对齐
-    parse_equity_csv 以便前端复用同一套权益/回撤/风险度渲染。无 state/无表/空表返回 None（显空态）。"""
+    parse_equity_csv 以便前端复用同一套权益/回撤/风险度渲染。无 state/无表/空表返回 None（显空态）。
+    第102轮：保持单账户返回（基准），多账户由 papers_payload 提供。"""
     db = getattr(state, "db", None) if state is not None else None
     if db is None or not hasattr(db, "paper_equity_series"):
         return None
@@ -311,6 +312,70 @@ def paper_payload(state=None, max_points=1200):
             "n_trades": trades_last,
         },
     }
+
+
+# ---------- 第102轮：多账户权益曲线叠加 ----------
+
+# 第105/106轮：档位色改非涨跌语义的中性色家族（避免与红涨绿跌混淆）+ 修复撞色。
+# 每档 4 色 = 激进/基准/保守/赌徒：前3为深→中→浅渐变，赌徒(第4)用该档最暗色区分高风险。
+_TIER_COLORS = {100_000: ["#ff7675", "#f3a683", "#f5cd79", "#8c4a2f"],   # 10万档 暖珊瑚系
+                10_000: ["#74b9ff", "#82ccdd", "#a4d8f0", "#295a6e"],    # 1万档 天蓝系
+                5_000: ["#55efc4", "#81ecec", "#a9e8d8", "#1d6e5c"],     # 5000档 青绿系
+                3_000: ["#a29bfe", "#b8b8ff", "#cfc9ff", "#4a3f7a"],     # 3000档 淡紫系
+                1_000: ["#fd79a8", "#fab1a0", "#f8c8dc", "#7a3550"],     # 1000档 粉橙系
+                }
+_TIER_NAMES = {100_000: "10万", 10_000: "1万", 5_000: "5000", 3_000: "3000", 1_000: "1000"}
+_STYLE_MAP = {"close": "bold", "next": "solid"}  # 激进实线粗、基准保守虚线
+_ACCOUNT_STYLE = {}  # 填充 name -> (color, dashStyle)
+
+
+def papers_payload(state=None, max_points=600):
+    """第102轮：多账户权益曲线——从各账户独立 db 读 equity_series，返回 list of series dict。
+    供前端 renderPaper 多曲线叠加（颜色/线型按资金档/风格区分）。"""
+    papers = getattr(state, "papers", {}) or {}
+    if not papers:
+        return []
+    out = []
+    tier_count = {}  # 同档位内计数，用于颜色偏移
+    for name, broker in papers.items():
+        if broker is None:
+            continue
+        db = getattr(broker, "db", None)
+        if db is None or not hasattr(db, "paper_equity_series"):
+            continue
+        try:
+            rows = db.paper_equity_series(max_points)
+        except Exception:
+            continue
+        if not rows:
+            continue
+        dts, eq, risk, dd = [], [], [], []
+        for r in rows:
+            v = _f(r.get("equity"))
+            if v is None:
+                continue
+            dts.append(str(r.get("ts") or "")[5:16])
+            eq.append(v)
+            risk.append(_f(r.get("risk_degree"), 0.0))
+            dd.append(max(0.0, _f(r.get("drawdown"), 0.0)))
+        if not dts:
+            continue
+        dts, eq, _ds_s, _ds_f, _ds_m, _ds_a, risk, dd, _ds_n = downsample(
+            dts, eq, [0]*len(eq), [0]*len(eq), [0]*len(eq), [0]*len(eq),
+            risk, dd, [0]*len(eq), max_points=max_points)
+        init_eq = eq[0] if eq else 1.0
+        eq0 = int(getattr(broker.pf, "equity0", 0) or 0)   # 第104轮统一资金池：tier 一律用初始资本
+        tier = eq0
+        tc = tier_count.get(tier, 0)
+        tier_count[tier] = tc + 1
+        color = _TIER_COLORS.get(tier, ["#fff"])[min(tc, 3)]
+        style = _STYLE_MAP.get(getattr(broker, "fill_mode", "next"), "solid")
+        # 第105轮：归一化基准改为各账户首个快照（=1.0），消除启动时间差；eq0 仅作档位/初始资金参考
+        out.append({"name": name, "eq0": eq0,
+                    "dt": dts, "equity": eq, "norm": [v / init_eq for v in eq],
+                    "risk": risk, "drawdown": dd,
+                    "color": color, "style": style, "fill_mode": getattr(broker, "fill_mode", "next")})
+    return out
 
 
 def factor_payload(path=None):
@@ -834,6 +899,11 @@ def build_payload(state=None):
         payload["paper"] = paper_payload(state)
     except Exception:
         payload["paper"] = None
+    # ⑤a 第102轮：多账户权益曲线叠加（15账户各独立 db）
+    try:
+        payload["paper_multi"] = papers_payload(state)
+    except Exception:
+        payload["paper_multi"] = []
     # ⑥ G3 绩效三件（水下/滚动夏普/月度热力；优先纸面、否则组合回测；独立 try）
     try:
         payload["tear"] = tear_payload(state)
@@ -1024,9 +1094,22 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <div class="chips" id="peq-chips"></div>
     <div id="c-paper" class="chart" style="height:320px"></div>
   </div>
+  <div class="card full">
+    <h3>⑤a 多账户净值对比（归一化·首个快照=1.0） <span class="sub">第105轮：按各账户首个快照归一（消除启动时间差）；颜色=资金档 线型=风格（粗实=激进/细实=基准/虚=保守）</span></h3>
+    <div class="chips" id="mm-cmp-chips" style="margin-bottom:6px;">
+      <span class="chip" onclick="mmToggleScale()" id="mm-scale-chip" style="cursor:pointer;">刻度: 线性</span>
+      <span class="chip" onclick="mmToggleBase()" id="mm-base-chip" style="cursor:pointer;">视图: 全部15</span>
+      <span class="chip" onclick="mmAllBase()" id="mm-baseonly-chip" style="cursor:pointer;">只看基准(5)</span>
+    </div>
+    <div id="c-paper-mm" class="chart" style="height:320px"></div>
+  </div>
   <div class="card">
     <h3>纸面账户回撤 <span class="sub">相对历史峰值，越深越红</span></h3>
     <div id="c-paper-dd" class="chart" style="height:240px"></div>
+  </div>
+  <div class="card full">
+    <h3>多账户回撤对比（归一化） <span class="sub">第102轮：15账户水下回撤叠加</span></h3>
+    <div id="c-paper-dd-mm" class="chart" style="height:240px"></div>
   </div>
   <div class="card">
     <h3>纸面风险度 / 同时持仓数 <span class="sub">风险度=占用÷动态权益；100% 触强平线</span></h3>
@@ -1141,6 +1224,7 @@ var AXIS = "#9a9a9a", SPLIT = "#2c2c2c", BG = "#1c1c1c";
 var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
                  "c-ic", "c-mono", "c-cal", "c-out",
                  "c-paper", "c-paper-dd", "c-paper-risk",
+                 "c-paper-mm", "c-paper-dd-mm",
                  "c-tear-uw", "c-tear-rs", "c-tear-m",
                  "c-pnav", "c-creview-sweep", "c-creview-fwd",
                  "c-attr-factor", "c-attr-bhb",
@@ -1307,6 +1391,88 @@ function renderPaper(p) {
       {name: "持仓数", type: "bar", yAxisIndex: 1, data: p.npos, itemStyle: {color: "rgba(255,214,107,0.30)"}}
     ]
   });
+}
+
+var PM_ALL = null, PM_SCALE = "linear", PM_BASE_ONLY = false;
+function _pmVisible(pm) {
+  if (!PM_BASE_ONLY) return pm;
+  return pm.filter(function(a) { return (/基准/.test(a.name)); });
+}
+function renderPaperMulti(pm) {
+  if (!pm || !pm.length) {
+    empty("c-paper-mm", "暂无多账户净值对比（多账户影子系统启动后自动出图）");
+    empty("c-paper-dd-mm", ""); empty("c-paper-risk-mm", "");
+    return;
+  }
+  PM_ALL = pm;
+  _pmRedraw();
+}
+function _pmRedraw() {
+  var pm = _pmVisible(PM_ALL);
+  var eqSeries = [], riskSeries = [], ddSeries = [], legends = [];
+  var labels = {}, showBase = PM_BASE_ONLY;
+  // 系统等权基准线（全部账户逐时点等权均值）
+  if (PM_ALL && PM_ALL.length) {
+    var N = PM_ALL[0].dt.length, base = new Array(N).fill(0), cnt = 0;
+    PM_ALL.forEach(function(a) { if (!a.norm) return; for (var i=0;i<N;i++){ if (a.norm[i]!==null && a.norm[i]!==undefined){ base[i]+=a.norm[i];} } cnt++; });
+    if (cnt) base = base.map(function(v){ return v/cnt; });
+    labels["系统等权均值"] = {lineStyle:{width:2.5, color:"#ffffff", type:"solid"}};
+    eqSeries.push({name:"系统等权均值", type:"line", data:base, showSymbol:false,
+                   lineStyle:{width:2.5, color:"#ffffff", type:"solid"}, z:3});
+    legends.push("系统等权均值");
+  }
+  pm.forEach(function(a) {
+    legends.push(a.name);
+    // 线型按风格：激进粗实线 / 基准细实线 / 保守虚线
+    var width = (/:基准$|基准|保守/.test(a.name) ? 1.5 : 2.5);
+    var dash = /保守/.test(a.name) ? "dashed" : "solid";
+    var norm = a.norm || (a.eq0 > 0 ? a.equity.map(function(v){ return v/a.eq0; }) : []);
+    eqSeries.push({name:a.name, type:"line", data:norm, showSymbol:false,
+                   lineStyle:{width:width, color:a.color, type:dash}, smooth:true, z:2});
+    riskSeries.push({name:a.name, type:"line", data:a.risk, showSymbol:false,
+                     lineStyle:{width:1.5, color:a.color, type:dash}});
+    ddSeries.push({name:a.name, type:"line", data:a.drawdown, showSymbol:false,
+                   lineStyle:{width:1.5, color:a.color, type:dash}});
+  });
+  var yAxisCfg = {type:PM_SCALE, scale:true,
+    axisLabel:{color:AXIS, formatter:function(v){return (v*100).toFixed(1)+"%";}},
+    splitLine:{lineStyle:{color:SPLIT}}, axisLine:{lineStyle:{color:"#444"}}};
+  if (PM_SCALE === "log") { yAxisCfg.logBase = 10; }
+  var opt1 = {backgroundColor:BG,
+    tooltip:{trigger:"axis", valueFormatter:function(v){ return (v*100).toFixed(1)+"%"; }},
+    legend:{data:legends, textStyle:{color:AXIS, fontSize:11}, top:2, type:"scroll"},
+    grid:baseGrid({right:56}),
+    xAxis:Object.assign({type:"category", data:PM_ALL[0].dt, boundaryGap:false}, axisStyle()),
+    yAxis:yAxisCfg, series:eqSeries};
+  mk("c-paper-mm").setOption(opt1);
+  var leg2 = pm.map(function(a){return a.name;});
+  if (showBase) leg2.unshift("系统等权均值");
+  mk("c-paper-dd-mm").setOption({backgroundColor:BG,
+    tooltip:{trigger:"axis", valueFormatter:function(v){return pct(v);}},
+    legend:{data:leg2, textStyle:{color:AXIS, fontSize:11}, top:2, type:"scroll"},
+    grid:baseGrid(), xAxis:Object.assign({type:"category", data:PM_ALL[0].dt, boundaryGap:false}, axisStyle()),
+    yAxis:{type:"value", min:0, max:function(v){return Math.max(v.max*1.15,0.005);},
+           axisLabel:{color:AXIS, formatter:function(v){return (v*100).toFixed(1)+"%";}},
+           splitLine:{lineStyle:{color:SPLIT}}, axisLine:{lineStyle:{color:"#444"}}},
+    series:ddSeries});
+}
+function mmToggleScale() {
+  PM_SCALE = (PM_SCALE === "linear") ? "log" : "linear";
+  var el = document.getElementById("mm-scale-chip");
+  if (el) el.innerHTML = "刻度: " + (PM_SCALE === "linear" ? "线性" : "对数");
+  _pmRedraw();
+}
+function mmToggleBase() {
+  PM_BASE_ONLY = !PM_BASE_ONLY;
+  var el = document.getElementById("mm-base-chip");
+  if (el) el.innerHTML = "视图: " + (PM_BASE_ONLY ? "只看基准(5)" : "全部15");
+  _pmRedraw();
+}
+function mmAllBase() {
+  PM_BASE_ONLY = true;
+  var el = document.getElementById("mm-base-chip");
+  if (el) el.innerHTML = "视图: 只看基准(5)";
+  _pmRedraw();
 }
 
 function renderTear(t) {
@@ -2068,6 +2234,7 @@ function loadAndRender() {
     renderFactor(D.factor_ic);
     renderCalib(D.calibration, D.outcomes);
     renderPaper(D.paper);
+    renderPaperMulti(D.paper_multi);
     renderTear(D.tear);
     renderPnav(D.portfolio_nav);
     renderCreview(D.circuit_review);
@@ -2082,7 +2249,7 @@ function loadAndRender() {
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
-    renderPaper(null); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
+    renderPaper(null); renderPaperMulti([]); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
     renderSpread(null); renderJournal(null); renderPrisk(null);
     renderWf(null); renderFh(null); renderShadow(null); };
   document.body.appendChild(sc);

@@ -219,7 +219,7 @@ def fetch_daily_kline(symbol, retry=2):
     last_err = None
     for _ in range(retry + 1):
         try:
-            r = http.get(url, headers=config.HEADERS_COMMON,
+            r = http.get(url, headers=config.HEADERS_SINA,
                              timeout=config.TIMEOUT)
             r.encoding = "utf-8"
             m = re.search(r"\((\[.*\])\)", r.text, re.S)
@@ -246,7 +246,7 @@ def fetch_intraday_kline(symbol, period=30, retry=1):
     last_err = None
     for _ in range(retry + 1):
         try:
-            r = http.get(url, headers=config.HEADERS_COMMON, timeout=config.TIMEOUT)
+            r = http.get(url, headers=config.HEADERS_SINA, timeout=config.TIMEOUT)
             r.encoding = "utf-8"
             m = re.search(r"\((\[.*\])\)", r.text, re.S)
             if m:

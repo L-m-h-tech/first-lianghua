@@ -32,6 +32,9 @@ from utils import LOG
 CDP_PORTS = (9222, 9223)
 OVL_URL = "https://www.openvlab.cn/market"
 JYKC_URL = "https://www.jiaoyikecha.com/"
+OVL_CTAMAP_URL = "https://www.openvlab.cn/api/ctamap-all?add_overseas=true"
+OVL_HEADERS = {"User-Agent": config.HEADERS_COMMON.get("User-Agent", ""),
+               "Referer": "https://www.openvlab.cn/market"}
 
 _NAME_ALIAS = {
     "沪金": "黄金", "沪银": "白银", "沪铜": "铜", "沪铝": "铝", "沪锌": "锌",
@@ -130,9 +133,65 @@ def parse_openvlab(text):
     return out
 
 
+def parse_openvlab_ctamap(rows):
+    """openvlab /api/ctamap-all 结果列表 -> {"atm_iv": {标准品种名: {...}}}
+
+    字段映射（对齐装置侧 openvlab_collector.parse_ctamap_rows，复用已实测口径）：
+      product_alias  -> 中文品种名（经 _map_name 转标准名）
+      product        -> 合约代码（"EG_O" -> "eg"）
+      price          -> 最新价
+      atmv_current   -> atm_iv（平值隐波 %）
+      atmv_1dchg     -> iv_chg（隐波1日变化）
+      atmv_percentile-> iv_pct（隐波历史百分位,0~100）
+      skew_current   -> skew（偏度）
+      skew_percentile-> skew_pct
+      rv22/hv        -> hv（20日实波）
+      exp/expiry_date-> 到期
+      frontfwd_mom   -> 前月/远月动量
+    """
+    out = {"atm_iv": {}}
+    for item in rows or []:
+        prod_und = (item.get("prodUnd") or "").strip()
+        if not prod_und:
+            continue  # 跳过 prodUnd 为空的海外品种（与装置侧口径一致）
+        v = _map_name(item.get("product_alias") or "")
+        if not v:
+            continue
+        code = (item.get("product") or prod_und).split("_")[0].lower()
+        try:
+            out["atm_iv"][v] = {
+                "code": code,
+                "price": _f(item.get("price")),
+                "atm_iv": _f(item.get("atmv_current")),
+                "iv_chg": _f(item.get("atmv_1dchg")),
+                "iv_pct": _f(item.get("atmv_percentile")),
+                "skew": _f(item.get("skew_current")),
+                "skew_pct": _f(item.get("skew_percentile")),
+                "hv": _f(item.get("rv22")),
+                "carry": _f(item.get("ctn")),
+                "frontfwd_mom": _f(item.get("frontfwd_mom")),
+                "exp": (item.get("exp") or ""),
+                "source": "ctamap",
+            }
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _f(x):
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_jiaoyikecha(text):
-    """解析交易可查首页文本 → {"views":{}, "headlines":[], "mood":None}"""
-    out = {"views": {}, "headlines": [], "mood": None}
+    """解析交易可查首页文本 → {"views":{}, "headlines":[], "mood":None,
+    "external":{}, "rating":{}, "fundamentals":[], "feed":[]}"""
+    out = {"views": {}, "headlines": [], "mood": None,
+           "external": {}, "rating": {}, "fundamentals": [], "feed": []}
     if not text:
         return out
     lines = [l.strip() for l in text.split("\n")]
@@ -177,7 +236,155 @@ def parse_jiaoyikecha(text):
                                "volatile": got.get("震荡", 0),
                                "bearish": got.get("看空", 0),
                                "total": sum(got.values())}
+    # 3) 外盘比价表：innerText 中表格字段间有空行，过滤空行后 每5行一组
+    #    （外盘品种/基准时间/基准价格/最新价格/偏离基准，品种名在 _EXT_MAP）
+    nb = [l for l in lines if l]
+    for bi, l in enumerate(nb):
+        if l == "外盘品种":
+            # 表头行后可能是列头(基准时间/基准价格/...)，先跳到第一个品种行
+            j = bi + 1
+            while j < len(nb) and nb[j] not in _EXT_MAP:
+                j += 1
+            while j + 4 < len(nb):
+                name = nb[j]
+                if name not in _EXT_MAP:
+                    break
+                try:
+                    out["external"][name] = {
+                        "time": nb[j + 1],
+                        "base": _fnum(nb[j + 2]),
+                        "last": _fnum(nb[j + 3]),
+                        "dev": _fnum(nb[j + 4].rstrip("%")),
+                        "dev_pct": nb[j + 4],
+                    }
+                except ValueError:
+                    pass
+                j += 5
+            break
+    # 4) 乾坤归一综合评级：标题行("乾坤归一综合评级...")与其后的品种/涨跌幅行。
+    #    每2行一组 = "合约 评级价格" / "涨跌幅"。标题行也可能与首个品种同
+    #    一行（如 "乾坤归一综合评级（...）玻璃2701 弱多972"），故先裁剪标题前缀。
+    _GRADE_WORDS = "强多|中多|弱多|中性|强空|中空|弱空"
+    for i, l in enumerate(lines):
+        if "乾坤归一综合评级" in l:
+            head = l.split("乾坤归一综合评级", 1)[1]
+            j = i
+            prev = head
+            while j < n:
+                # 行内可能残留 "（本数据仅供参考..."实际无此；统一先裁再匹配
+                cur = lines[j] if j != i else head
+                mm = re.match(r"^.*?([\u4e00-\u9fa5A-Za-z0-9]{1,10}?\d{4})"
+                              rf"\s*({_GRADE_WORDS})([+-]?[\d.]+)$", cur)
+                mv = lines[j + 1].rstrip("%") if j + 1 < n else ""
+                if mm and (mv == "0" or _is_float(mv)):
+                    key = (mm.group(1) + " " + mm.group(2) + mm.group(3)).strip()
+                    # 品种名标准化：合约中文部分（去尾部数字）→ 标准品种名（供 analyzer 精确匹配）
+                    cn = re.sub(r"\d+$", "", mm.group(1))
+                    std_v = _map_name(cn)
+                    out["rating"][key] = {
+                        "contract": mm.group(1),
+                        "grade": mm.group(2),
+                        "price": _fnum(mm.group(3)),
+                        "chg": _fnum(mv),
+                        "chg_pct": lines[j + 1],
+                        "variety": std_v or cn,
+                    }
+                    j += 2
+                    continue
+                j += 1
+                # 已过完整评级表仍未匹配则退出（评级表是连续块）
+                if lines[j - 1] and not any(w in lines[j - 1] for w in
+                                            ("强多", "中多", "弱多", "中性", "强空", "中空", "弱空")):
+                    if j - i > 3:
+                        break
+            break
+    # 5) 最新基本面数据：标题行("最新基本面数据 新")，过滤空行后每组4行
+    #    = 商品 / 指标 / "值 / 变化" / 日期
+    fb = None
+    for i, l in enumerate(lines):
+        if l.startswith("最新基本面数据"):
+            fb = i
+            break
+    if fb is not None:
+        nb2 = [l for l in lines[fb + 1:] if l]
+        j = 0
+        # 跳过标题残留/表头（更多/商品/数据）
+        while j < len(nb2) and nb2[j] in ("更多", "商品", "数据", ">>"):
+            j += 1
+        while j + 3 < len(nb2):
+            name, metric = nb2[j], nb2[j + 1]
+            val, date_v = nb2[j + 2], nb2[j + 3]
+            m_dt = re.match(r"^\d{4}-\d{2}-\d{2}$", date_v or "")
+            main_v = re.match(r"^(.*?)\s*/\s*([+-]?[\d.]+)$", val or "")
+            if not metric or not m_dt:
+                j += 1
+                continue
+            out["fundamentals"].append({
+                "item": name, "metric": metric, "value": val,
+                "base": (main_v.group(1) if main_v else None),
+                "chg": (main_v.group(2) if main_v else None),
+                "date": date_v})
+            j += 4
+    # 6) 信息流：时间戳行(MM/DD HH:MM) 后跟 分类标题 + 内容（跨行）
+    _FEED_KINDS = ("商品盈亏席位", "牛熊线", "龙虎比", "商品持仓", "实时资讯",
+                   "商品资讯", "现货信息", "资金流入流出", "最亏席位", "最佳席位")
+    i = 0
+    while i < n:
+        m_ts = re.match(r"^(\d{2}/\d{2}\s+\d{2}:\d{2})$", lines[i])
+        if not m_ts:
+            i += 1
+            continue
+        ts, j = m_ts.group(1), i + 1
+        while j < n and not lines[j]:
+            j += 1
+        if j < n and lines[j] in _FEED_KINDS:
+            kind = lines[j]
+            j += 1
+            while j < n and not lines[j]:
+                j += 1
+            body, k = [], j
+            while k < n and not re.match(r"^\d{2}/\d{2}\s+\d{2}:\d{2}$", lines[k]):
+                body.append(lines[k])
+                k += 1
+            content = "\n".join(x for x in body if x).strip()
+            if content:
+                out["feed"].append({"ts": ts, "kind": kind, "text": content[:120]})
+            i = k
+            continue
+        i = j
+    # 去重（页面重复渲染导致的时间戳/内容完全一致条目）
+    seen, uniq = set(), []
+    for f in out["feed"]:
+        key = (f["kind"], f["text"][:60])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(f)
+    out["feed"] = uniq
+    # 7) 市场氛围：动态标签「偏多/震荡/偏空氛围」（Raphaël SVG 仪表盘，
+    #    数值 0~100 不渲染为文本，仅能可靠取到方向标签）
+    for l in lines:
+        m = re.match(r"^(偏多|震荡|偏空)氛围$", l)
+        if m:
+            out["mood"] = {"label": l, "dir": {"偏多": 1, "震荡": 0, "偏空": -1}[m.group(1)]}
+            break
     return out
+
+
+# 外盘比价表品种名（17个，页面「外盘比价」区块）
+_EXT_MAP = {"伦铜", "伦镍", "伦铅", "伦锌", "伦铝", "伦锡", "美豆油", "美白银",
+            "美黄金", "铁矿FE", "马棕油", "美棉花", "美豆", "美玉米", "布原油",
+            "美豆粕", "美原油"}
+
+
+def _fnum(x):
+    """宽松数字解析（容忍千分位逗号/百分号），失败返回 None。"""
+    if x is None:
+        return None
+    s = str(x).replace(",", "").replace("%", "").strip()
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
 class BrowserReader:
@@ -186,7 +393,8 @@ class BrowserReader:
     def __init__(self):
         self.lock = threading.Lock()
         self.ovl = {"rank": {}, "atm_iv": {}, "prem": {}}
-        self.jykc = {"views": {}, "headlines": [], "mood": None}
+        self.jykc = {"views": {}, "headlines": [], "mood": None,
+                     "external": {}, "rating": {}, "fundamentals": [], "feed": []}
         self._head_acc = {}   # 头条轮播，跨多次读取累积 (label,variety)->headline
         self.status = "未检测到调试端口"
         self.updated = None
@@ -240,6 +448,8 @@ class BrowserReader:
             if not self._notified:
                 LOG.info("浏览器页面直读未启用: %s", self.status)
                 self._notified = True
+            # CDP不可用时仍尝试 REST 补全 OpenVlab（REST 不依赖调试端口）
+            self._refresh_openvlab_rest()
             return
         changed = self._ensure_tab(port, tabs, "openvlab.cn", OVL_URL)
         changed |= self._ensure_tab(port, tabs, "jiaoyikecha", JYKC_URL)
@@ -255,7 +465,10 @@ class BrowserReader:
                     txt = self._cdp_eval(t["webSocketDebuggerUrl"],
                                          "document.body.innerText") or ""
                     with self.lock:
-                        self.ovl = parse_openvlab(txt)
+                        ovl_parsed = parse_openvlab(txt)
+                        self.ovl["rank"].update(ovl_parsed["rank"])
+                        self.ovl["prem"].update(ovl_parsed["prem"])
+                        self.ovl["atm_iv"].update(ovl_parsed["atm_iv"])
                     got_ovl = True
                 elif "jiaoyikecha" in url and not got_jyk:
                     txt = self._cdp_eval(t["webSocketDebuggerUrl"],
@@ -266,16 +479,42 @@ class BrowserReader:
                         for h in parsed["headlines"]:
                             self._head_acc[(h["label"], h["variety"])] = h
                         self.jykc["headlines"] = list(self._head_acc.values())[-60:]
+                        # 新增字段合并（增量，保留最新结果）
+                        self.jykc["external"] = parsed.get("external") or {}
+                        self.jykc["rating"] = parsed.get("rating") or {}
+                        self.jykc["fundamentals"] = parsed.get("fundamentals") or []
+                        self.jykc["feed"] = parsed.get("feed") or []
+                        if parsed.get("mood") is not None:
+                            self.jykc["mood"] = parsed["mood"]
                     got_jyk = True
+            # REST 补全 OpenVlab atm_iv（83品种全量覆盖，弥补 CDP 主表只显示7个的不足）
+            self._refresh_openvlab_rest()
             with self.lock:
                 self.updated = datetime.now()
                 self.status = (f"页面直读中: OpenVlab榜单{len(self.ovl['rank'])}条/真实隐波"
-                               f"{len(self.ovl['atm_iv'])}个, 交易可查头条{len(self.jykc['headlines'])}条")
+                               f"{len(self.ovl['atm_iv'])}个, 交易可查头条{len(self.jykc['headlines'])}条"
+                               + (f", 外盘{len(self.jykc['external'])}个" if self.jykc['external'] else "")
+                               + (f", 评级{len(self.jykc['rating'])}" if self.jykc['rating'] else "")
+                               + (f", 基本面{len(self.jykc['fundamentals'])}项" if self.jykc['fundamentals'] else "")
+                               + (f", 氛围{self.jykc['mood'].get('label','')}" if self.jykc.get("mood") else ""))
             self._notified = False
         except Exception as e:
             with self.lock:
                 self.status = f"页面读取失败: {e}"
             LOG.debug("浏览器页面读取失败: %s", e)
+
+    def _refresh_openvlab_rest(self):
+        """REST 补全 OpenVlab atm_iv（ctamap-all 83品种全量，不依赖调试端口）"""
+        try:
+            r = http.get(OVL_CTAMAP_URL, headers=OVL_HEADERS, timeout=8)
+            data = (r.json() or {}).get("result")
+            if data:
+                parsed = parse_openvlab_ctamap(data)
+                if parsed.get("atm_iv"):
+                    with self.lock:
+                        self.ovl["atm_iv"].update(parsed["atm_iv"])
+        except Exception:
+            pass  # REST 失败静默，CDP 页面读取已保证基线可用
 
     def loop(self, interval=30):
         LOG.info("浏览器页面直读线程启动（每%d秒）", interval)
@@ -288,7 +527,11 @@ class BrowserReader:
 
     # ---------- 对外快照 ----------
     def page_info(self, variety):
-        """某品种的页面数据汇总（供因子/预测/策略使用）"""
+        """某品种的页面数据汇总（供因子/预测/策略使用）
+
+        返回字段：rank/atm_iv/prem/view/headlines/mood（既有，保持签名）+ 新增
+        rating（乾坤评级, 全品种表里含该品种的行）、external（外盘比价全表）、
+        fundamentals（基本面全表）、feed（信息流全窗口）。"""
         with self.lock:
             rank = dict(self.ovl["rank"].get(variety) or {})
             atm = dict(self.ovl["atm_iv"].get(variety) or {})
@@ -296,8 +539,13 @@ class BrowserReader:
             view = dict(self.jykc["views"].get(variety) or {})
             heads = [h for h in self.jykc["headlines"] if h.get("variety") == variety]
             mood = self.jykc.get("mood")
+            rating = dict(self.jykc["rating"]) or {}
+            external = dict(self.jykc["external"]) or {}
+            fundamentals = list(self.jykc["fundamentals"]) or []
+            feed = list(self.jykc["feed"]) or []
         return {"rank": rank, "atm_iv": atm, "prem": prem, "view": view,
-                "headlines": heads, "mood": mood}
+                "headlines": heads, "mood": mood, "rating": rating,
+                "external": external, "fundamentals": fundamentals, "feed": feed}
 
     def status_line(self):
         with self.lock:
