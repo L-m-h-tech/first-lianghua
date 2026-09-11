@@ -51,7 +51,10 @@ def tick_once(state, ts, quotes):
     # 第108/113轮：独立管线完整重算（默认开；False/失败=回退快照=第103轮旧行为）
     if getattr(config, "PAPER_TICK_REPRICE", False):
         try:
-            watchlist = list(getattr(state, "watchlist", None) or [])
+            # 第115轮：夜盘只对活跃子集做独立分析（tick_loop 已写入 state._paper_watchlist）；
+            # 无活跃子集（如刚进夜盘、子集为空）回退快照与旧行为一致。
+            watchlist = list(getattr(state, "_paper_watchlist", None)
+                             or getattr(state, "watchlist", None) or [])
             if watchlist:
                 from paper_analysis import paper_analyze
                 _pa = paper_analyze(state, quotes, watchlist)
@@ -128,9 +131,14 @@ def tick_loop(state):
                 continue
             # 行情代码：reprice 模式用 watchlist（不依赖 run_cycle 快照是否已落）；
             # 旧模式沿用快照 codes（向后兼容）
+            # 第115轮：夜盘时段只拉"正在自身交易时段"的品种子集——无夜盘品种夜盘行情
+            # 冻结为上一收盘价，拉取并撮合会产生无意义成交；活跃子集由 utils.trading_subset 筛。
             if getattr(config, "PAPER_TICK_REPRICE", False):
-                watchlist = list(getattr(state, "watchlist", None) or [])
-                codes = sorted({meta["code"] for _, meta in watchlist})
+                from utils import trading_subset
+                _wl = trading_subset(getattr(state, "watchlist", None) or [])
+                codes = sorted({meta["code"] for _, meta in _wl})
+                if _wl and codes:
+                    state._paper_watchlist = list(_wl)   # 供 tick_once 用同子集做独立分析
             else:
                 snap = getattr(state, "_paper_stash", None) or {}
                 codes = snap.get("codes") or []

@@ -55,3 +55,9 @@ data/paper_accounts/
 data/xcqihuo_raw/
 data/xcqihuo_preview/
 data/legacy_galaxy/
+
+# ===== CTP 会话残留（DialogRsp/QueryRsp/TradingDay .con）=====
+*.con
+
+# ===== 图表/费率表自动备份（*.bak_时间戳）=====
+data/*.bak_*

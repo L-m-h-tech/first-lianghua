@@ -496,6 +496,19 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
         for key, meta in watchlist:
             q = quotes.get(meta["code"]) or {}
             ind, kline_ok = state.klines.get(meta["code"], meta["cat"])
+            # 第118轮：缓存/失败缓存异常时 ind 可能为 None（历史上 refresh 曾把 None 写入失败缓存），
+            # 防御性兜底为默认波动率 fallback，避免 dict(None) 崩溃导致整轮分析异常（主报告无法生成）。
+            if ind is None:
+                ind = {"close": 0.0, "prev_close": 0.0, "day_chg": 0.0,
+                       "hv20": config.DEFAULT_HV.get(meta["cat"], 0.25),
+                       "hv60": config.DEFAULT_HV.get(meta["cat"], 0.25),
+                       "ma5": 0.0, "ma10": 0.0, "ma20": 0.0,
+                       "atr": 0.0, "ret5": 0.0, "ret20": 0.0,
+                       "ret63": None, "ret126": None, "ret252": None,
+                       "tsmom63": None, "tsmom126": None, "tsmom252": None,
+                       "tsmom_blend": None, "tsmom_n_valid": 0,
+                       "tech": {}, "hv_percentile": None, "vol_cone": {},
+                       "last_date": ""}
             ind = dict(ind)
             ind["intraday"] = intraday_map.get(meta["code"], ({}, False))[0]
             n_score, n_hits = state.news.score(meta["cat"], variety=key)

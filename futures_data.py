@@ -11,6 +11,7 @@
 """
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -31,12 +32,172 @@ def _f(s):
         return 0.0
 
 
+def _in_trading():
+    """当前是否在任意品种的交易时段（日盘+夜盘）。
+    收盘后日线数据不再变化，且新浪 stock2 对盘后请求返回 WAF 拦截页（200 但无K线数组），
+    造成大量无效请求；盘后直接复用已有缓存，跳过新浪/CDP 日线拉取。"""
+    try:
+        from utils import is_trading_time
+        return bool(is_trading_time()[0])
+    except Exception:
+        return True  # 判定失败保守当交易中，不阻断正常链路
+
+
+# ---------------- 第116轮：新浪 WAF 封锁状态机（防请求放大器） ----------------
+# 核心问题：456 封锁期间 KlineCache 失败缓存 TTL=5分钟 < 分析周期10分钟，
+# 导致每 5-10 分钟全 64 品种重新打新浪 stock2——封了继续打，越打越封（恶性循环）。
+# 修复：封锁期完全短路日线请求 + 失败缓存动态拉长到 60 分钟 + 整站封锁自动检测。
+
+_sina_lock = threading.Lock()
+_sina_block_until = 0.0       # 456 封锁到期（time.monotonic）
+_sina_block_streak = 0        # 连续 456 触发次数（用于递增封锁时长）
+_WAF_BLOCK_BASE = 60 * 60     # 456 封锁基础时长 1 小时（秒）
+_WAF_BLOCK_MAX = 6 * 60 * 60  # 连续触发时封锁时长上限 6 小时
+
+# 失败率统计（整站封锁检测）：连续失败率 ≥80% 判定整站封锁
+_KLINE_WINDOW = 600.0          # 统计窗口 10 分钟
+_KLINE_STAT = {"start": None, "ok": 0, "fail": 0}
+_FAIL_RATIO_TRIGGER = 0.80     # 失败率阈值
+_FAIL_RATIO_MIN_TOTAL = 16     # 至少 16 次请求才判定（避免小样本误判）
+
+
+def _sina_waf_blocked():
+    """是否处于新浪 WAF 封锁冷却期（期间日线/akshare/CDP 全部短路）。"""
+    with _sina_lock:
+        return time.time() < _sina_block_until
+
+
+def _sina_block_info():
+    """返回当前封锁剩余秒数（供日志/看板使用），未封锁返回 0。"""
+    with _sina_lock:
+        remain = _sina_block_until - time.time()
+        return max(0.0, remain)
+
+
+def _sina_note_block():
+    """检测到 456：进入封锁期，时长随连续封锁次数指数递增（1h→2h→...封顶6h），
+    并立即重置成功计数。同时记录到 REGISTRY（供数据健康看板展示）。"""
+    global _sina_block_until, _sina_block_streak
+    with _sina_lock:
+        _sina_block_streak += 1
+        dur = min(_WAF_BLOCK_BASE * (2 ** (_sina_block_streak - 1)), _WAF_BLOCK_MAX)
+        _sina_block_until = time.time() + dur
+        LOG.warning("新浪WAF 456封锁：连续第%d次，封锁 %d 分钟（期间日线/akshare/CDP零请求）",
+                    _sina_block_streak, dur // 60)
+        try:
+            from data_router import REGISTRY
+            REGISTRY.record("kline_sina_waf", False)
+        except Exception:
+            pass
+
+
+def _kline_note_success():
+    """日线请求成功：重置连续封锁计数 + 更新失败率统计。"""
+    global _sina_block_streak
+    with _sina_lock:
+        _sina_block_streak = 0  # 成功=封锁解除
+        st = _KLINE_STAT
+        if st["start"] is None or time.time() - st["start"] > _KLINE_WINDOW:
+            st["start"] = time.time()
+            st["ok"], st["fail"] = 0, 0
+        st["ok"] += 1
+
+
+def _kline_note_fail():
+    """日线请求失败（网络异常/456/响应异常）：累计失败计数，判断是否触发整站封锁。
+    无参数设计：统计窗口内的请求/失败计数，不关心具体品种。"""
+    global _sina_block_until, _sina_block_streak
+    with _sina_lock:
+        st = _KLINE_STAT
+        now = time.time()
+        if st["start"] is None or now - st["start"] > _KLINE_WINDOW:
+            st["start"] = now
+            st["ok"], st["fail"] = 0, 1
+            return
+        st["fail"] += 1
+        total = st["ok"] + st["fail"]
+        if total >= _FAIL_RATIO_MIN_TOTAL and st["fail"] / total >= _FAIL_RATIO_TRIGGER:
+            ok_val, fail_val = st["ok"], st["fail"]
+            st["ok"], st["fail"] = 0, 0
+            LOG.warning("新浪日线整站失败率%.0f%%（%d/%d次），判定WAF封锁 %d 分钟",
+                        100 * fail_val / max(1, total), fail_val, total, _WAF_BLOCK_BASE // 60)
+            _sina_block_until = now + _WAF_BLOCK_BASE
+            _sina_block_streak += 1
+            try:
+                from data_router import REGISTRY
+                REGISTRY.record("kline_sina_waf", False)
+            except Exception:
+                pass
+
+
+# ---------------- 新浪白名单出口（2026-09-11） ----------------
+# 优质云主机白名单 IP：配置 SINA_WHITELIST_PROXY 后，新浪 stock2 请求优先走它（豁免 456 频控）。
+# 未配置/失败/超时自动回落本机直连（False=不拦截），与第116轮 WAF 状态机正交（封锁仍按本机判定）。
+
+def _sina_whitelist_proxy():
+    """当前生效的白名单代理 "host:port" 或 ""（未配置/未生效）。"""
+    try:
+        return getattr(config, "SINA_WHITELIST_PROXY", "") or ""
+    except Exception:
+        return ""
+
+
+# ---- 全局新浪 stock2 限流（2026-09-11 第120轮实测结论） ----
+# 320 任务瞬间并发（6线程）把白名单 IP 和本机 IP 同时打进 456 封锁——新浪对任意 IP 高频必封，
+# 不存在"白名单豁免"。故对 stock2（日线 getDailyKLine + 分钟K getFewMinLine）做全局串行化限流：
+# 任意时刻只有一次请求进入新浪，且间隔 >= SINA_REQ_GAP 秒（默认 3s ≈ 20次/min 安全线以内）。
+# 白名单/本机共用同一节奏，最坏情况单 IP 频率减半，双保险不触发 456。
+_sina_gate = threading.Lock()
+_sina_last_req = 0.0
+
+def _sina_throttle():
+    """新浪 stock2 全局限流：恒速 >= SINA_REQ_GAP 秒/次。自动补齐等待，不阻塞主流程。"""
+    global _sina_last_req
+    gap = float(getattr(config, "SINA_REQ_GAP", 3.0) or 3.0)
+    with _sina_gate:
+        wait = _sina_last_req + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _sina_last_req = time.time()
+
+
+def _sina_whitelist_get(url, timeout=None):
+    """经白名单代理发送新浪请求，成功返回解析后的 K线数组（list），失败返回 None。
+
+    与既有代理池同款机制（urllib ProxyHandler）；仅当返回正文含 K线数组且非 456 才算成功。
+    未配置白名单代理 / 白名单被 456 / 超时 / 无数组 一律返回 None，由调用方回落本机直连。
+    """
+    proxy = _sina_whitelist_proxy()
+    if not proxy:
+        return None
+    try:
+        import urllib.request as _ur
+        handler = _ur.ProxyHandler({
+            "http": "http://%s" % proxy,
+            "https": "http://%s" % proxy})
+        opener = _ur.build_opener(handler)
+        req = _ur.Request(url, headers=config.HEADERS_SINA)
+        body = opener.open(req, timeout=timeout or getattr(config, "SINA_WHITELIST_TIMEOUT", 8)).read()
+        text = body.decode("utf-8", "replace")
+        if "456" in text[:64]:
+            LOG.warning("白名单出口也被新浪WAF拦截(456)，回落本机直连")
+            _sina_note_block()
+            return None
+        m = re.search(r"\((\[.*\])\)", text, re.S)
+        if m and len(m.group(1)) > 100:
+            return json.loads(m.group(1))
+        return None
+    except Exception as e:
+        LOG.debug("白名单出口请求失败(%s): %s", proxy, e)
+        return None
+
+
 def fetch_quotes(codes):
     """批量拉取品种最新行情（自动分批，每批40个），返回 {code: {...}}，失败品种不返回。
 
-    主源=新浪 hq.sinajs 主连快照；新浪整批失败或个别品种缺失时，用东财 push2 主连快照
-    （secid=市场号.品种小写m，如113.rbm，2026-09-01实测稳定、字段f111=持仓量）只补缺失项，
-    新浪正常时不产生任何额外请求（主备降级，保证不比单源差）。"""
+    主源=新浪 hq.sinajs 主连快照；新浪整批失败或个别品种缺失时，用天勤 TqSdk 行情兜底
+    （第119轮：删除东财 push2 兜底——本机 IP 被东财 TLS 指纹封锁，批量接口 RemoteDisconnected
+    持续断连，保留无意义）。"""
     codes = [c for c in codes if c]
     quotes = {}
     for i in range(0, len(codes), 40):
@@ -54,24 +215,21 @@ def fetch_quotes(codes):
             _parse_quote(code, r.text, quotes)
     missing = [c for c in codes if c not in quotes]
     if missing:
-        # G11：东财兜底源若处于熔断冷却期则直接跳过（它本来也连续失败，避免向坏源空发请求）；
-        # 健康时该 allow() 恒为 True，行为与旧版逐字节一致。
-        em_health = REGISTRY.source("quote_em")
-        if not em_health.allow():
-            em_health.note_skipped()
-            LOG.info("东财行情兜底源熔断冷却中（剩余%.0fs），本轮跳过兜底",
-                     em_health.snapshot()["cooldown_remaining"])
-            return quotes
+        # 天勤 TqSdk 兜底（可选依赖+可选账户；未配置时零请求返回 {}）。
+        # 后台线程订阅缓存，此处纯读取零阻塞；只补新浪没拿到的品种。
+        # 第119轮：删除原东财 push2 第二兜底（TLS 指纹封锁持续断连）。
         try:
-            em_quotes = _fetch_quotes_em(missing)
-            if em_quotes:
-                quotes.update(em_quotes)
-                LOG.info("新浪行情缺失%d个品种，东财主连快照兜底补回%d个",
-                         len(missing), len(em_quotes))
-            REGISTRY.record("quote_em", True)
+            from backup_sources import tqsdk_quote, tqsdk_start
+            tqsdk_start()   # 幂等：首次调用启动后台订阅，之后直接读缓存
+            tq_quotes = tqsdk_quote(missing)
+            if tq_quotes:
+                quotes.update(tq_quotes)
+                LOG.info("新浪缺失%d个品种，天勤TqSdk补回%d个",
+                         len(missing), len(tq_quotes))
+            REGISTRY.record("quote_tq", bool(tq_quotes))
         except Exception as e:
-            LOG.warning("东财行情兜底失败（不影响主流程）: %s", e)
-            REGISTRY.record("quote_em", False)
+            LOG.debug("天勤行情兜底失败（不影响主流程）: %s", e)
+            REGISTRY.record("quote_tq", False)
     # A1（第94轮）：解析健康探针——行情覆盖数（64品种全齐=64）
     try:
         import parser_health
@@ -79,74 +237,6 @@ def fetch_quotes(codes):
     except Exception:
         pass
     return quotes
-
-
-# 主连code(RB0) -> (sym,ex) 缓存（东财兜底用）
-_CODE_META_CACHE = None
-
-
-def _fetch_quotes_em(codes):
-    """东财 push2 主连快照兜底，返回结构与新浪 _parse_quote 完全一致的 {code: quote}。
-
-    实测字段（fltt=2）：f2最新/f3涨跌幅%/f5成交量(手)/f6成交额/f12代码/f13市场号/f14名称/
-    f15最高/f16最低/f17开盘/f18昨结/f111持仓量；东财主连代码=品种小写+m（rbm/mm/mam…）。
-    任何异常软降级返回已拿到的部分，绝不抛出影响主监控。"""
-    global _CODE_META_CACHE
-    if _CODE_META_CACHE is None:
-        _CODE_META_CACHE = {meta["code"]: (meta["sym"], meta["ex"])
-                            for meta in config.VARIETIES.values()}
-    sec2code, secids = {}, []
-    for code in codes:
-        info = _CODE_META_CACHE.get(code)
-        if not info:
-            continue
-        sym, ex = info
-        mkt = config.MINUTE_MARKET.get(ex)
-        if not mkt:
-            continue
-        sec = f"{mkt}.{sym.lower()}m"
-        sec2code[sec] = code
-        secids.append(sec)
-    if not secids:
-        return {}
-    out = {}
-    today = time.strftime("%Y-%m-%d")
-    for i in range(0, len(secids), 40):
-        chunk = secids[i:i + 40]
-        # 故意不带 fltt/invt：实测裸请求 f2 为正常价格、f111 为真实持仓量；带 fltt=2 时
-        # 限流边缘曾返回 f111=1 的残缺数据。任何残缺/异常条目直接丢弃（宁可不兜底也不污染）。
-        url = ("https://push2.eastmoney.com/api/qt/ulist.np/get?secids="
-               + ",".join(chunk)
-               + "&fields=f2,f3,f5,f6,f12,f13,f14,f15,f16,f17,f18,f111")
-        try:
-            r = http.get(url, headers={"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                                       "Referer": "https://quote.eastmoney.com/"},
-                         timeout=config.TIMEOUT)
-            diff = ((r.json() or {}).get("data") or {}).get("diff") or []
-        except Exception as e:
-            LOG.warning("东财快照批次请求失败: %s", e)
-            continue
-        for row in diff:
-            sec = f"{row.get('f13', '')}.{str(row.get('f12', '')).lower()}"
-            code = sec2code.get(sec)
-            if not code:
-                continue
-            latest = _f(row.get("f2"))
-            prev = _f(row.get("f18"))
-            oi = _f(row.get("f111"))
-            # 有效性校验：主连快照必须价格/昨结为正、持仓量达到合理量级（限流边缘残缺响应
-            # 曾给出 f111=1、价格错位的脏数据，此处一并拦截）
-            if latest <= 0 or prev <= 0 or oi < 100:
-                LOG.debug("东财快照条目残缺已丢弃 %s: latest=%s prev=%s oi=%s", code, latest, prev, oi)
-                continue
-            pct = _f(row.get("f3")) / 100.0
-            out[code] = {"name": str(row.get("f14") or code), "latest": latest,
-                         "open": _f(row.get("f17")), "high": _f(row.get("f15")),
-                         "low": _f(row.get("f16")), "prev_settle": prev,
-                         "chg_pct": (latest / prev - 1.0) if prev > 0 else pct,
-                         "open_interest": oi, "volume": _f(row.get("f5")),
-                         "date": today}
-    return out
 
 
 def _parse_quote(code, text, quotes):
@@ -213,23 +303,307 @@ def _parse_quote_inner(code, text, quotes):
 
 
 def fetch_daily_kline(symbol, retry=2):
-    """新浪期货日线K线，返回 [{d,o,h,l,c,v,p,s}, ...]（可能失败，调用方需兜底）"""
+    """期货日线K线，返回 [{d,o,h,l,c,v,p,s}, ...]（可能失败，调用方需兜底）。
+
+    2026-09-10 第115/116轮：新浪 stock2 对无 Referer 及高频请求返回 HTTP 456（IP 级 WAF 封锁）
+    且东财 push2his 对 Python http 按 TLS 指纹封锁——本机 IP 在封锁期反复触发。
+    第117轮（用户决策）：**新浪主源显式禁用（代码保留、开关关闭）**——`config.SINA_DAILY_DISABLED`
+    默认 True，等新 IP 后改 False 恢复；**删除全部旁路源**：akshare（新浪系）、免费代理池、东财 CDP
+    （这些不再向被封锁域名发任何日K请求）。**日K实际可用源 = 天勤 TqSdk 单一通道**（独立于新浪/东财
+    域名，不受 WAF/TLS 封锁影响）。
+    云服务器优先（2026-09-11）：SINA_SERVER_ENABLED=True 时日线先走云服务器出口
+    （与分钟K同一批 10 台，本机 IP 不碰新浪 stock2），失败回落天勤/代理池。
+    """
+    # 云服务器优先（与 MinuteCollector 同源；返回新浪原始结构，直接返回）
+    if getattr(config, "SINA_SERVER_ENABLED", False):
+        try:
+            from server_minute_client import _fetch_daily_via_server
+            srv_bars = _fetch_daily_via_server(symbol)
+            if srv_bars:
+                _kline_note_success()
+                return srv_bars
+        except Exception:
+            pass
+    # 新浪主源（显式禁用：SINA_DAILY_DISABLED=True 时不发任何 stock2 请求，代码保留待新 IP 后恢复）
+    if not getattr(config, "SINA_DAILY_DISABLED", True):
+        url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+               f"InnerFuturesNewService.getDailyKLine?symbol={symbol}")
+        # 白名单出口优先（云主机白名单 IP 豁免 456 频控）：配置生效时走它，失败/未配置回落本机直连。
+        _sina_throttle()
+        wl_bars = _sina_whitelist_get(url)
+        if wl_bars:
+            _kline_note_success()
+            return wl_bars
+        # 白名单未配置/失败 → 本机直连（原有逻辑；WAF 封锁期短路）
+        _sina_blocked = _sina_waf_blocked()
+        last_err = "新浪WAF封锁(456)短路" if _sina_blocked else None
+        if not _sina_blocked:
+            last_err = None
+            for _ in range(retry + 1):
+                _sina_throttle()
+                try:
+                    r = http.get(url, headers=config.HEADERS_SINA,
+                                     timeout=config.TIMEOUT)
+                    r.encoding = "utf-8"
+                    if r.status_code == 456:
+                        last_err = "IP被新浪WAF封锁(456)"
+                        _sina_note_block()
+                        break
+                    m = re.search(r"\((\[.*\])\)", r.text, re.S)
+                    if m:
+                        _kline_note_success()
+                        return json.loads(m.group(1))
+                    last_err = "响应中未找到K线数组"
+                except Exception as e:
+                    last_err = str(e)
+                time.sleep(0.5)
+            _kline_note_fail()
+    # 天勤 TqSdk 日线（主要活跃源，独立通道不受新浪/东财封锁影响；连接幂等、失败不影响主流程）
+    try:
+        from backup_sources import tqsdk_daily_kline, tqsdk_start
+        tqsdk_start()   # 幂等：确保连接就绪
+        tq_bars = tqsdk_daily_kline(symbol)
+        if tq_bars:
+            _kline_note_success()
+            return tq_bars
+    except Exception as e:
+        LOG.debug("天勤日线获取失败（不影响主流程）: %s", e)
+    # 第115轮：代理池兜底（天勤不覆盖的品种如郑商所 PTA 等，走代理池绕新浪封锁获取日K）
+    proxy_bars = _fetch_daily_via_proxy(symbol)
+    if proxy_bars:
+        _kline_note_success()
+        return proxy_bars
+    raise RuntimeError("日线获取失败(%s): 天勤TqSdk+代理池均不可用（新浪日线已禁用）" % symbol)
+
+
+# ==========================================================================
+# 第115轮：新浪 WAF 456 封锁免费代理池
+# 本机 IP 被新浪 WAF 封锁(456)时，代理 IP 是独立出口可绕过。实测 20 代理池轮换
+# 重试（max_attempts=6，0.35s 间隔）对 30 品种成功率 93%。池懒加载+20分钟自动刷新+
+# 失败降权（连续失败的代理后移）。免费代理有噪声，重试策略+KlineCache 5分钟 TTL
+# 确保最差情况也不会放大请求量。
+# ==========================================================================
+_SINA_PROXY_SOURCES = [
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+]
+_SINA_PROXY_TTL = 20 * 60           # 代理池刷新间隔（秒）
+_SINA_PROXY_MAX_ATTEMPTS = 6        # 单品种最多尝试代理数
+_SINA_PROXY_TEST_TIMEOUT = 8        # 单个代理连通性测试超时（秒）
+_SINA_PROXY_REQ_GAP = 0.35          # 相邻代理请求间隔（秒）
+_sina_proxy_state = {"list": [], "updated": 0.0, "fails": {}}
+_sina_proxy_lock = threading.Lock()
+
+
+def _fetch_proxy_candidates():
+    """从 GitHub 公开列表拉取代理 IP（返回去重 IP:PORT 候选）。"""
+    try:
+        import urllib.request as _urllib_req
+        cands = set()
+        for src in _SINA_PROXY_SOURCES:
+            try:
+                body = _urllib_req.urlopen(src, timeout=10).read().decode("utf-8", "replace")
+                for line in body.splitlines():
+                    line = line.strip()
+                    if re.match(r"^\d+\.\d+\.\d+\.\d+:\d+$", line):
+                        cands.add(line)
+            except Exception:
+                continue
+        return list(cands)
+    except Exception:
+        return []
+
+
+def _test_sina_proxy(proxy, timeout=None):
+    """用新浪 stock2 日线接口（RB0）测试代理可达性；返回 bool。"""
+    timeout = timeout or _SINA_PROXY_TEST_TIMEOUT
+    url = ("https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+           "InnerFuturesNewService.getDailyKLine?symbol=RB0")
+    try:
+        import urllib.request as _urllib_req
+        handler = _urllib_req.ProxyHandler(
+            {"http": f"http://{proxy}", "https": f"http://{proxy}"})
+        opener = _urllib_req.build_opener(handler)
+        r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA),
+                        timeout=timeout)
+        body = r.read().decode("utf-8", "replace")
+        return bool(re.search(r"\((\[.*\])\)", body, re.S))
+    except Exception:
+        return False
+
+
+def _sina_proxy_seed():
+    """从本地种子文件加载可用代理（data/sina_proxy_seed.json）。
+    种子是已验证可用（新浪 stock2 通）的稳定 IP，即时使用无需等 GitHub 拉取。"""
+    try:
+        seed_path = os.path.join(config.BASE_DIR, "data", "sina_proxy_seed.json")
+        if os.path.exists(seed_path):
+            with open(seed_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [str(x).strip() for x in data if re.match(r"^\d+\.\d+\.\d+\.\d+:\d+$", str(x).strip())]
+    except Exception:
+        pass
+    return []
+
+
+def _refresh_sina_proxy_pool(force=False):
+    """拉取公开代理列表并按新浪连通性过滤，结果写入池缓存。限并发15避免压垮代理源。
+    首次启动优先加载本地种子（秒级可用），GitHub 拉取仅作为补充并后台等待。"""
+    now = time.time()
+    with _sina_proxy_lock:
+        if not force and now - _sina_proxy_state["updated"] < _SINA_PROXY_TTL and _sina_proxy_state["list"]:
+            return _sina_proxy_state["list"]
+    # 种子文件兜底：立即返回已验证的稳定 IP（不等网络拉取）
+    seed = _sina_proxy_seed()
+    with _sina_proxy_lock:
+        if not _sina_proxy_state["list"]:
+            _sina_proxy_state["list"] = list(seed)
+            _sina_proxy_state["updated"] = now
+            _sina_proxy_state["fails"] = {p: 0 for p in seed}
+    cands = _fetch_proxy_candidates()
+    if not cands:
+        return _sina_proxy_state["list"]
+    working = []
+
+    def _check(p):
+        if _test_sina_proxy(p, timeout=6):
+            working.append(p)
+
+    threads = []
+    for p in cands[:60]:
+        th = threading.Thread(target=_check, args=(p,))
+        th.start()
+        threads.append(th)
+        if len(threads) >= 15:
+            for t in threads:
+                t.join()
+            threads = []
+    for t in threads:
+        t.join()
+    # 合并：种子 + GitHub 新发现（种子优先，GitHub 补充）
+    merged = []
+    for p in seed + working:
+        if p not in merged:
+            merged.append(p)
+    with _sina_proxy_lock:
+        _sina_proxy_state["list"] = merged
+        _sina_proxy_state["updated"] = now
+        _sina_proxy_state["fails"] = {p: 0 for p in merged}
+    LOG.info("新浪代理池刷新：种子%d + 新发现%d = 共%d（TTL %d秒）",
+             len(seed), len(working), len(merged), _SINA_PROXY_TTL)
+    return merged
+
+
+def _sina_proxy_pool():
+    """获取代理池（懒加载/自动刷新）。
+    优先秒级返回已验证种子（不阻塞）；种子不足或过期时才触发 GitHub 拉取补充。"""
+    with _sina_proxy_lock:
+        pool = list(_sina_proxy_state["list"])
+        if pool:
+            return pool
+    # 种子文件兜底（本地磁盘读取，毫秒级）
+    seed = _sina_proxy_seed()
+    if seed:
+        with _sina_proxy_lock:
+            if not _sina_proxy_state["list"]:
+                _sina_proxy_state["list"] = list(seed)
+                _sina_proxy_state["updated"] = time.time()
+                _sina_proxy_state["fails"] = {p: 0 for p in seed}
+        return list(seed)
+    return _refresh_sina_proxy_pool(force=True)
+
+
+def _fetch_daily_via_proxy(symbol):
+    """新浪日线走代理池：多代理随机起点轮换重试，返回 bars 或 []。
+    每次请求先测试连通性（同域名日线），失败换下一个。请求间隔0.35s防限流。"""
+    pool = _sina_proxy_pool()
+    if not pool:
+        return []
     url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
            f"InnerFuturesNewService.getDailyKLine?symbol={symbol}")
-    last_err = None
-    for _ in range(retry + 1):
+    # 随机起点轮换：避免每轮都从同一批开始被限流
+    import random as _rnd
+    start = _rnd.randint(0, max(0, len(pool) - 1))
+    order = pool[start:] + pool[:start]
+    for proxy in order[:_SINA_PROXY_MAX_ATTEMPTS]:
+        # 跳过连续失败较多的代理（降权但不完全剔除，因为免费代理不稳定）
+        with _sina_proxy_lock:
+            fail_count = _sina_proxy_state["fails"].get(proxy, 0)
+        if fail_count > 3:
+            time.sleep(_SINA_PROXY_REQ_GAP)
+            continue
         try:
-            r = http.get(url, headers=config.HEADERS_SINA,
-                             timeout=config.TIMEOUT)
-            r.encoding = "utf-8"
-            m = re.search(r"\((\[.*\])\)", r.text, re.S)
-            if m:
+            import urllib.request as _urllib_req
+            handler = _urllib_req.ProxyHandler(
+                {"http": f"http://{proxy}", "https": f"http://{proxy}"})
+            opener = _urllib_req.build_opener(handler)
+            r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA),
+                            timeout=_SINA_PROXY_TEST_TIMEOUT)
+            body = r.read().decode("utf-8", "replace")
+            if r.status == 456:
+                with _sina_proxy_lock:
+                    _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
+                time.sleep(_SINA_PROXY_REQ_GAP)
+                continue
+            m = re.search(r"\((\[.*\])\)", body, re.S)
+            if m and len(m.group(1)) > 100:
+                with _sina_proxy_lock:
+                    _sina_proxy_state["fails"][proxy] = 0
                 return json.loads(m.group(1))
-            last_err = "响应中未找到K线数组"
-        except Exception as e:
-            last_err = str(e)
-        time.sleep(0.5)
-    raise RuntimeError(f"日线获取失败({symbol}): {last_err}")
+            with _sina_proxy_lock:
+                _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
+        except Exception:
+            with _sina_proxy_lock:
+                _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
+        time.sleep(_SINA_PROXY_REQ_GAP)
+    return []
+
+
+def _fetch_intraday_via_proxy(symbol, period=30, lmt=20):
+    """新浪分钟K走代理池（第118轮：stock2 被 WAF 456 封锁时，代理 IP 独立出口可绕过）。
+    返回新浪原始结构 [{d,o,h,l,c,v,p,s}, ...] 或 []。多代理随机起点轮换重试。"""
+    pool = _sina_proxy_pool()
+    if not pool:
+        return []
+    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+           f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={int(period)}")
+    import random as _rnd
+    start = _rnd.randint(0, max(0, len(pool) - 1))
+    order = pool[start:] + pool[:start]
+    for proxy in order[:_SINA_PROXY_MAX_ATTEMPTS]:
+        with _sina_proxy_lock:
+            fail_count = _sina_proxy_state["fails"].get(proxy, 0)
+        if fail_count > 3:
+            time.sleep(_SINA_PROXY_REQ_GAP)
+            continue
+        try:
+            import urllib.request as _urllib_req
+            handler = _urllib_req.ProxyHandler(
+                {"http": f"http://{proxy}", "https": f"http://{proxy}"})
+            opener = _urllib_req.build_opener(handler)
+            r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA),
+                            timeout=_SINA_PROXY_TEST_TIMEOUT)
+            body = r.read().decode("utf-8", "replace")
+            if r.status == 456:
+                with _sina_proxy_lock:
+                    _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
+                time.sleep(_SINA_PROXY_REQ_GAP)
+                continue
+            m = re.search(r"\((\[.*\])\)", body, re.S)
+            if m and len(m.group(1)) > 100:
+                with _sina_proxy_lock:
+                    _sina_proxy_state["fails"][proxy] = 0
+                bars = json.loads(m.group(1))
+                return bars[-int(lmt):] if lmt else bars
+            with _sina_proxy_lock:
+                _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
+        except Exception:
+            with _sina_proxy_lock:
+                _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
+        time.sleep(_SINA_PROXY_REQ_GAP)
+    return []
+
 
 
 def fetch_intraday_kline(symbol, period=30, retry=1):
@@ -237,14 +611,34 @@ def fetch_intraday_kline(symbol, period=30, retry=1):
 
     2026-09-01 晚补测（第14轮曾误判"新浪无1分钟"）：type=1 一分钟K同样固定返回1023根、
     64/64品种全覆盖、零断连（约覆盖最近2.5个交易日），主连与具体合约均可取；故1m主源
-    由东财push2his（本机持续限流）切换为新浪主连。"""
+    由东财push2his（本机持续限流）切换为新浪主连。
+    云服务器优先（2026-09-11 第120轮）：SINA_SERVER_ENABLED=True 时分钟K先走云服务器出口
+    （10 台 round-robin，本机 IP 不碰新浪 stock2，永不被封），失败回落白名单/本机直连。
+    白名单优先（2026-09-11）：SINA_WHITELIST_PROXY 生效时走云主机白名单出口，失败回落本机直连。"""
     period = int(period)
     if period not in (1, 5, 15, 30, 60):
         raise ValueError(f"不支持的分钟周期: {period}")
+    # 云服务器优先（与 MinuteCollector.collect 同源；返回新浪原始结构 [{d,o,h,l,c,v,p,s},...]，
+    # 与下方 jsonp 解析结果格式完全一致，可直接返回）
+    if getattr(config, "SINA_SERVER_ENABLED", False):
+        try:
+            from server_minute_client import _fetch_via_server
+            srv_bars = _fetch_via_server(symbol, period, 1023)
+            if srv_bars:
+                return srv_bars
+        except Exception:
+            pass
     url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
            f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={period}")
+    # 全局新浪节流（3s/次，防并发触发 456）→ 白名单出口优先 → 本机直连
+    _sina_throttle()
+    wl_bars = _sina_whitelist_get(url)
+    if wl_bars:
+        return wl_bars
+    # 白名单未配置/失败 → 本机直连（原有逻辑）
     last_err = None
     for _ in range(retry + 1):
+        _sina_throttle()
         try:
             r = http.get(url, headers=config.HEADERS_SINA, timeout=config.TIMEOUT)
             r.encoding = "utf-8"
@@ -655,54 +1049,169 @@ def compute_indicators(bars, max_bars=140):
             "last_date": bars[-1].get("d", "")}
 
 
+def _kline_fallback(cat):
+    """日线指标失败/盘后跳过时的统一回退值（默认波动率，结构恒等，供失败缓存复用）。"""
+    return {"close": 0.0, "prev_close": 0.0, "day_chg": 0.0,
+            "hv20": config.DEFAULT_HV.get(cat, 0.25),
+            "hv60": config.DEFAULT_HV.get(cat, 0.25),
+            "ma5": 0.0, "ma10": 0.0, "ma20": 0.0,
+            "atr": 0.0, "ret5": 0.0, "ret20": 0.0,
+            "ret63": None, "ret126": None, "ret252": None,
+            "tsmom63": None, "tsmom126": None, "tsmom252": None,
+            "tsmom_blend": None, "tsmom_n_valid": 0,
+            "tech": {}, "hv_percentile": None, "vol_cone": {},
+            "last_date": ""}
+
+
 class KlineCache:
-    """日线指标缓存（默认30分钟刷新），失败时回退到板块默认波动率"""
+    """日线指标缓存（默认30分钟刷新），失败时回退到板块默认波动率。
+    第116轮新增收盘边沿定格：交易→非交易切换时一次性补拉全品种日线，
+    盘后全程零请求（get/refresh 已跳过），复用收盘定格缓存。
+    第116轮P0/P1：新浪 WAF 封锁期间失败缓存拉长到 60 分钟 + 封锁期完全短路，
+    防止封锁期每 5-10 分钟全品种重试放大 WAF（此前 KLINE_FAIL_TTL=5min < 分析周期10min）。"""
 
     def __init__(self):
         self.cache = {}
+        self.fail_cache = {}       # code -> (失败时间戳, fallback)。第115轮：新浪456封锁期缓存失败，
+                                   # 第116轮P0：封锁期 TTL 动态拉长到 60 分钟（防放大器）
         self.intraday_cache = {}
         self.lock = threading.Lock()
+        self._was_trading = None   # 第116轮：收盘边沿检测，True→False 时补拉一次
+
+    @staticmethod
+    def _fail_ttl():
+        """失败缓存有效时长：WAF 封锁期 60 分钟（防重试放大），否则 5 分钟。"""
+        if _sina_waf_blocked():
+            return 60 * 60
+        return config.KLINE_FAIL_TTL
 
     def get(self, code, cat):
         now = time.time()
+        fallback = _kline_fallback(cat)
         with self.lock:
             hit = self.cache.get(code)
             if hit and now - hit[0] < config.KLINE_TTL:
                 return hit[1], True
+            # 失败短期缓存：封锁期 60 分钟/正常 5 分钟内不重试（封锁期直接复用 fallback）。
+            # 第118轮：历史脏数据可能把 None 写入 fail_cache（refresh_if_stale 旧版），
+            # 命中时若值非 dict 一律替换为默认 fallback，杜绝 analyzer dict(None) 崩溃。
+            fhit = self.fail_cache.get(code)
+            if fhit and now - fhit[0] < self._fail_ttl():
+                cached_ind = fhit[1]
+                if cached_ind is None or not isinstance(cached_ind, dict):
+                    self.fail_cache[code] = (now, fallback)
+                    cached_ind = fallback
+                return cached_ind, False
+        # 第116轮P0：新浪 WAF 封锁期——有缓存/失败缓存直接复用；
+        # 无缓存且失败缓存已过期时仍调 fetch_daily_kline（内部跳过新浪/akshare，
+        # 但会尝试天勤独立通道），失败落入 60 分钟失败缓存，不再高频重试。
+        if _sina_waf_blocked():
+            if hit:
+                return hit[1], True
+            fallback = _kline_fallback(cat)
+            try:
+                bars = fetch_daily_kline(code)   # 内部已短路新浪，走天勤/CDP
+                if bars:
+                    ind = compute_indicators(bars)
+                    with self.lock:
+                        self.cache[code] = (now, ind)
+                        self.fail_cache.pop(code, None)
+                    return ind, True
+            except Exception:
+                pass
+            with self.lock:
+                self.fail_cache[code] = (now, fallback)
+            return fallback, False
+        # 第116轮：新浪日线收盘后（非交易时段）不再请求
+        # 收盘后价格不再变化，且新浪 stock2 对盘后请求返回 WAF 拦截页（HTTP 200 但无K线数组），
+        # 造成大量「响应中未找到K线数组」报警（9/10 实测 1765 次）；盘后直接复用已有缓存即可。
+        if not _in_trading():
+            # 有交易时段内缓存的数据（收盘时的最终值），直接复用，价格不再变化
+            if hit:
+                return hit[1], True
+            # 程序启动时可能在非交易时段、缓存尚空：用失败回退值（默认波动率），不发任何请求
+            fallback = _kline_fallback(cat)
+            with self.lock:
+                self.fail_cache[code] = (now, fallback)
+            return fallback, False
         try:
             bars = fetch_daily_kline(code)
             ind = compute_indicators(bars)
             with self.lock:
                 self.cache[code] = (now, ind)
+                self.fail_cache.pop(code, None)
             return ind, True
         except Exception as e:
             LOG.warning("%s 日线指标获取失败，使用默认波动率: %s", code, e)
-            fallback = {"close": 0.0, "prev_close": 0.0, "day_chg": 0.0,
-                        "hv20": config.DEFAULT_HV.get(cat, 0.25),
-                        "hv60": config.DEFAULT_HV.get(cat, 0.25),
-                        "ma5": 0.0, "ma10": 0.0, "ma20": 0.0,
-                        "atr": 0.0, "ret5": 0.0, "ret20": 0.0,
-                        "ret63": None, "ret126": None, "ret252": None,
-                        "tsmom63": None, "tsmom126": None, "tsmom252": None,
-                        "tsmom_blend": None, "tsmom_n_valid": 0,
-                        "tech": {}, "hv_percentile": None, "vol_cone": {},
-                        "last_date": ""}
+            fallback = _kline_fallback(cat)
+            with self.lock:
+                self.fail_cache[code] = (now, fallback)
             return fallback, False
 
     def refresh_if_stale(self, code, cat, margin=0.9):
-        """缓存即将过期时提前在后台刷新，避免主分析周期被拉长"""
+        """缓存即将过期时提前在后台刷新，避免主分析周期被拉长。
+        第116轮：非交易时段跳过——收盘后日线数据不变，新浪 stock2 会对盘后请求返回WAF拦截页。
+        第116轮P1：WAF 封锁期完全跳过——失败缓存已拉长到60分钟，不需要后台刷新重试。"""
+        if not _in_trading():
+            return
+        if _sina_waf_blocked():
+            return
         now = time.time()
         with self.lock:
             hit = self.cache.get(code)
+            fhit = self.fail_cache.get(code)
             if hit and now - hit[0] < config.KLINE_TTL * margin:
+                return
+            if fhit and now - fhit[0] < config.KLINE_FAIL_TTL * margin:
                 return
         try:
             bars = fetch_daily_kline(code)
             ind = compute_indicators(bars)
             with self.lock:
                 self.cache[code] = (time.time(), ind)
+                self.fail_cache.pop(code, None)
         except Exception as e:
             LOG.debug("%s 日线后台预刷新失败: %s", code, e)
+            with self.lock:
+                # 后台预刷新失败也进入失败缓存，防止主线程下一轮再次命中实时请求。
+                # 必须存 fallback dict（默认波动率）而非 None——否则 get() 命中返回 (None, False)，
+                # analyzer `ind = dict(ind)` 直接 TypeError 崩溃（9/11 夜盘实测 01:47:38 触雷）。
+                if code not in self.fail_cache:
+                    self.fail_cache[code] = (time.time(), _kline_fallback(cat))
+
+    def maybe_close_snapshot(self, watchlist):
+        """第116轮：收盘边沿一次性定格——检测 交易→非交易 切换，
+        在切换瞬间对全品种补拉一次日线（新浪此时通常尚未封锁或刚开始封锁，
+        可用）；之后盘后 get/refresh 均跳过，直接复用这份收盘定格缓存。
+        午休(11:30-13:30) 期间虽然非交易，但不是收盘（下午继续交易同一日线），
+        不触发定格。首次启动仅记录状态不补拉，避免启动即轰炸新浪。"""
+        trading = _in_trading()
+        was = self._was_trading
+        self._was_trading = trading
+        # 仅在 True→False（刚收盘）时触发；首次调用/持续盘中/重新开盘均跳过
+        if was is None or not was or trading:
+            return
+        # 午休过滤：11:30-13:30 切出非交易不是收盘，日线下午还会更新
+        t = datetime.now().hour * 60 + datetime.now().minute
+        if 11 * 60 + 30 <= t < 13 * 60 + 30:
+            return
+        code_cats = [(meta["code"], meta["cat"]) for _name, meta in (watchlist or [])]
+        if not code_cats:
+            return
+        LOG.info("收盘定格：补拉 %d 个品种日线并固化缓存（盘后不再请求）", len(code_cats))
+        now = time.time()
+        for code, cat in code_cats:
+            try:
+                bars = fetch_daily_kline(code)
+                if not bars:
+                    continue
+                ind = compute_indicators(bars)
+                with self.lock:
+                    self.cache[code] = (now, ind)
+                    self.fail_cache.pop(code, None)
+            except Exception as e:
+                # 收盘瞬间若新浪已封锁（HTTP 200 无K线数组），沿用盘中缓存，不写 fail_cache
+                LOG.debug("%s 收盘定格补拉失败（沿用盘中缓存）: %s", code, e)
 
     def _load_intraday(self, code):
         bars = fetch_intraday_kline(code, period=30, retry=1)
@@ -717,6 +1226,12 @@ class KlineCache:
             hit = self.intraday_cache.get(code)
             if hit and now - hit[0] < config.INTRADAY_KLINE_TTL:
                 return hit[1], True
+        # 第116轮：盘后分钟K冻结不再变化，且同属被新浪封锁的 stock2 主机，跳过请求
+        if not _in_trading():
+            if hit:
+                return hit[1], True
+            return {"ok": False, "resonance_score": 0.0,
+                    "resonance_note": "分钟级暂缺", "bars30": 0, "bars60": 0}, False
         try:
             ind = self._load_intraday(code)
             with self.lock:
@@ -728,6 +1243,9 @@ class KlineCache:
                     "resonance_note": "分钟级暂缺", "bars30": 0, "bars60": 0}, False
 
     def refresh_intraday_if_stale(self, code, cat=None, margin=0.9):
+        # 第116轮：盘后跳过——分钟K冻结，同 stock2 主机被新浪盘后封锁
+        if not _in_trading():
+            return
         now = time.time()
         with self.lock:
             hit = self.intraday_cache.get(code)
@@ -741,10 +1259,12 @@ class KlineCache:
             LOG.debug("%s 30/60分钟后台预刷新失败: %s", code, e)
 
     def warm_intraday(self, code_cat_pairs, workers=None):
-        """一轮分析前并发预热分钟K线，返回 {code: (ind, ok)}；失败品种不阻断主流程。"""
+        """一轮分析前并发预热分钟K线，返回 {code: (ind, ok)}；失败品种不阻断主流程。
+        第116轮：盘后分钟K冻结且同属新浪封锁主机，直接复用缓存/回退，不发请求。"""
         pairs = list(code_cat_pairs)
         workers = max(1, workers or config.INTRADAY_WORKERS)
         now = time.time()
+        trading = _in_trading()
         stale = []
         out = {}
         with self.lock:
@@ -752,8 +1272,16 @@ class KlineCache:
                 hit = self.intraday_cache.get(code)
                 if hit and now - hit[0] < config.INTRADAY_KLINE_TTL:
                     out[code] = (hit[1], True)
+                elif not trading and hit:
+                    out[code] = (hit[1], True)   # 盘后复用过期缓存（分钟K不再变化）
                 else:
                     stale.append(code)
+        if not trading:
+            for code in stale:
+                out[code] = ({"ok": False, "resonance_score": 0.0,
+                              "resonance_note": "分钟级暂缺",
+                              "bars30": 0, "bars60": 0}, False)
+            return out
         if stale:
             with ThreadPoolExecutor(max_workers=min(workers, len(stale))) as pool:
                 futs = {pool.submit(self._load_intraday, code): code for code in stale}

@@ -279,7 +279,9 @@ def _dashboard_html():
     var view = document.getElementById('view');
     var panel = document.getElementById('charts-panel');
     var rpanel = document.getElementById('research-panel');
-    view.style.display = (isCp || isRp || isNd || isDv || isCmp) ? 'none' : 'block';
+    // 纸面对比页签改为 iframe 加载独立 paper_compare.html（ticker 每分钟重写），
+    // 不再用静态内嵌面板——面板保持隐藏以兼容旧 DOM。
+    view.style.display = (isCp || isRp || isNd || isDv) ? 'none' : 'block';
     panel.style.display = isCp ? 'block' : 'none';
     rpanel.style.display = isRp ? 'block' : 'none';
     var ndpanel = document.getElementById('newdata-panel');
@@ -287,7 +289,7 @@ def _dashboard_html():
     var dvpanel = document.getElementById('device-panel');
     if (dvpanel) dvpanel.style.display = isDv ? 'block' : 'none';
     var cmppanel = document.getElementById('paper-cmp-panel');
-    if (cmppanel) cmppanel.style.display = isCmp ? 'block' : 'none';
+    if (cmppanel) cmppanel.style.display = 'none';
     // 纸面页签（基准/对比）显示"距下次纸面刷新"倒计时；其余页签隐藏
     var paperCd = document.getElementById('paper-cd');
     if (paperCd) paperCd.style.display = (src === 'paper_account.txt' || isCmp) ? 'inline' : 'none';
@@ -295,7 +297,7 @@ def _dashboard_html():
     else if (isRp) { /* 研究聚合为静态注入，无需重载 */ }
     else if (isNd) { /* 新数据因子为静态注入，无需重载 */ }
     else if (isDv) { /* 装置健康为静态注入，无需重载 */ }
-    else if (isCmp) { /* 纸面账户对比：每10秒刷新内容（js里读 status 时整页重载此面板） */ }
+    else if (isCmp) { view.src = 'paper_compare.html?t=' + Date.now(); }
     else { view.src = src + '?t=' + Date.now(); }
     var btns = document.querySelectorAll('.tab');
     for (var i = 0; i < btns.length; i++)
@@ -354,8 +356,9 @@ def _dashboard_html():
   function reloadView() {
     if (cur === CHARTS_VIEW) { if (window.ChartPanel) window.ChartPanel.reload(); return; }
     if (cur === '__research__') { return; }   // 静态研究索引：不随轮动重载
-    if (cur === '__device__' || cur === '__paper_cmp__') { location.reload(); return; }   // 静态注入，需整页刷新获取新写入内容
-    document.getElementById('view').src = cur + '?t=' + Date.now();
+    if (cur === '__device__') { location.reload(); return; }   // 静态注入，需整页刷新获取新写入内容
+    var view = document.getElementById('view');
+    view.src = (cur === '__paper_cmp__' ? 'paper_compare.html' : cur) + '?t=' + Date.now();
   }
   function pollStatus() {
     var sc = document.createElement('script');
@@ -397,6 +400,17 @@ def _dashboard_html():
   setInterval(pollStatus, POLL_MS);
   tick();
   setInterval(tick, 1000);
+  // 纸面独立刷新：paper_account.txt / paper_compare.html 由 ticker 每 PAPER_TICK 秒写入，
+  // 本定时器独立于主报告轮次，强制按 PAPER_TICK 周期重载 iframe。
+  setInterval(function () {
+    var view = document.getElementById('view');
+    if (!view) return;
+    if (cur === 'paper_account.txt') {
+      view.src = 'paper_account.txt?t=' + Date.now();
+    } else if (cur === '__paper_cmp__') {
+      view.src = 'paper_compare.html?t=' + Date.now();
+    }
+  }, PAPER_TICK * 1000);
   // 恢复上次选中的标签页（整页刷新后不丢失选中状态）
   try {
     var saved = sessionStorage.getItem('dashTab');
@@ -547,6 +561,26 @@ def _device_panel_html():
             code = str(a.get("code") or "")
             reason = str(a.get("reason") or "")
             parts.append(f'<p style="margin:4px 0;font-family:monospace;font-size:13px;">[{ts}] {code}: {reason}</p>')
+    # 第110轮：看板合一——内嵌装置 dashboard（http://127.0.0.1:{port}/dashboard.html）。
+    # 装置 --serve 常驻时直接内嵌其完整显示页；未启动则保留上方结构化摘要（兼容）。
+    try:
+        dev_cfg = os.path.join(os.path.dirname(os.path.dirname(config.BASE_DIR)),
+                               "界面操作收集装置", "config.json")
+        port = 8790
+        if os.path.exists(dev_cfg):
+            import json as _json2
+            with open(dev_cfg, encoding="utf-8") as f:
+                port = int((_json2.load(f).get("http") or {}).get("serve_port") or 8790)
+        dev_dash = "http://127.0.0.1:%d/dashboard.html" % port
+        parts.append(
+            '<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">装置 Dashboard（看板合一）</div>'
+            '<iframe src="%s" style="width:100%%;height:520px;border:1px solid #333;border-radius:6px;'
+            'background:#0e0f13;"></iframe>'
+            '<p style="margin:6px 0;color:#9a9a9a;font-size:12px;">内嵌装置显示页（%s）。'
+            '若此框空白：装置 <code>--serve</code> 未启动（先跑 <code>start_all.bat</code>），上方为结构化摘要。</p>'
+            % (dev_dash, dev_dash))
+    except Exception:
+        pass
     return "\n".join(parts)
 
 
@@ -1781,6 +1815,21 @@ def write_paper_account(state):
                         encoding="utf-8", update_cache=False)
         except Exception:
             pass
+    # 第123轮：同步生成独立对比页（完整HTML骨架，供看板"纸面账户对比"页签
+    # iframe 加载，60s 周期与 ticker 同步刷新——不依赖 write_dashboard 10分钟周期）。
+    # _paper_compare_html 内部已自带完整 <style>（渲染时读最新 paper_compare.json），
+    # 此处只包一层独立页面骨架。
+    try:
+        cp_dom = _paper_compare_html()
+        _safe_write(os.path.join(config.BASE_DIR, "reports", "paper_compare.html"),
+                    "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+                    "<title>纸面账户对比</title></head>"
+                    "<body style=\"background:#17181c;color:#e8e8e8;margin:0;padding:14px;"
+                    "font-family:'Microsoft YaHei',Consolas,sans-serif;font-size:13px;line-height:1.6;\">"
+                    "%s</body></html>" % cp_dom,
+                    encoding="utf-8", update_cache=False)
+    except Exception as e:
+        LOG.debug("纸面对比页独立生成失败(不影响主链路): %s", e)
 
 
 class ReportStore:

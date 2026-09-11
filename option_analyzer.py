@@ -163,7 +163,8 @@ def analyze_option(name, fut_row):
     chain_note = ""
     if chain and chain.get("pcr_oi") is not None:
         bits = ["持仓PCR=%.2f（%s）" % (chain["pcr_oi"], chain.get("sentiment") or "中性"),
-                "成交量PCR: 暂无（需交易所日行情，数据源待补齐）",
+                ("成交量PCR=%.2f" % chain["pcr_vol"]) if chain.get("pcr_vol") is not None
+                else "成交量PCR: 暂无（需P_OP_快照，数据源待补齐）",
                 "C/P各%d/%d腿" % (chain.get("n_call", 0), chain.get("n_put", 0)),
                 "看涨持仓%.0f/看跌持仓%.0f" % (chain.get("call_oi", 0), chain.get("put_oi", 0))]
         if chain.get("max_call_oi_strike"):

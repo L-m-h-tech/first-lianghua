@@ -664,17 +664,23 @@ class MonitorDB:
 
     def minute_bars_for_sym(self, sym, period, since=None, limit=None):
         """按品种跨具体合约取某周期分钟bar（换月后新旧主力按时间自然衔接），升序返回 dict 列表，
-        供第15轮主连分钟拼接+比例复权（backtest.ratio_adjusted_bars）。"""
+        供第15轮主连分钟拼接+比例复权（backtest.ratio_adjusted_bars）。
+        修复（第121轮）：原 ASC+LIMIT 取最旧 N 根导致日内回测跑在陈旧数据上；
+        改为先 DESC+LIMIT 取最新 N 根，再 ASC 还原时间顺序。"""
         sql = ("SELECT sym,contract,exchange,period,bar_dt AS dt,trade_date,"
                "o,h,l,c,v,amount FROM minute_bars WHERE sym=? AND period=?")
         args = [str(sym).upper(), int(period)]
         if since:
             sql += " AND bar_dt>=?"
             args.append(since)
-        sql += " ORDER BY bar_dt ASC, contract ASC"
         if limit:
-            sql += " LIMIT ?"
+            sql += " ORDER BY bar_dt DESC, contract DESC LIMIT ?"
             args.append(int(limit))
+            sql_inner = sql
+            sql = ("SELECT sym,contract,exchange,period,dt,trade_date,"
+                   "o,h,l,c,v,amount FROM (" + sql_inner + ") ORDER BY dt ASC, contract ASC")
+        else:
+            sql += " ORDER BY bar_dt ASC, contract ASC"
         with self.lock:
             rows = self.conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
@@ -943,14 +949,37 @@ class MonitorDB:
             self.conn.commit()
 
     def paper_open_position_trades(self):
-        """返回每个 pos_ref 当前仍未平仓的【开仓成交】（有 open 无对应 close），供重启恢复持仓。"""
+        """返回每个 pos_ref 当前仍未平仓（剩余手数>0）的【开仓成交】，供重启恢复持仓。
+        第121轮修复：原 NOT EXISTS(close) 把"部分减仓后存在 close 记录"的持仓误判为已平，
+        导致减仓后剩余手数重启丢失。现按 pos_ref 汇总 open.lots - Σclose.lots，>0 才返回。"""
         with self.lock:
-            rows = self.conn.execute(
-                """SELECT * FROM paper_trades t
-                   WHERE side='open' AND NOT EXISTS(
-                       SELECT 1 FROM paper_trades c WHERE c.pos_ref=t.pos_ref AND c.side='close')
-                   ORDER BY id ASC""").fetchall()
-        return [dict(r) for r in rows]
+            # 1) 每个 pos_ref 的净剩余手数（开仓量 - 已平量）；HAVING 用完整表达式避免别名依赖
+            net = self.conn.execute(
+                """SELECT t.pos_ref AS pos_ref,
+                          SUM(CASE WHEN t.side='open' THEN COALESCE(t.lots,0)
+                                   ELSE -COALESCE(t.lots,0) END) AS net_lots
+                   FROM paper_trades t WHERE t.pos_ref IS NOT NULL AND t.pos_ref != ''
+                   GROUP BY t.pos_ref
+                   HAVING SUM(CASE WHEN t.side='open' THEN COALESCE(t.lots,0)
+                                   ELSE -COALESCE(t.lots,0) END) > 0""").fetchall()
+            pos_refs = [r["pos_ref"] for r in net]
+            if not pos_refs:
+                return []
+            # 2) 取这些 pos_ref 的开仓成交（多笔减仓后取最早一笔开仓作为持仓基线）
+            marks = ",".join("?" * len(pos_refs))
+            opens = self.conn.execute(
+                f"""SELECT * FROM paper_trades t WHERE t.side='open'
+                    AND t.pos_ref IN ({marks}) AND t.id = (
+                        SELECT MIN(id) FROM paper_trades o
+                        WHERE o.pos_ref=t.pos_ref AND o.side='open')
+                    ORDER BY t.id ASC""", pos_refs).fetchall()
+            out = []
+            net_map = {r["pos_ref"]: r["net_lots"] for r in net}
+            for t in opens:
+                d = dict(t)
+                d["lots"] = int(net_map.get(t["pos_ref"], 0))  # 剩余手数覆盖开仓量
+                out.append(d)
+            return out
 
     def paper_realized_fees(self):
         """汇总历史已实现净盈亏与手续费（开仓费计入平仓 realized，这里直接累加成交金额）。"""
@@ -1039,10 +1068,14 @@ class MonitorDB:
         return [dict(r) for r in rows]
 
     def paper_option_realized_fees(self, account):
-        """某账户期权历史已实现净盈亏与手续费（开仓费计入平仓 realized，直接累加成交金额）。"""
+        """某账户期权历史已实现净盈亏与手续费。
+        第121轮修复：此前直接 SUM(realized_yuan) 把已扣平仓费的净额当 realized，而 opt_fees 又含
+        该笔平仓费 → 恢复后双重扣减。现改为按毛利口径：realized_yuan 落库为单笔净值(毛利-平仓费)，
+        平仓费单列在 opt_fees，故恢复时 realized 需补回平仓费（=毛利），fees 为全部手续费。"""
         with self.lock:
             row = self.conn.execute(
-                """SELECT COALESCE(SUM(realized_yuan),0.0) AS realized,
+                """SELECT COALESCE(SUM(CASE WHEN action='close'
+                                THEN realized_yuan + COALESCE(fee_yuan,0.0) ELSE realized_yuan END),0.0) AS realized,
                           COALESCE(SUM(fee_yuan),0.0) AS fees
                    FROM paper_option_trades WHERE account=?""", (str(account),)).fetchone()
         return float(row["realized"]), float(row["fees"])

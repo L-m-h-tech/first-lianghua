@@ -28,6 +28,7 @@ REPORT_INTERVAL = 60          # 非交易时段主分析周期（秒）
 SHADOW_FOLLOW_HOUR = 17       # 第85轮：影子信号每日跟随的补跑时刻（17:00 后补当日收盘信号；首次周期即跑）
 KLINE_TTL = 30 * 60           # 日线指标（HV/ATR等）缓存时长（秒）
 INTRADAY_KLINE_TTL = 10 * 60  # 30/60分钟共振指标缓存时长（秒）
+KLINE_FAIL_TTL = 5 * 60       # 日线获取失败短期缓存（第115轮：封锁期避免每轮重试放大WAF限制）
 INTRADAY_WORKERS = 6          # 每轮并发预热30分钟K线的线程数（标准库线程池）
 CONTRACT_TTL = 30 * 60        # 主力合约月份探测缓存时长（秒）
 CONTRACT_CANDIDATES = 8       # 探测主力月份时往后枚举的月份数
@@ -169,6 +170,20 @@ HEADERS_SINA = {           # 新浪行情接口必须带 Referer，否则被拒�
     "Accept": HEADERS_BROWSER["Accept"],
     "Accept-Language": HEADERS_BROWSER["Accept-Language"],
 }
+# 第117轮：新浪日K主源显式禁用（本机 IP 被新浪 WAF 456 封锁，等待新 IP；改 False 恢复）。
+# 禁用期间 fetch_daily_kline 不发任何 stock2 请求，日K走天勤 TqSdk 单一通道。
+# 2026-09-11：本机 IP 已解封（实测 200），恢复直连；优先走白名单代理（SINA_WHITELIST_PROXY）。
+SINA_DAILY_DISABLED = False
+# 第118轮：新浪分钟K主源同样被 WAF 456 封锁（getFewMinLine 与日线同域 stock2），一并禁用。
+# 禁用期间分钟K走代理池（秒级独立出口）→ 天勤 TqSdk（独立通道）两级兜底。
+# 2026-09-11：同本机解封，恢复；优先走白名单代理。
+SINA_MINUTE_DISABLED = False
+# 优质云主机白名单 IP 出口：新浪走它可豁免 456 频控（待实机验证）。
+# 格式 "ip:port"（http 代理）；留空=不启用白名单出口（回落本机直连 → 代理池 → 天勤）。
+# 失效/超时自动回落后续链路，不影响主流程。2026-09-11 下午 AI 填入。
+SINA_WHITELIST_PROXY = "106.119.164.164:16817"
+# 白名单出口请求超时（秒）：白名单代理较慢时快速失败回落本机，避免拖长链路。
+SINA_WHITELIST_TIMEOUT = 8.0
 # ---- 第94轮 A4/A5/A6（对标 scrapling：session 持久化 / AutoThrottle / dev 缓存重放） ----
 HTTP_COOKIE_JAR = os.path.join(BASE_DIR, "cache", "cookies.json")   # 每源 cookie 持久化落盘
 HTTP_THROTTLE_ENABLED = True      # A5 请求级限流退避总开关（仅 429/503/Retry-After 时改变时序，正常路径零影响）
@@ -184,6 +199,11 @@ THS_AUTO_LAUNCH = True                      # 每次启动程序时自动打开�
 THS_DEBUG_MODE = True                       # 启动前自动确保 DataCenter.xml 调试开关（幂等、改前备份 .bak）
 THS_DEBUG_RESTART = True                    # 已运行但无 DevTools 调试窗口时自动重启 happ 应用调试开关
 THS_DATA_CENTER_XML = r"E:\同花顺期货通\bin\workspace\DataCenter.xml"  # 调试开关所在配置
+
+# ---------------- Legend 调试模式（供装置界面采集，CDP 9225） ----------------
+LEGEND_EXE = r"E:\OpendVlab Legend\openvlab-legend\OpenVlab Legend.exe"
+LEGEND_AUTO_LAUNCH = True       # 每次启动程序时自动以调试端口拉起 Legend（幂等：9225 已监听则跳过）
+LEGEND_CDP_PORT = 9225           # Legend 调试端口（装置 legend_ui_collector 连接此端口读取界面）
 
 # ---------------- 浏览器页面直读（需求⑦） ----------------
 BROWSER_DEBUG_LAUNCH = True  # 每次启动程序时自动以调试端口(9222)拉起浏览器打开 OpenVlab市场页+交易可查（页面直读数据源）
@@ -236,6 +256,12 @@ OPT_FUTURES_MARGIN_RATE = 0.12
 OPTION_CHAIN_TTL = 30 * 60     # 期权链缓存时长（秒），与期权日历/合约月份同节奏
 OPTION_CHAIN_WORKERS = 6       # 一轮分析前并发拉取期权链的线程数
 OPTION_CHAIN_TIMEOUT = 10
+# 第110轮（Policy B）：重点品种期权链分钟级刷新双档
+# hot 品种用 HOT_TTL（默认300s=5分钟），普通品种保持 OPTION_CHAIN_TTL；只对重点品种定向加频，不放大全量请求。
+OPTION_CHAIN_HOT_TTL = 5 * 60
+OPTION_CHAIN_HOT_SYMS = ()     # 重点品种白名单（sym大写，如 ("M","C","I")；空=不启用双档，纯旧行为）
+# 第110轮：逐腿成交量快照（P_OP_）补 pcr_vol——默认开启；关闭则 pcr_vol 恒 None（与第98轮前逐字节等价）
+OPTION_CHAIN_FETCH_VOL = True
 # 持仓量PCR情绪参考区间（只做呈现与极值提示，不单独构成交易结论）
 PCR_LOW = 0.7                  # <0.7 看涨持仓占优，情绪偏乐观
 PCR_HIGH = 1.2                 # >1.2 看跌/对冲持仓占优，情绪偏谨慎
@@ -296,27 +322,38 @@ FUND_PPI_URL = "https://www.100ppi.com/sf/day-{date}.html"  # 生意社当日基
 # ---------------- 分钟K线数据层（第14轮 WP-D0 落地；2026-09-01晚增补：新浪1m主源化，零新增依赖） ----------------
 # 实测（2026-09-01 晚两次）：①新浪 getFewMinLine type=1/5/15/30/60 全部固定1023根、64/64品种零断连，
 #   主连RB0与具体合约RB2701/MA610均可取——纠正第14轮"新浪无1分钟"误判，1m主源由东财切换为新浪；
-#   ②东财 push2his（走http；secid=市场号.具体合约，无主连；SHFE113/DCE114/CZCE115/INE142/GFEX225；
-#   CZCE年份取个位MA2610->ma610；f51时/f52开/f53收/f54高/f55低/f56量/f57额，开-收-高-低顺序），
-#   该域名两晚持续 RemoteDisconnected（IP级限流），仅作新浪与通达信之后的兜底，保留节流+镜像轮换+熔断；
-#   ③东财 push2 实时快照口（非push2his）稳定，主连secid=市场号.品种小写m（113.rbm），f111=持仓量，
-#   已用于 futures_data.fetch_quotes 的新浪缺失兜底；④腾讯免费接口不覆盖国内商品期货（实测none_match）。
+#   ②第118轮（用户决策）：删除东财 push2his / 通达信 pytdx 分钟K源（东财持续 TLS 指纹封锁、
+#   通达信公共服务器 7727 不可达），分钟K只走新浪主连全周期——不再有东财 mirror/熔断/重试配置。
+#   ③第119轮（用户决策）：删除东财 push2 实时快照兜底（本机 IP 被东财 TLS 指纹封锁、批量接口
+#   持续 RemoteDisconnected 断连），实时行情链路为 新浪 hq.sinajs（主）→ 天勤 TqSdk（兜底）。
 #   免费窗口：1m约2.5交易日、5m约3周、15m约3月、30m约6月、60m约12.5月，长期深度靠常驻自采滚动积累。
-MINUTE_EM_HOSTS = ["push2his.eastmoney.com", "1.push2his.eastmoney.com",
-                   "2.push2his.eastmoney.com", "3.push2his.eastmoney.com"]  # 镜像子域轮换，单个被断连时换下一个
-MINUTE_MARKET = {"SHFE": "113", "DCE": "114", "CZCE": "115", "INE": "142", "GFEX": "225"}
 MINUTE_PERIODS = (1, 5, 30)              # 常驻增量自采周期（分钟）；全部走新浪主连（含1m，type=1实测1023根）
 MINUTE_BACKFILL_PERIODS = (60, 30, 15, 5, 1)  # 启动回填顺序：深周期先落，1m新浪同样1023根一次到位
 MINUTE_BACKFILL_LMT = {1: 1023, 5: 1023, 15: 1023, 30: 1023, 60: 1023}  # 新浪固定最多1023根，一次回填到位
 MINUTE_INCR_LMT = {1: 12, 5: 8, 15: 8, 30: 6, 60: 6}  # 增量只取最近N根（UNIQUE去重后实际新增很少）
 MINUTE_ONCE_LMT = {1: 1023, 5: 200, 15: 200, 30: 300, 60: 300}  # --once同步小回填条数（新浪秒回，1m可全量）
-MINUTE_WORKERS = 6                       # 并发线程数（主源新浪稳定可并发；东财任务内部另有全局限流）
-MINUTE_TDX_ENABLED = True                # 通达信可选源：启动自动探测，确认能取期货才启用、否则零成本跳过
-MINUTE_REQ_GAP = 0.25                    # 相邻请求最小间隔（秒，全局限流）
-MINUTE_RETRY = 4                         # 单合约单周期失败重试轮数（每轮遍历全部镜像子域）
-MINUTE_RETRY_WAIT = 1.2                  # 重试退避基数（秒，逐轮加倍、封顶8秒）
-MINUTE_CIRCUIT_FAILS = 8                # 连续连接级失败多少次触发熔断（东财整站限流/断连时）
-MINUTE_CIRCUIT_COOLDOWN = 60            # 熔断冷却秒数：期间自采直接跳过不发请求，到期自动重试
+MINUTE_WORKERS = 3                       # 并发线程数（2026-09-11 第120轮：6→3，配合 SINA_REQ_GAP 全局限流避免瞬时并发触发456）
+# 第120轮：新浪 stock2（日线+分钟K）全局限流间隔（秒）——320任务瞬时并发把白名单/本机IP都打进456封锁，
+# 故对 stock2 请求全局串行化、恒速 >= SINA_REQ_GAP 秒/次（3s≈20次/min 安全线内），防任何 IP 被高频打封。
+SINA_REQ_GAP = 3.0
+# ---- 第120轮：云服务器并行采集（分钟K走云服务器出口，本机 IP 不碰新浪 stock2，永不被封）----
+# SINA_SERVER_ENABLED=True 时 MinuteCollector.collect 优先从云服务器拉分钟K（失败自动回落本机链路）；
+# 服务器地址即 tools/sina_proxy_server.py 部署实例（每台上跑 --port 9001 --gap 0.7）。
+SINA_SERVER_ENABLED = True
+SINA_SERVER_URLS = [
+    "http://8.156.69.136:9001",
+    "http://8.156.73.52:9001",
+    "http://8.156.69.2:9001",
+    "http://8.156.73.27:9001",
+    "http://8.156.72.196:9001",
+    "http://47.109.195.37:9001",
+    "http://8.156.69.191:9001",
+    "http://8.156.78.133:9001",
+    "http://8.156.66.174:9001",
+    "http://8.137.94.172:9001",
+    "http://47.108.206.1:9001",
+]
+SINA_SERVER_TIMEOUT = 20.0             # 单次服务器请求超时（秒）
 MINUTE_LOOP_INTERVAL = 300               # 交易时段常驻增量自采间隔（秒，5分钟，对齐1/5分钟bar）
 MINUTE_OFFPEAK_INTERVAL = 1800           # 非交易时段自采间隔（秒，30分钟；返回的仍是收盘bar，去重后不膨胀）
 MINUTE_BARS_RETENTION_DAYS = 400         # 分钟K保留天数（长期自采库，到期prune；sqlite可轻松承载）
@@ -692,6 +729,14 @@ PAPER_ACCOUNT_TXT = os.path.join(BASE_DIR, "reports", "paper_account.txt")  # �
 PAPER_ACCOUNT_DB_DIR = os.path.join(BASE_DIR, "data", "paper_accounts")    # 第102轮：多账户独立SQLite目录
 PAPER_OPT_PREMIUM_MAX_RATIO = 0.03  # 第102轮：单笔买方权利金占权益上限3%（tastytrade共识：买方≤3-5%总资金）
 PAPER_OPT_STOP_LOSS_RATIO = 0.50   # 第102轮：权利金止损线（亏损≥50%权利金即平仓，激进版可在实例层覆盖为0.40）
+
+# ========== 第116轮：备用数据源（backup_sources.py 可选加载） ==========
+# 主链（新浪/东财）封锁时的降级源；全部可选，依赖缺失/无账户零请求，不改变主链行为。
+BACKUP_VENDOR_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "..", "vendor"))  # E:\LHsystem\vendor
+BACKUP_AKSHARE_DAILY_ENABLED = True   # A级：akshare 新浪 stock 路径日线兜底（futures_zh_daily_sina）
+BACKUP_CURL_CFFI_ENABLED = True       # C级：curl_cffi TLS 指纹伪装兜底（东财分钟K备选）
+# B级账户（天勤 TqSdk / SimNow CTP 共用快期/仿真账户）：仅环境变量 TQ_ACCOUNT/TQ_PASSWORD
+# 或 .env 配置后才会建立连接，未配置时该源恒为 {} 且零请求（与 TUSHARE_TOKEN 同模式）。
 
 # ========== 第107轮：非交易时段跳过纸面撮合（正规交易时段才能成交） ==========
 # 非交易时段（盘后/周末/节假日）run_cycle 仍正常跑分析/报告，但 paper_broker 撮合完全跳过，

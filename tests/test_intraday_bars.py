@@ -45,12 +45,3 @@ def test_aggregate_skips_bad_dt():
     bars = [_bar("bad", 1, 2, 0, 1), _bar("2026-09-01 09:01", 1, 2, 0, 1),
             _bar("2026-09-01 09:02", 1, 2, 0, 1)]
     assert len(ib.aggregate_bars(bars, 1, 2)) == 1
-
-
-def test_contract_code_builders():
-    assert ib.em_contract_code("MA", "CZCE", 26, 10) == "ma610"     # 郑商所3位
-    assert ib.em_contract_code("rb", "SHFE", 27, 1) == "rb2701"
-    assert ib.project_contract_code("ma", 26, 10) == "MA2610"
-    assert ib.em_secid("RB", "SHFE", 27, 1) == "113.rb2701"
-    assert ib.em_secid("MA", "CZCE", 26, 10) == "115.ma610"
-    assert ib.em_secid("XX", "NOPE", 26, 10) == ""                  # 未知交易所不硬拼

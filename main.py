@@ -75,7 +75,6 @@ import flow_tracker
 import fundamental_data
 import futures_data
 import intraday_bars
-import tdx_bars
 import iv_surface
 import oil_data
 import option_analyzer
@@ -190,12 +189,8 @@ class State:
         self.fund_inv = {}                        # sym大写 -> 库存/仓单时序（日频）
         self.fund_basis = None                    # 生意社全市场基差表 {sym: 基差率}，反爬时为None
         self.fund_day = ""                        # 最近一次完成日频刷新的自然日
-        # 分钟K：新浪主连全周期(含1m)为主、东财具体合约兜底的采集器（常驻自采，落 minute_bars 表）
-        self.minute_fetcher = intraday_bars.MinuteBarFetcher()
-        # 通达信可选源（probe 确认能取期货才启用，否则 available=False 零成本跳过）
-        self.tdx_minute = tdx_bars.TdxMinuteSource() if config.MINUTE_TDX_ENABLED else None
-        # 多源统一采集器：新浪主连全周期为主、东财兜底、通达信可选冗余
-        self.minute_collector = intraday_bars.MinuteCollector(self.minute_fetcher, self.tdx_minute)
+        # 分钟K：新浪主连全周期(含1m)唯一采集器（第118轮：删除东财/通达信分钟K源，常驻自采落 minute_bars 表）
+        self.minute_collector = intraday_bars.MinuteCollector()
 
 
 def build_universe():
@@ -265,11 +260,18 @@ def web_scan_loop(state, interval):
 # ---------------- 后台线程：日线指标预刷新 ----------------
 
 def kline_loop(state):
-    """后台预刷新日线指标（30分钟TTL），避免某一轮分析被刷新拉长"""
+    """后台预刷新日线指标（30分钟TTL），避免某一轮分析被刷新拉长。
+    第116轮：收盘边沿（交易→非交易切换）一次性补拉全品种日线定格缓存，
+    此后盘后全程零请求（get/refresh 内部已按 _in_trading() 跳过）。"""
     while not state.stop.is_set():
         if state.stop.wait(60):
             return
         try:
+            # 收盘边沿检测：刚收盘时补拉一次定格缓存
+            try:
+                state.klines.maybe_close_snapshot(list(state.watchlist))
+            except Exception as _e:
+                LOG.warning("收盘定格检测失败: %s", _e)
             for key, meta in list(state.watchlist):
                 state.klines.refresh_if_stale(meta["code"], meta["cat"])
                 state.klines.refresh_intraday_if_stale(meta["code"], meta["cat"])
@@ -326,10 +328,9 @@ def fundamentals_loop(state):
 # ---------------- 后台线程：主力合约分钟K常驻自采（第14轮 WP-D0） ----------------
 
 def collect_minute_bars(state, mode="incr"):
-    """多源分钟K并发采集并去重落 minute_bars：全周期(1/5/15/30/60m)优先新浪主连（无需主力合约即可采，
-    主连代码直接给、历史窗口深，2026-09-01晚补测 type=1 一分钟K同样1023根），新浪失败时通达信/东财
-    具体合约兜底（需 ContractCache 探测出主力，换月自动跟随）；通达信(tdx_minute)为可选冗余源，
-    probe 通过才启用。
+    """新浪分钟K并发采集并去重落 minute_bars：全周期(1/5/15/30/60m)走新浪主连（无需主力合约即可采，
+    主连代码直接给、历史窗口深，2026-09-01晚补测 type=1 一分钟K同样1023根）。
+    第118轮：删除通达信/东财分钟K源（东财 TLS 指纹封锁、通达信公共服务器 7727 不可达）。
     mode: backfill=启动回填历史窗口；incr=常驻增量(只取最近几根)；once=--once/冷启动小回填。"""
     if mode == "backfill":
         periods, lmts = config.MINUTE_BACKFILL_PERIODS, config.MINUTE_BACKFILL_LMT
@@ -337,12 +338,6 @@ def collect_minute_bars(state, mode="incr"):
         periods, lmts = config.MINUTE_BACKFILL_PERIODS, config.MINUTE_ONCE_LMT
     else:
         periods, lmts = config.MINUTE_PERIODS, config.MINUTE_INCR_LMT
-    # 通达信可选源：首轮采集前探测一次（公共服务器无期货/7727不可达时 available=False，之后零成本跳过）
-    if state.tdx_minute is not None and getattr(state.tdx_minute, "available", None) is None:
-        try:
-            state.tdx_minute.probe()
-        except Exception:
-            state.tdx_minute.available = False
     jobs, n_var = [], 0
     for _key, meta in state.watchlist:
         n_var += 1
@@ -350,7 +345,7 @@ def collect_minute_bars(state, mode="incr"):
         mc = (cinfo or {}).get("main")
         yy, mm = (mc.get("yy"), mc.get("mm")) if mc else (None, None)
         for p in periods:
-            # 新浪主连全周期(含1m)均可采、无需主力合约；仅当走tdx/东财具体合约兜底时才需要yy/mm
+            # 新浪主连全周期(含1m)均可采、无需主力合约（yy/mm 仅兼容旧 collect 签名）
             jobs.append((meta["sym"], meta["ex"], meta.get("code"), yy, mm, p, int(lmts.get(p, 10))))
 
     def _one(job):
@@ -414,6 +409,26 @@ def startup_open_ths():
             LOG.info("同花顺期货通未能自动打开（可检查 config.THS_EXE 路径）")
     except Exception as e:
         LOG.warning("自动打开期货通失败: %s", e)
+
+
+def startup_open_legend():
+    """以调试模式拉起 Legend（CDP 9225，供界面操作收集装置读取桌面端数据）。
+    幂等：9225 端口已在监听则跳过；exe 不存在或启动失败静默降级（不阻断主程序）。"""
+    port = getattr(config, "LEGEND_CDP_PORT", 9225)
+    if _cdp_port_busy(port):
+        LOG.info("Legend CDP %d 已就绪，跳过自动拉起", port)
+        return
+    legend_exe = getattr(config, "LEGEND_EXE", "")
+    if not legend_exe or not os.path.exists(legend_exe):
+        LOG.info("Legend exe 未找到（%s），跳过自动拉起", legend_exe)
+        return
+    try:
+        p = subprocess.Popen(
+            [legend_exe, f"--remote-debugging-port={port}", "--remote-allow-origins=*"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        LOG.info("已自动拉起 Legend 调试模式（%s, pid=%d, CDP %d）", legend_exe, p.pid, port)
+    except Exception as e:
+        LOG.warning("Legend 启动失败: %s", e)
 
 
 def _cdp_port_busy(port):
@@ -1004,7 +1019,18 @@ def run_cycle(state):
         # 非交易时段：快照照写（供 ticker 备用），撮合/报告/汇总全跳过（账户状态冻结）
         _trading_now, _ = is_trading_time()
         _skip_paper = (not _trading_now) and getattr(config, "PAPER_TRADING_ONLY", True)
-        if not _skip_paper and _pa_fut:
+        # 第115轮：交易时段 + paper_ticker 已接管（每分钟独立撮合+写盘）时，run_cycle 5.5 段
+        # 跳过同步 on_cycle / write_paper_account / 汇总打印——避免 run_cycle 5/10 分钟写盘
+        # 覆盖 ticker 每分钟写盘（纸面文件时间戳跳动跟随分钟而非主报告轮）。
+        # - 快照 _paper_stash **仍无条件落**（供 ticker 分析失败降级回退，见 paper_ticker 旧行为）；
+        # - ticker 未启动（--once / PAPER_ENABLED=False / 间隔0）时保留 run_cycle 同步驱动旧行为（兜底）；
+        # - 非交易时段两边都冻结，此处跳过条件不生效（_skip_paper 已提前短路）。
+        _ticker_took_over = bool(getattr(state, "_paper_ticker_running", False)) and _trading_now
+        if _skip_paper:
+            pass                      # 非交易时段：仅快照已落，撮合/报告/汇总全跳过（旧行为）
+        elif _ticker_took_over:
+            LOG.debug("纸面由 paper_ticker 接管（run_cycle 5.5 跳过撮合/写盘，仅落快照）")
+        elif _pa_fut:
             for _name, _broker in state.papers.items():
                 try:
                     _prio = _broker.priority
@@ -1262,7 +1288,7 @@ def main():
     refresh_fundamentals(state, force=True)
 
     # 第14轮 WP-D0：启动同步做一次主力合约分钟K小回填（首轮即有自有分钟数据；常驻模式另由后台线程持续自采）
-    LOG.info("正在采集分钟K线（新浪主连全周期1/5/15/30/60m为主，启动小回填；通达信/东财兜底，失败自动降级）...")
+    LOG.info("正在采集分钟K线（新浪主连全周期 1/5/15/30/60m 唯一源，第118轮：删除通达信/东财分钟K）...")
     try:
         collect_minute_bars(state, "once")
     except Exception as e:
@@ -1285,8 +1311,16 @@ def main():
     if not args.once and getattr(config, "PAPER_ENABLED", False) and \
             getattr(config, "PAPER_TICK_INTERVAL", 0) > 0:
         threading.Thread(target=paper_ticker.tick_loop, args=(state,), daemon=True).start()
+        # 第115轮：记录 ticker 已接管纸面撮合+写盘，供 run_cycle 5.5 段在交易时段跳过
+        # 同步 on_cycle/write_paper_account（避免 run_cycle 5/10 分钟写盘覆盖 ticker 每分钟写盘）。
+        # --once / PAPER_ENABLED=False / 间隔0 时此标记不设置 -> run_cycle 5.5 保留旧行为（兜底）。
+        state._paper_ticker_running = True
+    else:
+        state._paper_ticker_running = False
     if not args.no_launch and config.THS_AUTO_LAUNCH:
         threading.Thread(target=startup_open_ths, daemon=True).start()
+    if not args.no_launch and getattr(config, "LEGEND_AUTO_LAUNCH", False):
+        threading.Thread(target=startup_open_legend, daemon=True).start()
     if not args.no_launch and getattr(config, "BROWSER_DEBUG_LAUNCH", True):
         threading.Thread(target=startup_browser_debug, daemon=True).start()
 

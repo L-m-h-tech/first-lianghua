@@ -139,6 +139,16 @@ def is_variety_trading(meta, now=None):
     return config.NIGHT_START_MIN <= axis < end_min
 
 
+def trading_subset(watchlist, now=None):
+    """第115轮：筛出"当前正在自身交易时段"的品种子集（保持原顺序）。
+    日盘返回全量；夜盘只保留有夜盘（且未收市）的品种——无夜盘品种在夜盘
+    行情冻结为上一收盘价，喂进纸面撮合会产生"用冻结价成交"的无意义记录，
+    故夜盘时段纸面/行情拉取只对活跃子集进行。now 可注入（测试用）。"""
+    watchlist = list(watchlist or [])
+    return [(name, meta) for name, meta in watchlist
+            if is_variety_trading(meta, now=now)]
+
+
 def cycle_interval(now=None):
     """当前应使用的轮动间隔（秒）：
     交易时段前30分钟每5分钟一轮，之后每10分钟一轮；非交易时段每1分钟一轮"""

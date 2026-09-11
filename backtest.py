@@ -500,7 +500,9 @@ def resolve_codes(codes_arg, limit=None):
 def fetch_and_run(item, args):
     name, code = item
     try:
-        bars = futures_data.fetch_daily_kline(code, args.days)[-args.days:]
+        # 第121轮修复：原 args.days 误传为 retry 参数（fetch_daily_kline 第二参数是重试次数），
+        # 恢复后会导致每个品种发 ~251 次请求 × 0.5s 间隔；现只传 symbol，窗口截取在外层完成。
+        bars = futures_data.fetch_daily_kline(code)[-args.days:]
         prepared = prepare_symbol(bars)
         if prepared is None:
             return name, None, f"K线不足: {len(bars)}根"

@@ -43,6 +43,7 @@ import portfolio as portfolio_mod
 import circuit_breaker
 from backtest import load_fee_schedule
 from storage import score_band_name
+from utils import LOG   # 第121轮修复：原缺 LOG 定义导致 639 行补仓日志 NameError 被吞
 
 
 # =========================== 纯函数（无状态、零网络，可直接合成断言） ===========================
@@ -1012,8 +1013,12 @@ class PaperBroker:
             multiplier = float(rec.get("multiplier") or self.pf.mult_of(rec.get("sym") or ""))
             lots = int(rec.get("lots") or 1)
             fee = self._opt_fee_yuan(rec)
-            realized = (px_sell - px_buy) * multiplier * lots - fee
-            self.opt_realized += realized
+            # 第121轮修复：原 realized 直接把平仓费扣进 opt_realized（净额），而所有对外汇总
+            # 又是 opt_realized - opt_fees（opt_fees 含该笔平仓费），导致平仓费双重扣减、净值被低估。
+            # 修复：opt_realized 累计毛利（不含费），手续费统一进 opt_fees，对外净值 = opt_realized - opt_fees。
+            gross = (px_sell - px_buy) * multiplier * lots
+            realized = gross - fee      # 单笔净值（含该笔平仓费，落库展示用）
+            self.opt_realized += gross  # 毛利进累计
             self.opt_fees += fee
             t = dict(rec)
             t.update({"ts": ts, "action": "close", "side": "close", "status": "closed",

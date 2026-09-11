@@ -1,26 +1,20 @@
 # -*- coding: utf-8 -*-
-"""分钟K线数据层（新浪主连全周期为主 + 东财具体合约兜底 + 通达信可选冗余 + 通用周期聚合）。
+"""分钟K线数据层（新浪主连全周期唯一源 + 通用周期聚合）。
 
 为什么需要：
   - 日内/平今回测（第15轮 WP-D1/D2）必须有带时间戳的分钟 bar；免费源历史分钟窗口有限，
     长期、自有、永不丢的分钟库根本上靠程序 7×24 常驻、每几分钟自采一次滚动积累。
 
-选源实测（2026-09-01 晚两次实测定型；**当晚补测纠正第14轮"新浪无1分钟"的误判**）：
-  * 新浪主连 getFewMinLine（**主源，全周期 1/5/15/30/60m**）：主连代码直接给（RB0，无需
+选源实测定型（2026-09-01 晚补测纠正第14轮"新浪无1分钟"的误判；第118轮用户决策删除其余源）：
+  * 新浪主连 getFewMinLine（**唯一分钟K源，全周期 1/5/15/30/60m**）：主连代码直接给（RB0，无需
     合约转换/换月跟随），每个周期固定 1023 根——实测 1m≈2.5个交易日、5m≈3周、15m≈3月、
-    30m≈6月、60m≈12.5月，64/64 品种全覆盖、零断连、单请求0.1s级；具体合约（RB2701/MA610）
-    同样可取。字段 d/o/h/l/c/v/p（p=持仓量，无成交额）。
-  * 东财 push2his（具体合约兜底）：有全周期，但无主力连续、secid=市场号.具体合约；
-    本机两晚实测该行情域名按 IP 临时限流/直接断连（RemoteDisconnected），故仅在新浪与
-    通达信都失败时兜底；保留低并发+全局限流+镜像轮换+熔断，任何失败软降级 []。
-    第113轮实测发现封锁为**Python http 客户端 TLS 指纹级**（非IP级）——浏览器
-    （真实TLS指纹）fetch 同域名全部周期正常；故新增 CDP 浏览器 fetch 作为最终兜底。
-    注意：东财 datacenter 基本面域名、push2 实时快照域名与此不同、实测稳定，互不影响。
-  * 通达信 pytdx（可选冗余，tdx_bars.py）：公共 7709 只同步股票、期货所在 7727 不可达，
-    probe() 自动探测，确认能取期货才启用，不可用零成本跳过；未装 pytdx 也不影响运行。
+    30m≈6月、60m≈12.5月，64/64 品种全覆盖、零断连、单请求0.1s级。字段 d/o/h/l/c/v/p（p=持仓量）。
+  * ~~东财 push2his~~（第118轮删除）：具体合约兜底，本机持续 TLS 指纹封锁（RemoteDisconnected），
+    删除 CDP/curl 调试浏览器兜底——不再向被封锁域名发请求、不再拉起调试浏览器空白页。
+  * ~~通达信 pytdx~~（第118轮删除）：公共 7709 只同步股票、期货所在 7727 不可达，直接删除。
 
-能力天花板（诚实声明）：免费源无历史 L2 逐笔；新浪主连是比例复权连续序列（换月点为近似），
-具体合约真实价格由东财/通达信在可用时补充；分钟长期历史靠常驻自采滚动积累。
+能力天花板（诚实声明）：免费源无历史 L2 逐笔；新浪主连是比例复权连续序列（换月点为近似）；
+分钟长期历史靠常驻自采滚动积累。
 """
 import json
 import threading
@@ -34,49 +28,6 @@ from utils import LOG
 
 # 新浪主连分钟K支持的周期（分钟）；2026-09-01 晚补测 type=1（一分钟）同样返回1023根
 SINA_MIN_PERIODS = (1, 5, 15, 30, 60)
-
-
-# ---------------- 合约代码 / secid 转换（东财具体合约） ----------------
-
-def em_contract_code(sym, ex, yy, mm):
-    """项目 (yy,mm) -> 东财分钟K用的具体合约代码（小写）。
-    CZCE（郑商所）东财用3位、年份取个位：MA2610 -> ma610、TA2701 -> ta701；其余交易所4位：rb2701/m2701/si2611。"""
-    sym = str(sym).lower()
-    if ex == "CZCE":
-        return f"{sym}{yy % 10}{mm:02d}"
-    return f"{sym}{yy:02d}{mm:02d}"
-
-
-def project_contract_code(sym, yy, mm):
-    """项目内部统一的具体合约代码（新浪式大写4位年月，如 RB2701/MA2610），用于入库与跨表对齐。"""
-    return f"{str(sym).upper()}{yy:02d}{mm:02d}"
-
-
-def em_secid(sym, ex, yy, mm):
-    """组装东财 secid（市场号.合约代码）；未知交易所返回空串（调用方据此跳过）。"""
-    mkt = config.MINUTE_MARKET.get(ex)
-    if not mkt:
-        return ""
-    return f"{mkt}.{em_contract_code(sym, ex, yy, mm)}"
-
-
-def _parse_line(line, sym, ex, yy, mm, period):
-    """解析东财一根 klines 文本：'2026-09-01 09:30,开,收,高,低,量,额'（开-收-高-低顺序）。"""
-    parts = str(line).split(",")
-    if len(parts) < 7:
-        return None
-    try:
-        o, c, h, l = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-        v, amount = float(parts[5]), float(parts[6])
-    except (TypeError, ValueError):
-        return None
-    dt_text = parts[0]
-    if c <= 0 or h <= 0 or l <= 0:
-        return None
-    return {"dt": dt_text, "trade_date": dt_text[:10],
-            "o": o, "h": h, "l": l, "c": c, "v": v, "amount": amount,
-            "sym": str(sym).upper(), "contract": project_contract_code(sym, yy, mm),
-            "exchange": ex, "period": int(period), "src": "em"}
 
 
 # ---------------- 新浪主连分钟K（主源，主连代码 RB0，5/15/30/60m） ----------------
@@ -116,212 +67,43 @@ def fetch_sina_minute(sina_code, ex, period, lmt=None):
     return bars
 
 
-# ---------------- 东财采集器（线程安全：全局限流 + 镜像轮换 + 退避重试 + 熔断） ----------------
+# ---------------- 多源统一采集器：新浪主连优先，代理池/天勤兜底 ----------------
+# 第118轮（用户决策）：删除东财/通达信分钟K采集（东财 push2his 按 TLS 指纹持续封锁、
+# 通达信公共服务器 7727 不可达；东财 CDP/curl 调试浏览器兜底一并删除——不再向被封锁
+# 域名发请求、不再拉起调试浏览器空白页）。新浪 stock2（日线+分钟K同域）被 WAF 456 封锁时，
+# 先代理池（秒级独立出口绕过），再天勤 TqSdk（独立通道）。
 
-def _cdp_eval(ws_url, expr, timeout=15):
-    """在调试浏览器页签里执行 awaitPromise 表达式（fetch 跨域用浏览器真实 TLS 指纹）。
-    供东财 kline 兜底：push2his 对 Python http 客户端按 TLS 指纹封锁(RemoteDisconnected)，
-    而浏览器环境实测可正常访问（第113轮验证）；CDP 不可用/失败返回 None。"""
-    import json as _json
-    import websocket as _ws
-    try:
-        ws = _ws.create_connection(ws_url, timeout=timeout, suppress_origin=True)
+def _sina_raw_to_bars(raw, sina_code, ex, period):
+    """把新浪 getFewMinLine 原始返回 [{d,o,h,l,c,v,p,s}] 转成统一 bar 格式（与 fetch_sina_minute 对齐）。"""
+    sym = "".join(ch for ch in str(sina_code) if ch.isalpha()).upper()
+    bars = []
+    for r in raw or []:
+        dt = str(r.get("d") or "")[:16]
         try:
-            ws.send(_json.dumps({"id": 1, "method": "Runtime.evaluate",
-                                 "params": {"expression": expr,
-                                            "returnByValue": True, "awaitPromise": True}}))
-            while True:
-                msg = _json.loads(ws.recv())
-                if msg.get("id") == 1:
-                    return msg.get("result", {}).get("result", {}).get("value")
-        finally:
-            ws.close()
-    except Exception:
-        return None
-
-
-def _find_cdp_page():
-    """找调试浏览器（9222/9223/9225）的一个页面 tab，返回 webSocketDebuggerUrl 或 None。"""
-    import socket
-    for port in (9222, 9223, 9225):
-        try:
-            s = socket.create_connection(("127.0.0.1", port), 1)
-            s.close()
-        except OSError:
+            o, h, l, c = float(r["o"]), float(r["h"]), float(r["l"]), float(r["c"])
+        except (KeyError, TypeError, ValueError):
             continue
-        try:
-            import json as _json
-            import urllib.request
-            tabs = _json.loads(urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/json", timeout=2).read().decode("utf-8", "replace"))
-            page = next((t for t in tabs if t.get("type") == "page"), None)
-            if page:
-                return page.get("webSocketDebuggerUrl")
-        except Exception:
+        if c <= 0 or not dt:
             continue
-    return None
-
-
-def _em_kline_via_cdp(url, sym, ex, yy, mm, period):
-    """东财 kline 兜底：通过 CDP 调试浏览器 fetch（真实 TLS 指纹绕过 Python 客户端封锁）。
-    openvlab.cn 页签的 CSP 拦截跨域 fetch，故创建/复用空白页签（about:blank）做 fetch。
-    成功返回 bar 列表；任何失败/无浏览器返回 []。"""
-    # 优先创建独立空白页签（无 CSP 限制，与 openvlab 互不影响）；失败则回退到现有页签
-    ws_url = None
-    try:
-        import urllib.request as _urllib_req
-        import urllib.parse as _urllib_parse
-        _req = _urllib_req.Request(
-            "http://127.0.0.1:9222/json/new?" + _urllib_parse.quote("about:blank"), method="PUT")
-        _t = json.loads(_urllib_req.urlopen(_req, timeout=4).read().decode("utf-8", "replace"))
-        ws_url = _t.get("webSocketDebuggerUrl") if isinstance(_t, dict) else None
-    except Exception:
-        pass
-    if not ws_url:
-        ws_url = _find_cdp_page()
-    if not ws_url:
-        return []
-    url = url.replace("http://push2his.eastmoney.com", "https://push2his.eastmoney.com")
-    # 空白页无 CSP，fetch 无需 mode 配置；AbortController 限时 20s 避免挂起
-    expr = ("(async()=>{const c=new AbortController();const t=setTimeout(()=>c.abort(),20000);"
-            "try{var r=await fetch(%s,{signal:c.signal});clearTimeout(t);"
-            "var d=await r.json();return JSON.stringify((d&&d.data&&d.data.klines)||[]);"
-            "}catch(e){clearTimeout(t);return 'ERR '+e.name+' '+e.message}})()" % json.dumps(url))
-    try:
-        raw = _cdp_eval(ws_url, expr, timeout=25)
-    except Exception:
-        return []
-    if not raw or str(raw).startswith("ERR"):
-        return []
-    try:
-        lines = json.loads(raw)
-    except Exception:
-        return []
-    bars = [b for ln in lines if (b := _parse_line(ln, sym, ex, yy, mm, period))]
+        bars.append({"dt": dt, "trade_date": dt[:10], "o": o, "h": h, "l": l, "c": c,
+                     "v": float(r.get("v") or 0), "amount": 0.0,
+                     "sym": sym, "contract": str(sina_code).upper(),
+                     "exchange": ex, "period": int(period), "src": "proxy"})
+    bars.sort(key=lambda b: b["dt"])
     return bars
 
-class MinuteBarFetcher:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self._last_req = 0.0
-        self._host_turn = 0
-        self.fail_streak = 0          # 连续连接级失败次数（整站限流/断连累计，任一成功即清零）
-        self.cooldown_until = 0.0     # 熔断到期时间戳；冷却期内 fetch 直接返回[]，避免整站不可达时逐任务空耗重试
-
-    def _throttle(self):
-        """全局限流：保证任意两线程相邻请求间隔不小于 MINUTE_REQ_GAP，规避东财快速断连。"""
-        with self.lock:
-            wait = config.MINUTE_REQ_GAP - (time.time() - self._last_req)
-            if wait > 0:
-                time.sleep(wait)
-            self._last_req = time.time()
-
-    def _ordered_hosts(self):
-        """镜像子域按轮次错位起始，把负载分散到 push2his / 1~3.push2his。"""
-        hosts = config.MINUTE_EM_HOSTS
-        with self.lock:
-            start = self._host_turn % len(hosts)
-            self._host_turn += 1
-        return hosts[start:] + hosts[:start]
-
-    def _note_success(self):
-        with self.lock:
-            self.fail_streak = 0
-            self.cooldown_until = 0.0
-
-    def _note_failure(self):
-        with self.lock:
-            self.fail_streak += 1
-            if self.fail_streak >= config.MINUTE_CIRCUIT_FAILS:
-                self.cooldown_until = time.time() + config.MINUTE_CIRCUIT_COOLDOWN
-                self.fail_streak = 0
-                LOG.warning("东财分钟K连续失败达%d次，熔断%d秒（疑似整站限流/断连，期间跳过自采，到期自动重试）",
-                            config.MINUTE_CIRCUIT_FAILS, config.MINUTE_CIRCUIT_COOLDOWN)
-
-    @property
-    def in_cooldown(self):
-        return time.time() < self.cooldown_until
-
-    def fetch(self, sym, ex, yy, mm, period, lmt):
-        """拉取某具体合约某周期最近 lmt 根分钟K，升序返回 bar dict 列表；任何失败软降级为 []。
-        注意：开头不因 Python 连接熔断(in_cooldown)短路——熔断只作用于 http 直连，CDP 浏览器
-        兜底是独立通道，阻塞期仍应尝试浏览器 fetch。"""
-        secid = em_secid(sym, ex, yy, mm)
-        if not secid:
-            return []
-        period, lmt = int(period), int(lmt)
-        url_tpl = ("http://{host}/api/qt/stock/kline/get?secid=" + secid
-                   + f"&klt={period}&fqt=0&lmt={lmt}&end=20500101"
-                     "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57")
-        backoff = config.MINUTE_RETRY_WAIT
-        last_note = ""
-        # 熔断/全部失败统一走到函数末尾的 CDP 浏览器兜底（CDP 是独立通道，不受 Python 连接熔断影响）
-        for _round in range(config.MINUTE_RETRY):
-            if self.in_cooldown:
-                break
-            for host in self._ordered_hosts():
-                if self.in_cooldown:
-                    break
-                self._throttle()
-                try:
-                    resp = http.get(
-                        url_tpl.format(host=host),
-                        headers={"Referer": "https://quote.eastmoney.com/",
-                                 "Accept": "*/*", "Connection": "close"},
-                        timeout=12)
-                    data = (resp.json() or {}).get("data") or {}
-                    raw = data.get("klines") or []
-                    bars = [b for line in raw
-                            if (b := _parse_line(line, sym, ex, yy, mm, period))]
-                    if bars:
-                        bars.sort(key=lambda b: b["dt"])
-                        self._note_success()
-                        return bars
-                    last_note = "返回空"
-                except Exception as e:    # 含 RemoteDisconnected：换镜像/退避后重试，并累计熔断计数
-                    last_note = f"{type(e).__name__}:{str(e)[:40]}"
-                    self._note_failure()
-                    # 连接级异常(RemoteDisconnected/Timeout，均为 OSError 子类)是 IP 级整站封锁，
-                    # 几秒内不会恢复、镜像同域一起被封，用短退避尽快凑满熔断次数（约2~3s熔断），
-                    # 不拖慢 --once 启动；只有"返回空"等疑似抖动才走指数退避。
-                    conn_err = isinstance(e, OSError)
-                    time.sleep(0.3 if conn_err else backoff)
-                    if not conn_err:
-                        backoff = min(backoff * 2, 8.0)
-            if self.in_cooldown:
-                break
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 8.0)
-        LOG.debug("分钟K获取失败 %s %s 周期%d（Python http）: %s，尝试 CDP 浏览器兜底", sym, secid, period, last_note)
-        # 第113轮：东财 push2his 对 Python http 客户端按 TLS 指纹封锁（RemoteDisconnected），
-        # 浏览器（真实 TLS 指纹）实测可正常访问；调用调试浏览器 fetch 东财 kline 作为最终兜底。
-        cdp_bars = _em_kline_via_cdp(
-            url_tpl.format(host=config.MINUTE_EM_HOSTS[0]), sym, ex, yy, mm, period)
-        if cdp_bars:
-            self._throttle()
-            self._note_success()
-            return cdp_bars
-        return []
-
-
-# ---------------- 多源统一采集器：新浪主连全周期(含1m)优先，通达信/东财具体合约兜底 ----------------
 
 class MinuteCollector:
-    """对单个品种单个周期选源采集，对上层屏蔽三源差异。
+    """对单个品种单个周期选源采集：新浪主连优先，代理池/天勤 TqSdk 兜底。
 
-    选源顺序（2026-09-01 晚补测后定型，全周期统一链路）：
-      新浪主连（1/5/15/30/60m，稳、深、免换月，type=1一分钟K同样1023根）
-        → 通达信具体合约（若 probe 可用）
-        → 东财具体合约兜底（push2his 限流期自动跳过）。
-    任一源成功即返回 (bars, 源名)；全部失败返回 ([], "")，调用方只计数不阻断。
-    主力具体合约未知(yy/mm=None)时只能用新浪主连——而新浪全周期可用，故1m不再依赖合约探测。
+    新浪主连（1/5/15/30/60m，稳、深、免换月，type=1一分钟K同样1023根）为主源；
+    新浪 stock2 被 WAF 456 封锁时——先代理池（第118轮：代理 IP 独立出口秒级绕过），
+    再天勤 TqSdk（独立通道）。任一失败返回 ([], "")，调用方只计数不阻断。
     """
 
     def __init__(self, em=None, tdx=None):
-        self.em = em or MinuteBarFetcher()
-        self.tdx = tdx
         self.lock = threading.Lock()
-        self.stats = {"sina": 0, "em": 0, "tdx": 0, "empty": 0}
+        self.stats = {"sina": 0, "proxy": 0, "tq": 0, "empty": 0}
 
     def _note(self, src):
         with self.lock:
@@ -334,27 +116,50 @@ class MinuteCollector:
 
     def collect(self, sym, ex, sina_code, yy, mm, period, lmt):
         period = int(period)
-        has_contract = yy is not None and mm is not None   # 具体合约源（tdx/em）需要主力yy/mm
         bars, src = [], ""
-        # 第一选择：新浪主连（全周期，无需合约转换/换月跟随）
-        bars = fetch_sina_minute(sina_code, ex, period, lmt)
-        if bars:
-            src = "sina"
-            REGISTRY.record("minute_sina", True)
-        else:
-            REGISTRY.record("minute_sina", False)   # G11 主源健康上报
-        # 第二选择：通达信具体合约（仅当 probe 点亮）
-        if not bars and has_contract and self.tdx is not None and getattr(self.tdx, "available", False):
-            bars = self.tdx.fetch(sym, ex, yy, mm, period, lmt)
+        # 第120轮：云服务器优先（SINA_SERVER_ENABLED=True 时分钟K从云服务器拉取，本机 IP 不碰新浪 stock2，
+        # 永不被封；服务器失败自动回落本机链路）。返回格式与 fetch_sina_minute 一致（新浪原始结构）。
+        if getattr(config, "SINA_SERVER_ENABLED", False):
+            try:
+                from server_minute_client import _fetch_via_server
+                raw = _fetch_via_server(sina_code, period, lmt)
+                if raw:
+                    bars = _sina_raw_to_bars(raw, sina_code, ex, period)
+                    src = "server"
+                    REGISTRY.record("minute_server", True)
+                else:
+                    REGISTRY.record("minute_server", False)
+            except Exception:
+                REGISTRY.record("minute_server", False)
+        # 新浪主连（全周期；SINA_MINUTE_DISABLED=True 时跳过——stock2 被 WAF 456 封锁，等待新 IP 后改 False 恢复）
+        if not bars and not getattr(config, "SINA_MINUTE_DISABLED", True):
+            bars = fetch_sina_minute(sina_code, ex, period, lmt)
             if bars:
-                src = "tdx"
-            REGISTRY.record("minute_tdx", bool(bars))
-        # 第三选择：东财具体合约兜底
-        if not bars and has_contract:
-            bars = self.em.fetch(sym, ex, yy, mm, period, lmt)
-            if bars:
-                src = "em"
-            REGISTRY.record("minute_em", bool(bars))
+                src = "sina"
+                REGISTRY.record("minute_sina", True)
+            else:
+                REGISTRY.record("minute_sina", False)   # G11 主源健康上报
+        # 第118轮：新浪禁用/失败时——先代理池（秒级、代理IP独立出口绕过封锁），再天勤 TqSdk（独立通道）
+        if not bars:
+            try:
+                from futures_data import _fetch_intraday_via_proxy
+                raw = _fetch_intraday_via_proxy(sina_code, period, lmt)
+                if raw:
+                    bars = _sina_raw_to_bars(raw, sina_code, ex, period)
+                    src = "proxy"
+                    REGISTRY.record("minute_proxy", True)
+            except Exception:
+                REGISTRY.record("minute_proxy", False)
+        if not bars:
+            try:
+                from backup_sources import tqsdk_minute_kline
+                tq_bars = tqsdk_minute_kline(sina_code, period, num_bars=lmt or 20)
+                if tq_bars:
+                    bars = tq_bars
+                    src = "tq"
+                    REGISTRY.record("minute_tq", True)
+            except Exception:
+                REGISTRY.record("minute_tq", False)
         self._note(src)
         return bars, src
 

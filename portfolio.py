@@ -334,6 +334,12 @@ class Portfolio:
              owner=None, i=0, stop=None, target=None, parts=None,
              contract_code=None, main_month=None):
         if sym in self.positions or price <= 0:
+            # 第121轮修复：原分支直接 return None 不记录 skipped，导致 paper_broker._fill_leg
+            # 取 pf.skipped[-1] 拿到上一次（常是别的品种）的陈腐拒单原因；现补记本次原因。
+            reason = "已持仓或价格<=0" if sym in self.positions else "无价/非法价"
+            if price > 0:
+                self.skipped.append({"dt": dt, "sym": sym, "reason": reason,
+                                     "available": self.available(), "price": price})
             return None
         mult = self.mult_of(sym)
         if mult <= 0:
