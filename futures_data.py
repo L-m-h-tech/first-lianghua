@@ -130,23 +130,9 @@ def _kline_note_fail():
                 pass
 
 
-# ---------------- 新浪白名单出口（2026-09-11） ----------------
-# 优质云主机白名单 IP：配置 SINA_WHITELIST_PROXY 后，新浪 stock2 请求优先走它（豁免 456 频控）。
-# 未配置/失败/超时自动回落本机直连（False=不拦截），与第116轮 WAF 状态机正交（封锁仍按本机判定）。
-
-def _sina_whitelist_proxy():
-    """当前生效的白名单代理 "host:port" 或 ""（未配置/未生效）。"""
-    try:
-        return getattr(config, "SINA_WHITELIST_PROXY", "") or ""
-    except Exception:
-        return ""
-
-
 # ---- 全局新浪 stock2 限流（2026-09-11 第120轮实测结论） ----
-# 320 任务瞬间并发（6线程）把白名单 IP 和本机 IP 同时打进 456 封锁——新浪对任意 IP 高频必封，
-# 不存在"白名单豁免"。故对 stock2（日线 getDailyKLine + 分钟K getFewMinLine）做全局串行化限流：
+# 新浪对任意 IP 高频必封，故对 stock2（日线 getDailyKLine + 分钟K getFewMinLine）做全局串行化限流：
 # 任意时刻只有一次请求进入新浪，且间隔 >= SINA_REQ_GAP 秒（默认 3s ≈ 20次/min 安全线以内）。
-# 白名单/本机共用同一节奏，最坏情况单 IP 频率减半，双保险不触发 456。
 _sina_gate = threading.Lock()
 _sina_last_req = 0.0
 
@@ -159,37 +145,6 @@ def _sina_throttle():
         if wait > 0:
             time.sleep(wait)
         _sina_last_req = time.time()
-
-
-def _sina_whitelist_get(url, timeout=None):
-    """经白名单代理发送新浪请求，成功返回解析后的 K线数组（list），失败返回 None。
-
-    与既有代理池同款机制（urllib ProxyHandler）；仅当返回正文含 K线数组且非 456 才算成功。
-    未配置白名单代理 / 白名单被 456 / 超时 / 无数组 一律返回 None，由调用方回落本机直连。
-    """
-    proxy = _sina_whitelist_proxy()
-    if not proxy:
-        return None
-    try:
-        import urllib.request as _ur
-        handler = _ur.ProxyHandler({
-            "http": "http://%s" % proxy,
-            "https": "http://%s" % proxy})
-        opener = _ur.build_opener(handler)
-        req = _ur.Request(url, headers=config.HEADERS_SINA)
-        body = opener.open(req, timeout=timeout or getattr(config, "SINA_WHITELIST_TIMEOUT", 8)).read()
-        text = body.decode("utf-8", "replace")
-        if "456" in text[:64]:
-            LOG.warning("白名单出口也被新浪WAF拦截(456)，回落本机直连")
-            _sina_note_block()
-            return None
-        m = re.search(r"\((\[.*\])\)", text, re.S)
-        if m and len(m.group(1)) > 100:
-            return json.loads(m.group(1))
-        return None
-    except Exception as e:
-        LOG.debug("白名单出口请求失败(%s): %s", proxy, e)
-        return None
 
 
 def fetch_quotes(codes):
@@ -328,13 +283,8 @@ def fetch_daily_kline(symbol, retry=2):
     if not getattr(config, "SINA_DAILY_DISABLED", True):
         url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
                f"InnerFuturesNewService.getDailyKLine?symbol={symbol}")
-        # 白名单出口优先（云主机白名单 IP 豁免 456 频控）：配置生效时走它，失败/未配置回落本机直连。
+        # 本机直连（WAF 封锁期短路）
         _sina_throttle()
-        wl_bars = _sina_whitelist_get(url)
-        if wl_bars:
-            _kline_note_success()
-            return wl_bars
-        # 白名单未配置/失败 → 本机直连（原有逻辑；WAF 封锁期短路）
         _sina_blocked = _sina_waf_blocked()
         last_err = "新浪WAF封锁(456)短路" if _sina_blocked else None
         if not _sina_blocked:
@@ -613,8 +563,7 @@ def fetch_intraday_kline(symbol, period=30, retry=1):
     64/64品种全覆盖、零断连（约覆盖最近2.5个交易日），主连与具体合约均可取；故1m主源
     由东财push2his（本机持续限流）切换为新浪主连。
     云服务器优先（2026-09-11 第120轮）：SINA_SERVER_ENABLED=True 时分钟K先走云服务器出口
-    （10 台 round-robin，本机 IP 不碰新浪 stock2，永不被封），失败回落白名单/本机直连。
-    白名单优先（2026-09-11）：SINA_WHITELIST_PROXY 生效时走云主机白名单出口，失败回落本机直连。"""
+    （11 台 round-robin，本机 IP 不碰新浪 stock2，永不被封），失败回落本机直连。"""
     period = int(period)
     if period not in (1, 5, 15, 30, 60):
         raise ValueError(f"不支持的分钟周期: {period}")
@@ -630,12 +579,8 @@ def fetch_intraday_kline(symbol, period=30, retry=1):
             pass
     url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
            f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={period}")
-    # 全局新浪节流（3s/次，防并发触发 456）→ 白名单出口优先 → 本机直连
+    # 全局新浪节流（3s/次，防并发触发 456）→ 本机直连
     _sina_throttle()
-    wl_bars = _sina_whitelist_get(url)
-    if wl_bars:
-        return wl_bars
-    # 白名单未配置/失败 → 本机直连（原有逻辑）
     last_err = None
     for _ in range(retry + 1):
         _sina_throttle()

@@ -172,18 +172,12 @@ HEADERS_SINA = {           # 新浪行情接口必须带 Referer，否则被拒�
 }
 # 第117轮：新浪日K主源显式禁用（本机 IP 被新浪 WAF 456 封锁，等待新 IP；改 False 恢复）。
 # 禁用期间 fetch_daily_kline 不发任何 stock2 请求，日K走天勤 TqSdk 单一通道。
-# 2026-09-11：本机 IP 已解封（实测 200），恢复直连；优先走白名单代理（SINA_WHITELIST_PROXY）。
+# 2026-09-11：本机 IP 已解封（实测 200），恢复直连；日线/分钟K均已接入云服务器优先出口。
 SINA_DAILY_DISABLED = False
 # 第118轮：新浪分钟K主源同样被 WAF 456 封锁（getFewMinLine 与日线同域 stock2），一并禁用。
 # 禁用期间分钟K走代理池（秒级独立出口）→ 天勤 TqSdk（独立通道）两级兜底。
-# 2026-09-11：同本机解封，恢复；优先走白名单代理。
+# 2026-09-11：同本机解封，恢复；分钟K已接入云服务器优先出口。
 SINA_MINUTE_DISABLED = False
-# 优质云主机白名单 IP 出口：新浪走它可豁免 456 频控（待实机验证）。
-# 格式 "ip:port"（http 代理）；留空=不启用白名单出口（回落本机直连 → 代理池 → 天勤）。
-# 失效/超时自动回落后续链路，不影响主流程。2026-09-11 下午 AI 填入。
-SINA_WHITELIST_PROXY = "106.119.164.164:16817"
-# 白名单出口请求超时（秒）：白名单代理较慢时快速失败回落本机，避免拖长链路。
-SINA_WHITELIST_TIMEOUT = 8.0
 # ---- 第94轮 A4/A5/A6（对标 scrapling：session 持久化 / AutoThrottle / dev 缓存重放） ----
 HTTP_COOKIE_JAR = os.path.join(BASE_DIR, "cache", "cookies.json")   # 每源 cookie 持久化落盘
 HTTP_THROTTLE_ENABLED = True      # A5 请求级限流退避总开关（仅 429/503/Retry-After 时改变时序，正常路径零影响）
