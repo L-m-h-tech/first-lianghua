@@ -368,6 +368,11 @@ BACKTEST_ENTRY_SCORE = 2.0
 BACKTEST_WORKERS = 6
 BACKTEST_FEE_RATE = 0.00005       # 找不到真实手续费表时的兜底单边费率（按价格比例，万0.5）
 BACKTEST_SLIP_RATE = 0.00010      # 单边滑点近似（万1；可用CLI覆盖）
+# G14 盘口滑点校准（第124轮接线）：True=有真实盘口快照(tick_snapshots)的品种用
+# 实测价差中位数校准滑点（往返=spread_bp_median，单边=其一半），无快照/样本不足回落统一比例。
+BACKTEST_SLIP_CALIBRATE = True
+BACKTEST_SLIP_CALIBRATE_DAYS = 30        # 校准窗口：取最近 N 天盘口快照
+BACKTEST_SLIP_CALIBRATE_MAX_BP = 20.0    # 校准价差上限（bp）：超出视为数据异常/盘口失真，回落统一比例
 FUTURES_FEES_FILE = os.path.join(DATA_DIR, "futures_fees.csv")  # 用户券商手续费表转换出的64品种真实费率
 BACKTEST_USE_REAL_FEES = True     # 默认优先使用FUTURES_FEES_FILE；--no-real-fees可回退统一比例费率
 BACKTEST_LIMIT_LOCK = 0.07        # 同时满足收盘在最高/最低且涨跌幅≥7%，视为疑似锁涨跌停
@@ -722,6 +727,12 @@ PAPER_DEFAULT_MARGIN = 0.12       # 缺保证金率表时的兜底保证金率
 PAPER_USE_REAL_FEES = True        # 优先读 data/futures_fees.csv 真实费率（缺表回退兜底比例）
 PAPER_FEE_RATE = 0.00005          # 兜底单边手续费率（真实费率表缺失时）
 PAPER_SLIP_RATE = 0.0001          # 单边滑点率：买价=盘面价*(1+slip)、卖价=盘面价*(1-slip)，成交价内含滑点
+# G14 盘口保守成交价（第124轮接线）：True=有真实盘口快照的品种，开仓/平仓按真实 bid/ask 成交
+# （买=ask、卖=bid，即真实价差内成交，比统一比例滑点更保守、口径更真实），
+# 无快照/样本不足回落 apply_slip 统一比例。
+PAPER_SLIP_USE_ORDERBOOK = True
+PAPER_SLIP_CALIBRATE_DAYS = 30   # 校准窗口（与回测同口径）
+PAPER_SLIP_CALIBRATE_MIN_SAMPLES = 60   # 每品种最少样本数，不足不校准（回落统一比例）
 PAPER_LIMIT_EPS = 0.0008          # 实时锁板判定的贴板容差（与 INTRADAY_BT_LIMIT_TICK_EPS 同量级）
 PAPER_ALLOW_ADD = False           # 持仓且同向更强信号是否加仓（默认False=只持有/反手/离场，不反复加仓）
 PAPER_RETENTION_DAYS = 3650       # paper_orders/trades/equity 保留天数（纸面需长期影子对照，默认约10年）

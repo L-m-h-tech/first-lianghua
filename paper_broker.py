@@ -269,6 +269,7 @@ class PaperBroker:
         self.stop_loss_ratio = (stop_loss_ratio if stop_loss_ratio is not None
                                 else getattr(config, "PAPER_OPT_STOP_LOSS_RATIO", 0.50))
         self.slip_rate = slip_rate if slip_rate is not None else config.PAPER_SLIP_RATE
+        self._cur_quote = {}    # G14 接线：on_cycle 时注入当前轮 by_quote，供 _ob_exec_price 读 bid/ask
         self._clock = clock or (lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         # 实时平今/平昨判定：时间戳->交易所结算交易日（可注入，测试零网络零日历依赖）
         self._owner_fn = owner_fn or _default_owner_of_ts
@@ -404,6 +405,29 @@ class PaperBroker:
             return "today"
         return "close"
 
+    # ---------------- 单腿成交（真正调用 Portfolio） ----------------
+    def _ob_exec_price(self, raw_price, side, by_quote, sym):
+        """G14 盘口保守成交价（第124轮接线）：真实 bid/ask 存在且有效时，
+        买=ask、卖=bid（真实价差内成交，比统一比例滑点更保守、口径更真实）；
+        无盘口/非法档位回落 apply_slip 统一比例。返回 (fill_price, use_ob)。
+        """
+        if getattr(config, "PAPER_SLIP_USE_ORDERBOOK", True):
+            q = (by_quote or {}).get(sym) or {}
+            bid = float(q.get("bid") or 0.0)
+            ask = float(q.get("ask") or 0.0)
+            latest = float(q.get("latest") or q.get("price") or 0.0)
+            if bid > 0 and ask > 0 and ask >= bid:
+                px = ask if side == "buy" else bid
+                if px > 0:
+                    return px, True
+            if side == "buy" and ask > 0:
+                return ask, True
+            if side == "sell" and bid > 0:
+                return bid, True
+            if latest > 0:
+                raw_price = raw_price if raw_price > 0 else latest
+        return apply_slip(raw_price, side, self.slip_rate), False
+
     def _fill_leg(self, ts, order, raw_price):
         """把一条委托腿按盘面价 raw_price（内含滑点后）成交，返回 trade dict；失败返回 None。"""
         sym = order["sym"]
@@ -412,7 +436,8 @@ class PaperBroker:
         is_open = action in ("open", "reverse_open")
         direction = order["direction"]
         side = order["side"]
-        fill_price = apply_slip(raw_price, side, self.slip_rate)
+        fill_price, _use_ob = self._ob_exec_price(
+            raw_price, side, getattr(self, "_cur_quote", None), sym)
         if fill_price <= 0:
             self._upd_order(order, status="blocked", reason="无价/非法价，顺延")
             return None
@@ -748,6 +773,7 @@ class PaperBroker:
             q = quotes.get(row.get("code")) or {}
             if q:
                 by_quote[sym] = q
+        self._cur_quote = by_quote   # G14 接线：供 _ob_exec_price 读取真实 bid/ask
 
         cycle_orders, cycle_trades = [], []
         # 阶段A：next 档先成交上一轮挂单（先平后开，严格晚于信号）

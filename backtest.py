@@ -503,6 +503,24 @@ def fetch_and_run(item, args):
         # 第121轮修复：原 args.days 误传为 retry 参数（fetch_daily_kline 第二参数是重试次数），
         # 恢复后会导致每个品种发 ~251 次请求 × 0.5s 间隔；现只传 symbol，窗口截取在外层完成。
         bars = futures_data.fetch_daily_kline(code)[-args.days:]
+        # G14 盘口滑点校准（第124轮接线）：用真实买卖价差中位数替代统一比例滑点。
+        # 单边滑点 = 价差中位数(bp) / 2 / 10000（往返=真实价差）；仅当启用校准、快照库可读、
+        # 品种有足够样本且价差在合理上限内时生效，否则回落 CLI 统一滑点。
+        slip_rate = float(args.slip_rate or 0.0)
+        if getattr(config, "BACKTEST_SLIP_CALIBRATE", False):
+            try:
+                import storage as _st
+                cal = _st.MonitorDB().sym_spread_calibration(
+                    days=int(getattr(config, "BACKTEST_SLIP_CALIBRATE_DAYS", 30)),
+                    min_samples=60)
+                _sym = code.rstrip("0").upper()
+                _c = cal.get(_sym)
+                _max_bp = float(getattr(config, "BACKTEST_SLIP_CALIBRATE_MAX_BP", 20.0))
+                if _c and _c.get("spread_bp_median") is not None \
+                        and _c["spread_bp_median"] <= _max_bp:
+                    slip_rate = _c["spread_bp_median"] / 2.0 / 10000.0
+            except Exception:
+                pass   # 快照库异常/无表：回落统一滑点，绝不让校准失败拖垮回测
         prepared = prepare_symbol(bars)
         if prepared is None:
             return name, None, f"K线不足: {len(bars)}根"
@@ -510,7 +528,7 @@ def fetch_and_run(item, args):
         prepared["sym"] = code.rstrip("0").upper()
         fee_table = load_fee_schedule(args.fees_file)
         result = simulate_prepared(name, code, prepared, args.hold, args.entry,
-                                   args.fee_rate, args.slip_rate,
+                                   args.fee_rate, slip_rate,
                                    None if args.no_limit_filter else args.limit_move,
                                    collect_signals=True, fee_table=fee_table,
                                    use_real_fees=not args.no_real_fees,
@@ -520,7 +538,7 @@ def fetch_and_run(item, args):
             for hold in config.BACKTEST_STABLE_HOLDS:
                 for entry in config.BACKTEST_STABLE_ENTRIES:
                     rr = simulate_prepared(name, code, prepared, hold, entry,
-                                           args.fee_rate, args.slip_rate,
+                                           args.fee_rate, slip_rate,
                                            None if args.no_limit_filter else args.limit_move,
                                            collect_signals=False, fee_table=fee_table,
                                            use_real_fees=not args.no_real_fees,
@@ -543,7 +561,7 @@ def fetch_and_run(item, args):
 
             def _sim(sub, hold, entry):
                 return simulate_prepared(name, code, sub, hold, entry,
-                                         args.fee_rate, args.slip_rate, limit,
+                                         args.fee_rate, slip_rate, limit,
                                          collect_signals=False, fee_table=fee_table,
                                          use_real_fees=not args.no_real_fees,
                                          fill_mode=args.fill, impact_rate=args.impact_rate)

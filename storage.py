@@ -662,6 +662,37 @@ class MonitorDB:
         args.append(int(limit))
         return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
 
+    def sym_spread_calibration(self, days=30, min_samples=60):
+        """按品种统计最近 days 天的真实买卖价差（G14 盘口快照消费端②）。
+
+        返回 {sym: {"spread_bp_avg", "spread_bp_median", "n", "asof"}}——供回测滑点校准与
+        纸面保守成交价使用；样本不足 min_samples 的品种不返回（数据不足不强行校准）。
+        """
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = self.conn.execute(
+            "SELECT sym, spread_bp FROM tick_snapshots"
+            " WHERE collected_at >= ? AND spread_bp > 0 AND spread_bp < 200",
+            (cutoff,),
+        ).fetchall()
+        agg = {}
+        for sym, bp in rows:
+            d = agg.setdefault(sym, [])
+            d.append(bp)
+        out = {}
+        for sym, bps in agg.items():
+            if len(bps) < min_samples:
+                continue
+            bps_sorted = sorted(bps)
+            n = len(bps_sorted)
+            median = bps_sorted[n // 2] if n % 2 else (bps_sorted[n // 2 - 1] + bps_sorted[n // 2]) / 2.0
+            out[sym] = {
+                "spread_bp_avg": round(sum(bps) / n, 4),
+                "spread_bp_median": round(median, 4),
+                "n": n,
+                "asof": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        return out
+
     def minute_bars_for_sym(self, sym, period, since=None, limit=None):
         """按品种跨具体合约取某周期分钟bar（换月后新旧主力按时间自然衔接），升序返回 dict 列表，
         供第15轮主连分钟拼接+比例复权（backtest.ratio_adjusted_bars）。
