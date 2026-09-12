@@ -199,6 +199,12 @@ LEGEND_EXE = r"E:\OpendVlab Legend\openvlab-legend\OpenVlab Legend.exe"
 LEGEND_AUTO_LAUNCH = True       # 每次启动程序时自动以调试端口拉起 Legend（幂等：9225 已监听则跳过）
 LEGEND_CDP_PORT = 9225           # Legend 调试端口（装置 legend_ui_collector 连接此端口读取界面）
 
+# ---------------- 界面操作收集装置 daemon（第125轮集成进 main 统一开关） ----------------
+# True=main 启动时自动拉起装置 run.py --daemon（子进程、挂 Job Object、main 退出联动关闭）；
+# 防双开：装置状态文件 collector_status.json 60 秒内更新过则视为已有实例在跑，跳过拉起。
+DEVICE_DAEMON_LAUNCH = True
+DEVICE_DIR = r"E:\LHsystem\界面操作收集装置"
+
 # ---------------- 浏览器页面直读（需求⑦） ----------------
 BROWSER_DEBUG_LAUNCH = True  # 每次启动程序时自动以调试端口(9222)拉起浏览器打开 OpenVlab市场页+交易可查（页面直读数据源）
 

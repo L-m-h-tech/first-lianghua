@@ -431,6 +431,65 @@ def startup_open_legend():
         LOG.warning("Legend 启动失败: %s", e)
 
 
+# 记录 main 自己拉起的装置 daemon 进程（第125轮统一开关：启动 main = 全家桶，
+# 关闭 main = 联动关闭；用户手动跑的装置不归本进程管理，防双开检测跳过）。
+_DEVICE_DAEMON_PID = None
+
+
+def _device_daemon_running():
+    """防双开探测：装置状态文件 collector_status.json（每10秒刷新）60 秒内更新过 = 已有实例在跑。"""
+    try:
+        st = os.path.join(config.DEVICE_DIR, "data", "collector_status.json")
+        return (os.path.exists(st)
+                and (time.time() - os.path.getmtime(st)) < 60.0)
+    except Exception:
+        return False
+
+
+def startup_device_daemon():
+    """拉起界面操作收集装置 daemon（run.py --daemon）作为 main 子进程（第125轮）。
+    - 防双开：装置状态文件 60 秒内更新过则跳过（用户手动跑过 start_all.bat / 装置的场景）；
+    - 挂入 Windows Job Object：main 被看门狗强杀/崩溃时系统自动终止装置，杜绝孤儿；
+    - 目录不存在/启动失败静默降级（不阻断主程序）。"""
+    global _DEVICE_DAEMON_PID
+    if not getattr(config, "DEVICE_DAEMON_LAUNCH", True):
+        return
+    if _device_daemon_running():
+        LOG.info("装置 daemon 已在运行（状态文件更新中），跳过自动拉起")
+        return
+    run_py = os.path.join(config.DEVICE_DIR, "run.py")
+    if not os.path.exists(run_py):
+        LOG.info("装置 run.py 未找到（%s），跳过自动拉起", run_py)
+        return
+    try:
+        p = subprocess.Popen(
+            [sys.executable, "run.py", "--daemon"],
+            cwd=config.DEVICE_DIR,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        _DEVICE_DAEMON_PID = p.pid
+        _debug_browser_job(p.pid)   # 复用 Job Object：main 退出（含强杀）系统自动终止装置
+        LOG.info("已自动拉起装置 daemon（pid=%d, cwd=%s）", p.pid, config.DEVICE_DIR)
+    except Exception as e:
+        LOG.warning("装置 daemon 启动失败（不影响主程序）: %s", e)
+
+
+def close_device_daemon():
+    """退出时联动关闭 main 拉起的装置 daemon（只杀自己拉起的实例；taskkill 树杀，
+    装置被硬杀不执行其 finally 属预期——Legend/同花顺由 main 自己负责关闭）。"""
+    pid = _DEVICE_DAEMON_PID
+    _DEVICE_DAEMON_PID = None
+    if not pid:
+        return
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                       timeout=15, capture_output=True)
+        LOG.info("已联动关闭装置 daemon（pid=%d）", pid)
+    except Exception as e:
+        LOG.warning("关闭装置 daemon 失败（可手动结束 python run.py 进程）: %s", e)
+
+
 def _cdp_port_busy(port):
     """探测本地 9222/9223 调试端口是否已在监听（避免重复拉起浏览器）。"""
     try:
@@ -613,6 +672,7 @@ def watchdog_loop(state):
                          "强制退出以便外层自动重启", gap, config.HEARTBEAT_TIMEOUT_SEC)
             close_debug_browser()  # 卡死重启前也关闭调试浏览器，避免残留
             ths_app.kill_ths()     # 卡死重启前关闭本程序启动的同花顺，避免残留
+            close_device_daemon()  # 卡死重启前联动关闭本程序拉起的装置 daemon
             time.sleep(1)
             os._exit(3)
 
@@ -1321,6 +1381,8 @@ def main():
         threading.Thread(target=startup_open_ths, daemon=True).start()
     if not args.no_launch and getattr(config, "LEGEND_AUTO_LAUNCH", False):
         threading.Thread(target=startup_open_legend, daemon=True).start()
+    if not args.no_launch and getattr(config, "DEVICE_DAEMON_LAUNCH", True):
+        threading.Thread(target=startup_device_daemon, daemon=True).start()
     if not args.no_launch and getattr(config, "BROWSER_DEBUG_LAUNCH", True):
         threading.Thread(target=startup_browser_debug, daemon=True).start()
 
@@ -1373,6 +1435,7 @@ def main():
             pass
         close_debug_browser()     # 正常退出/KeyboardInterrupt/--once 时关闭调试浏览器
         ths_app.kill_ths()        # 正常退出时联动关闭本程序启动的同花顺
+        close_device_daemon()     # 正常退出时联动关闭本程序拉起的装置 daemon（第125轮）
         if paper_lock is not None:      # 释放纸面单实例锁（进程退出/崩溃时系统也会自动释放）
             try:
                 paper_lock.close()
