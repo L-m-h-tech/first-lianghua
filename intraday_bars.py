@@ -29,6 +29,10 @@ from utils import LOG
 # 新浪主连分钟K支持的周期（分钟）；2026-09-01 晚补测 type=1（一分钟）同样返回1023根
 SINA_MIN_PERIODS = (1, 5, 15, 30, 60)
 
+# 商品期货交易时段锚点（bar_dt 为桶末时间戳口径；第130轮相位对齐用）
+# 日盘 09:00-10:15 / 10:30-11:30 / 13:30-15:00 + 夜盘 21:00 开（跨日凌晨归属前一日 21:00 锚点）
+SESSION_STARTS = ("09:00", "10:30", "13:30", "21:00")
+
 
 # ---------------- 新浪主连分钟K（主源，主连代码 RB0，5/15/30/60m） ----------------
 
@@ -175,7 +179,7 @@ def _parse_dt(text):
     return None
 
 
-def aggregate_bars(bars, base_min, factor):
+def aggregate_bars(bars, base_min, factor, session_starts=None):
     """把 base_min 分钟的升序 bar 每连续 factor 根聚合成一根更粗周期（如 1m×5->5m、30m×2->60m）。
 
     规则（泛化自 futures_data.aggregate_30m_to_60m）：
@@ -183,31 +187,89 @@ def aggregate_bars(bars, base_min, factor):
       - 合成 bar：开=段首根开、收=段末根收、高=段内最高、低=段内最低、量/额=段内求和，时间戳取段末根；
       - 段尾不足 factor 根的零散 bar 不合成（不编造半根周期）。
     返回新列表，元素字段与输入一致（dt/o/h/l/c/v/amount 及透传的 sym/contract/period 等）。
+
+    第130轮新增 session_starts（"HH:MM" 时段锚点，如 ("09:00","10:30","13:30","21:00")）：
+      - 每个连续交易段按"最近的时段锚点 + k×目标周期"分桶（bar_dt 为桶末时间戳口径），
+        段头/段尾的不足整桶 bar 一律丢弃（不编造半根）——聚合相位与交易所原生粗周期一致；
+      - 修复第121轮存疑"聚合相位对齐仅覆盖1m"：取数窗口起点不在边界（如 21:13 起）时，
+        旧逻辑整段相位漂移一根；60m 的 10:30/13:30 边界 minute%60 也判不出来；
+      - 不传 session_starts 保持旧行为逐字节不变（现有调用/测试不受影响）。
     """
     base_min, factor = int(base_min), int(factor)
     if factor <= 1 or base_min <= 0:
         return [dict(b) for b in bars]
     out, seg, prev_dt = [], [], None
+
+    def _merge(seg_items):
+        dts, items = zip(*seg_items)
+        merged = dict(items[-1])
+        merged["dt"] = items[-1].get("dt")
+        merged["o"] = float(items[0]["o"]); merged["c"] = float(items[-1]["c"])
+        merged["h"] = max(float(x["h"]) for x in items)
+        merged["l"] = min(float(x["l"]) for x in items)
+        merged["v"] = sum(float(x.get("v") or 0) for x in items)
+        merged["amount"] = sum(float(x.get("amount") or 0) for x in items)
+        if "period" in merged:
+            merged["period"] = base_min * factor
+        return merged
+
+    if session_starts:
+        try:
+            anchors = tuple(int(h) * 60 + int(m) for h, m in (s.split(":") for s in session_starts))
+        except (ValueError, AttributeError):
+            anchors = None
+    else:
+        anchors = None
+
+    if anchors is None:
+        for b in bars:
+            dt = _parse_dt(b.get("dt"))
+            if dt is None:
+                continue
+            contiguous = prev_dt is not None and abs((dt - prev_dt).total_seconds() - base_min * 60) < 1
+            if not contiguous:
+                seg = []                       # 跨休市段：另起
+            seg.append((dt, b))
+            if len(seg) == factor:
+                out.append(_merge(seg))
+                seg = []
+            prev_dt = dt
+        return out
+
+    # ---- 时段锚点模式（第130轮）：段内按"锚点 + k×周期"分桶，只保留满桶 ----
+    period_sec = base_min * factor * 60
+
+    def _anchor_for(dt):
+        tod = dt.hour * 60 + dt.minute
+        cand = [m for m in anchors if m <= tod]
+        if cand:
+            m = max(cand)
+            return dt.replace(hour=m // 60, minute=m % 60, second=0, microsecond=0)
+        # 凌晨（夜盘跨日，如 00:30）：归属前一日夜盘锚点（21:00）
+        m = max(anchors)
+        return (dt - timedelta(days=1)).replace(hour=m // 60, minute=m % 60, second=0, microsecond=0)
+
+    def _emit_full(buckets):
+        for b_idx in sorted(buckets):
+            items = buckets[b_idx]
+            if len(items) == factor:           # 只保留满桶；段头/段尾不足整桶丢弃
+                out.append(_merge(items))
+
+    buckets, anchor_dt = {}, None
     for b in bars:
         dt = _parse_dt(b.get("dt"))
         if dt is None:
             continue
         contiguous = prev_dt is not None and abs((dt - prev_dt).total_seconds() - base_min * 60) < 1
-        if not contiguous:
-            seg = []                       # 跨休市段：另起
-        seg.append((dt, b))
-        if len(seg) == factor:
-            dts, items = zip(*seg)
-            merged = dict(items[-1])
-            merged["dt"] = items[-1].get("dt")
-            merged["o"] = float(items[0]["o"]); merged["c"] = float(items[-1]["c"])
-            merged["h"] = max(float(x["h"]) for x in items)
-            merged["l"] = min(float(x["l"]) for x in items)
-            merged["v"] = sum(float(x.get("v") or 0) for x in items)
-            merged["amount"] = sum(float(x.get("amount") or 0) for x in items)
-            if "period" in merged:
-                merged["period"] = base_min * factor
-            out.append(merged)
-            seg = []
+        if not contiguous:                     # 跨休市：先结算上一段，锚点重算
+            _emit_full(buckets)
+            buckets, anchor_dt = {}, None
+        if anchor_dt is None:
+            anchor_dt = _anchor_for(dt)
+        # bar_dt 为桶末口径：bar 恰好落在锚点+k×周期边界时归属刚结束的桶 → 向上取整
+        total_sec = int(round((dt - anchor_dt).total_seconds()))
+        idx = -((-total_sec) // period_sec)            # 整数 ceil（anchor ≤ dt 恒正）
+        buckets.setdefault(idx, []).append((dt, b))
         prev_dt = dt
+    _emit_full(buckets)
     return out

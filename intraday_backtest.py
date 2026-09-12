@@ -97,16 +97,13 @@ def load_minute_bars(db, sym, period, lookback, aggregate_from):
     if aggregate_from and aggregate_from != period and period % aggregate_from == 0:
         import intraday_bars
         raw = db.minute_bars_for_sym(sym, aggregate_from, limit=lookback * (period // aggregate_from) + 4)
-        # 相位对齐：1m自采起点未必落在目标周期边界（如21:13起），裁到首个整边界之后，
-        # 使聚合段末时间戳与交易所原生粗周期（整5/15/30分）一致，避免K线整体错位一根。
-        if aggregate_from == 1 and period in (5, 15, 30, 60):
-            for k, b in enumerate(raw):
-                dtb = intraday_bars._parse_dt(b.get("dt"))
-                if dtb is not None and dtb.minute % period == 0:
-                    raw = raw[k + 1:]
-                    break
-        merged = intraday_bars.aggregate_bars(raw, aggregate_from, period // aggregate_from)
-        src = f"{aggregate_from}m边界对齐后聚合到{period}m"
+        # 第130轮相位对齐升级：时段锚点分桶（09:00/10:30/13:30/21:00），替换旧"仅1m且 minute%period"
+        # 的取模裁剪——窗口起点不在边界时旧法整段漂移一根，60m 的 10:30/13:30 边界取模也判不出；
+        # 锚点模式对 5/15/30/60m 全周期生效，段头/段尾不足整桶丢弃（不编造半根），
+        # 聚合相位与交易所原生粗周期一致，跨周期交叉验证（--aggregate-from 1）因此可信。
+        merged = intraday_bars.aggregate_bars(raw, aggregate_from, period // aggregate_from,
+                                              session_starts=intraday_bars.SESSION_STARTS)
+        src = f"{aggregate_from}m时段锚点对齐后聚合到{period}m"
     else:
         merged = db.minute_bars_for_sym(sym, period, limit=lookback)
         src = f"{period}m库内直读"
