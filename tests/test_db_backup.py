@@ -138,6 +138,95 @@ def test_quick_check_bad_db(tmp_path):
     assert B.quick_check(str(bad)).startswith("OPEN_ERROR")
 
 
+# ---------- 第127轮：纸面账户库纳入备份范围 + 每日热备补跑判断 ----------
+
+def test_paper_filename_and_parse_roundtrip():
+    st = datetime(2026, 9, 12, 15, 1, 0)
+    fn = B.paper_backup_filename("paper_10万_激进", st)
+    assert fn == "paper_10万_激进_20260912-150100.db"
+    assert B.parse_paper_backup(fn) == ("paper_10万_激进", st)   # 源库名含下划线
+
+
+@pytest.mark.parametrize("bad", ["notes.db", "paper_x_badstamp.db", "_20260912-150100.db",
+                                 "paper_x_20260912-150100.db.json", "", "random_20260912-150100.db"])
+def test_paper_parse_rejects_bad_names(bad):
+    assert B.parse_paper_backup(bad) is None
+
+
+def test_list_and_prune_paper_grouped(tmp_path):
+    pdir = tmp_path / "pb"
+    pdir.mkdir()
+    for name in ["paper_a_20260910-090000.db", "paper_a_20260911-090000.db",
+                 "paper_b_20260911-090000.db", "stray.txt"]:
+        (pdir / name).write_text("")
+    grouped = B.list_paper_backups(str(pdir))
+    assert grouped == {"paper_a": ["paper_a_20260910-090000.db", "paper_a_20260911-090000.db"],
+                       "paper_b": ["paper_b_20260911-090000.db"]}
+    assert B.prune_paper_plan(grouped, 1) == ["paper_a_20260910-090000.db"]
+    assert B.prune_paper_plan(grouped, 5) == []
+
+
+def test_backup_all_covers_monitor_and_paper(tmp_path):
+    data = tmp_path / "data"
+    (data / "paper_accounts").mkdir(parents=True)
+    mon = str(data / "monitor.db")
+    _make_db(mon, 5)
+    _make_db(str(data / "paper_accounts" / "paper_x.db"), 3)
+    _make_db(str(data / "paper_accounts" / "paper_y.db"), 4)
+    (data / "paper_accounts" / "paper_bad.db").write_text("not sqlite")   # 坏库不拖垮整体
+    bdir = tmp_path / "backup"
+    st = datetime(2026, 9, 12, 15, 1, 0)
+    res = B.backup_all(keep=3, backup_dir=str(bdir), monitor_src=mon,
+                       paper_dir=str(data / "paper_accounts"), stamp=st)
+    assert res["monitor"]["backup_quick_check"] == "ok" and res["monitor"]["table_rows"]["t"] == 5
+    assert set(res["paper"]) == {"paper_x", "paper_y"}
+    assert "paper_bad" in res["paper_errors"]
+    assert all(r["backup_quick_check"] == "ok" for r in res["paper"].values())
+    pdir = bdir / "paper_accounts"
+    assert (pdir / "paper_x_20260912-150100.db").is_file()
+    assert (pdir / "paper_x_20260912-150100.db.json").is_file()
+
+
+def test_backup_all_paper_rolling_per_source(tmp_path):
+    data = tmp_path / "data"
+    (data / "paper_accounts").mkdir(parents=True)
+    mon = str(data / "monitor.db")
+    _make_db(mon, 1)
+    px = str(data / "paper_accounts" / "paper_x.db")
+    bdir = tmp_path / "backup"
+    for h, rows in ((10, 1), (11, 2), (12, 3)):
+        _make_db(px, rows)
+        B.backup_all(keep=1, backup_dir=str(bdir), monitor_src=mon,
+                     paper_dir=str(data / "paper_accounts"),
+                     stamp=datetime(2026, 9, 12, h, 0, 0))
+    grouped = B.list_paper_backups(str(bdir / "paper_accounts"))
+    assert grouped["paper_x"] == ["paper_x_20260912-120000.db"]      # 每源库各自只留最新
+    assert B.list_backup_files(str(bdir)) == ["monitor_20260912-120000.db"]
+    c = sqlite3.connect(str(bdir / "paper_accounts" / "paper_x_20260912-120000.db"))
+    assert c.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+    c.close()
+
+
+@pytest.mark.parametrize("now,last,expect", [
+    (datetime(2026, 9, 12, 15, 1), None, True),                       # 从未备份
+    (datetime(2026, 9, 12, 15, 1), datetime(2026, 9, 12, 15, 1), False),   # 刚备过
+    (datetime(2026, 9, 12, 18, 0), datetime(2026, 9, 11, 15, 1), True),    # 错过15:01→补跑当日
+    (datetime(2026, 9, 12, 10, 0), datetime(2026, 9, 11, 15, 1), False),   # 未到15:01且<26h
+    (datetime(2026, 9, 12, 10, 0), datetime(2026, 9, 10, 15, 0), True),    # 欠账26h+兜底
+    (datetime(2026, 9, 12, 16, 0), datetime(2026, 9, 12, 15, 1), False),   # 重启时当日已备
+])
+def test_backup_due_schedule(now, last, expect):
+    assert B.backup_due(now, last, daily_hhmm="15:01", min_interval_h=20) is expect
+
+
+def test_newest_monitor_backup_time(tmp_path):
+    assert B.newest_monitor_backup_time(str(tmp_path)) is None       # 目录不存在
+    src = _make_db(str(tmp_path / "monitor.db"), 1)
+    st = datetime(2026, 9, 12, 15, 1, 0)
+    B.backup_once(src, str(tmp_path), keep=1, stamp=st)
+    assert B.newest_monitor_backup_time(str(tmp_path)) == st
+
+
 # ---------- 自启导出 ----------
 def test_task_xml_contents():
     xml = B.build_task_xml("T", r"D:\Python\python.exe", r"C:\p\db_backup.py", r"C:\p", "16:30")

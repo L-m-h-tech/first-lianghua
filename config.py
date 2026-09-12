@@ -90,6 +90,11 @@ LOG_BACKUP_COUNT = 5              # 保留 monitor.log.1 ~ .5
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MONITOR_DB = os.path.join(DATA_DIR, "monitor.db")   # 标准库 sqlite3，零新增依赖
 DB_RETENTION_DAYS = 180          # 行情/新闻明细保留天数；信号与复盘结果长期保留
+# 第127轮：main 内置每日热备（db_backup.py，在线热备 monitor.db + data/paper_accounts/*.db）
+DB_BACKUP_ENABLED = True
+DB_BACKUP_DAILY_TIME = "15:01"   # 每日计划时刻（日盘收盘后/夜盘前空档）；错过自动补跑
+DB_BACKUP_KEEP = 7               # monitor.db 滚动保留份数（纸面库每库同样滚动保留 7 份）
+DB_BACKUP_MIN_INTERVAL_H = 20    # 两次备份最小间隔：重启/补跑不超频（>26h 欠账则不等时刻直接补）
 SIGNAL_TRACKING_FILE = os.path.join(BASE_DIR, "reports", "signal_tracking.txt")
 # 信号发出后自动回看的周期：30分钟 / 2小时 / 次日（约24小时）
 SIGNAL_OUTCOME_HORIZONS = (30, 120, 1440)

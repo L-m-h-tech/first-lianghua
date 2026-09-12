@@ -162,19 +162,22 @@ D:\Python\python.exe tools\backtest_validation.py --all-grid            # 全品
 2. **探测64个品种的主力合约月份**（按未来8个月各月份合约的成交量+持仓量排序，约20~40秒）
 3. 第一轮全品种分析（首次需预取64个品种的日线，约30~60秒；之后走缓存）
 
-### 数据库备份与灾备（G19，第46轮，根模块 `db_backup.py`）
+### 数据库备份与灾备（G19，第46轮；第127轮扩为全量家当 + main 内置每日热备）
 
-monitor.db 是全部结构化家当（行情/分钟库/信号/成交/纸面账户）。`db_backup.py` 用 SQLite 官方在线热备 API（源库只读打开、main 常驻写库也能一致性快照、WAL 安全、约360MB/10秒），备份后对副本 quick_check、坏副本立即删除（不留假备份），滚动保留最近30份到 `backup/`：
+`data/monitor.db`（GB 级：行情/分钟库/信号/成交/研究样本）+ `data/paper_accounts/*.db`（20 个纸面账户库，第110轮迁出、**第127轮纳入备份**——纸面历史不可再生，此前长期零备份）。`db_backup.py` 用 SQLite 官方在线热备 API（源库只读打开、main 常驻写库也能一致性快照、WAL 安全），备份后对副本 quick_check、坏副本立即删除（不留假备份）：
+
+- **自动调度（第127轮，无需任何手动操作）**：main 内置 `backup_loop` 热备线程——每日 `config.DB_BACKUP_DAILY_TIME`（默认 15:01，日盘收盘后/夜盘前空档）之后自动补跑当日；启动 90 秒后检查"距上次备份 > `DB_BACKUP_MIN_INTERVAL_H`(20h)"立即补（错过计划时刻/长期没开都不欠账，距上次 <26h 未到时刻则等）；重启时当日已备过不重复。滚动保留 `DB_BACKUP_KEEP=7` 份（monitor 约 25GB 磁盘；纸面每库同样 7 份约 440MB）。
+- **手动**：`db_backup.py --once`（monitor + 纸面 20 库一次全备，实测 3.5GB/47 秒）、`--no-paper` 只备 monitor、`--src` 单文件旧路径；`--keep` 调份数。
 
 ```powershell
-D:\Python\python.exe db_backup.py --once                  # 立即热备一次（保留30份，--keep 调）
-D:\Python\python.exe db_backup.py --list                  # 列备份（大小/副本qc/版本）
-D:\Python\python.exe db_backup.py --verify                # 校验所有备份 quick_check
+D:\Python\python.exe db_backup.py --once                  # 立即热备全部家当（monitor+纸面20库，--keep 调）
+D:\Python\python.exe db_backup.py --list                  # 列备份（monitor 小计 + 纸面分节，大小/副本qc/版本）
+D:\Python\python.exe db_backup.py --verify                # 校验所有备份 quick_check（含纸面）
 D:\Python\python.exe db_backup.py --restore backup/monitor_xxxx.db   # 用备份恢复（现有库先改名留存，不覆盖丢现场）
 D:\Python\python.exe db_backup.py --emit-bat --emit-task-xml         # 生成看门狗bat+任务计划XML（每日16:30+登录，不自动注册）
 ```
 
-开机自启/每日定时：导入 `backup/futures_monitor_db_backup_task.xml` 到任务计划程序（或 schtasks /Create /XML），完整导入/恢复/异地保管/无备份兜底步骤见 **《灾备恢复Runbook.md》**。备份二进制已 gitignore、任务 XML 模板入库；db_backup 只读源库只写 backup/，不接主循环、不改综合分。
+恢复纸面库：同用 `--restore backup/paper_accounts/paper_xxx_<stamp>.db`（目标路径写该账户库原路径）。开机自启/每日定时（备用双保险，通常无需）：导入 `backup/futures_monitor_db_backup_task.xml` 到任务计划程序，完整导入/恢复/异地保管/无备份兜底步骤见 **《灾备恢复Runbook.md》**。备份二进制已 gitignore、任务 XML 模板入库；db_backup 只读源库只写 backup/，不接主循环、不改综合分。注意：备份与源库同盘，防损坏/误删不防盘坏，重要时点可手动把最新一份拷到其它磁盘。
 
 ---
 

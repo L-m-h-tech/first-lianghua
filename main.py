@@ -677,6 +677,53 @@ def watchdog_loop(state):
             os._exit(3)
 
 
+# ---------------- 后台线程：数据库每日热备（第127轮，G19 续） ----------------
+
+def backup_loop(state):
+    """每日在线热备 monitor.db + data/paper_accounts/*.db（db_backup.backup_all，只读源库）。
+
+    调度（backup_due 纯函数判断，每 10 分钟轮询一次）：
+    - 每日 DB_BACKUP_DAILY_TIME（默认 15:01，日盘收盘后/夜盘前空档）之后补跑当日；
+    - main 启动 90 秒后主动检查一次"距上次备份是否超 DB_BACKUP_MIN_INTERVAL_H"，超了立即补
+      ——错过计划时刻（16:30 没启动之类）或长期没开 main 都不欠账；
+    - 距上次尚近（如重启时当日 15:01 已备过）不重复备份；全部失败只写日志不拖垮主监控。"""
+    if not getattr(config, "DB_BACKUP_ENABLED", True):
+        return
+    LOG.info("数据库热备线程启动（每日 %s，滚动 %d 份；启动补备延迟 90 秒）",
+             config.DB_BACKUP_DAILY_TIME, config.DB_BACKUP_KEEP)
+    if state.stop.wait(90):                    # 等启动高峰（主力探测/分钟K回填）过去
+        return
+
+    def _run_once():
+        try:
+            import db_backup
+            last = db_backup.newest_monitor_backup_time()
+            if not db_backup.backup_due(datetime.now(), last,
+                                        getattr(config, "DB_BACKUP_DAILY_TIME", "15:01"),
+                                        getattr(config, "DB_BACKUP_MIN_INTERVAL_H", 20)):
+                return
+            t0 = time.time()
+            res = db_backup.backup_all(keep=getattr(config, "DB_BACKUP_KEEP", 7))
+            LOG.info("数据库热备完成：monitor.db %.0fMB(qc=%s) + 纸面库 %d 个（失败 %d）"
+                     "→ 滚动清理 monitor %d 份/纸面 %d 份，耗时 %.0fs",
+                     res["monitor"]["backup_bytes"] / 1048576.0,
+                     res["monitor"]["backup_quick_check"],
+                     len(res["paper"]), len(res["paper_errors"]),
+                     len(res["pruned"]), len(res["paper_pruned"]), time.time() - t0)
+            if res["paper_errors"]:
+                LOG.warning("纸面库备份失败明细（下次自动重试）: %s",
+                            "; ".join("%s: %s" % (k, str(v)[:80])
+                                      for k, v in list(res["paper_errors"].items())[:6]))
+        except Exception:
+            LOG.warning("数据库热备失败（不影响主监控，下次轮询自动重试）:\n%s", traceback.format_exc())
+
+    _run_once()
+    while not state.stop.is_set():
+        if state.stop.wait(600):               # 每 10 分钟做一次 due 判断
+            return
+        _run_once()
+
+
 # ---------------- 主分析周期（每60秒） ----------------
 
 # =========================== G13/G22 轻量调度（第91轮抽取，零主周期改动、行为不变） ===========================
@@ -1366,6 +1413,7 @@ def main():
     if not args.once:
         threading.Thread(target=minute_bars_loop, args=(state,), daemon=True).start()
     threading.Thread(target=watchdog_loop, args=(state,), daemon=True).start()
+    threading.Thread(target=backup_loop, args=(state,), daemon=True).start()   # 第127轮：每日热备
     # 第103轮：纸面撮合独立 ticker 线程（交易时段每分钟撮合；--once/PAPER关闭/间隔0 均不启动，
     # 间隔0=完全回退 run_cycle 同步驱动=旧行为）
     if not args.once and getattr(config, "PAPER_ENABLED", False) and \
