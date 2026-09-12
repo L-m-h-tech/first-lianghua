@@ -109,6 +109,7 @@ class MonitorDB:
                     contract_code TEXT, main_month TEXT,
                     volume REAL, open_interest REAL,
                     parts_json TEXT, flow_json TEXT, raw_json TEXT,
+                    sent_json TEXT,               -- 第135轮：五维情绪聚合（瘦身 raw_json 后保留 ML 特征）
                     created_real REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
@@ -406,34 +407,92 @@ class MonitorDB:
             return 0
         dt = _dt(ts)
         now_real = datetime.now().timestamp()
+        day = dt.strftime("%Y-%m-%d")
         n = 0
         with self.lock:
+            self._ensure_signals_sent_col()          # 第135轮：老库 ALTER 加 sent_json（幂等）
             for r in fut_rows:
                 score = float(r.get("score", 0.0))
                 # signals 表保存“可交易信号”；中性行每分钟都会批量出现，只保留在行情表/文本报告中，避免数据库空转膨胀。
                 if abs(score) < config.SCORE_NEUTRAL:
                     continue
                 direction, dir_int = self._direction(score)
-                cur = self.conn.execute(
-                    """INSERT INTO signals(ts,cycle,variety,code,sym,exchange,cat,price,chg_pct,
-                       score,direction,direction_int,label,score_band,advice,stop,target,atr,
-                       contract_code,main_month,volume,open_interest,parts_json,flow_json,
-                       raw_json,created_real)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (ts, cycle, r.get("name"), r.get("code"), r.get("sym"), r.get("ex"),
-                     r.get("cat"), float(r.get("price") or 0), float(r.get("chg") or 0), score,
-                     direction, dir_int, r.get("label"), score_band_name(score),
-                     r.get("advice"), float(r.get("stop") or 0), float(r.get("target") or 0),
-                     float(r.get("atr") or 0), r.get("contract_code", ""),
-                     r.get("main_month", ""), float(r.get("volume") or 0),
-                     float(r.get("open_interest") or 0), _json(r.get("parts") or {}),
-                     _json(r.get("flow") or {}), _json(r), now_real))
-                signal_id = cur.lastrowid
+                band = score_band_name(score)
+                sent_json = _json(self._sentiment_of(r))     # 第135轮：情绪聚合独立存列（raw_json 瘦身后 ML 仍可用）
+                # 第135轮根因修复：同 (品种,方向,分档,当天) 已有行 → UPDATE 保 id（外键稳定）
+                # 而非每轮纯 INSERT——非中性信号从"每轮 N 行"压到"每天每键 1 行"，挡 signals 膨胀。
+                existing = self.conn.execute(
+                    """SELECT id FROM signals WHERE variety=? AND direction_int=?
+                       AND score_band=? AND substr(ts,1,10)=? LIMIT 1""",
+                    (r.get("name"), dir_int, band, day)).fetchone()
+                if existing:
+                    signal_id = existing[0]
+                    cur = self.conn.execute(
+                        """UPDATE signals SET ts=?, cycle=?, price=?, chg_pct=?, score=?,
+                           label=?, advice=?, stop=?, target=?, atr=?, contract_code=?,
+                           main_month=?, volume=?, open_interest=?, parts_json=?, flow_json=?,
+                           raw_json=?, sent_json=?, created_real=?
+                           WHERE id=?""",
+                        (ts, cycle, float(r.get("price") or 0), float(r.get("chg") or 0), score,
+                         r.get("label"), r.get("advice"), float(r.get("stop") or 0),
+                         float(r.get("target") or 0), float(r.get("atr") or 0),
+                         r.get("contract_code", ""), r.get("main_month", ""),
+                         float(r.get("volume") or 0), float(r.get("open_interest") or 0),
+                         _json(r.get("parts") or {}), _json(r.get("flow") or {}),
+                         _json(r), sent_json, now_real, signal_id))
+                else:
+                    cur = self.conn.execute(
+                        """INSERT INTO signals(ts,cycle,variety,code,sym,exchange,cat,price,chg_pct,
+                           score,direction,direction_int,label,score_band,advice,stop,target,atr,
+                           contract_code,main_month,volume,open_interest,parts_json,flow_json,
+                           raw_json,sent_json,created_real)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (ts, cycle, r.get("name"), r.get("code"), r.get("sym"), r.get("ex"),
+                         r.get("cat"), float(r.get("price") or 0), float(r.get("chg") or 0), score,
+                         direction, dir_int, r.get("label"), band,
+                         r.get("advice"), float(r.get("stop") or 0), float(r.get("target") or 0),
+                         float(r.get("atr") or 0), r.get("contract_code", ""),
+                         r.get("main_month", ""), float(r.get("volume") or 0),
+                         float(r.get("open_interest") or 0), _json(r.get("parts") or {}),
+                         _json(r.get("flow") or {}), _json(r), sent_json, now_real))
+                    signal_id = cur.lastrowid
                 if abs(score) >= config.SCORE_NEUTRAL:
                     self._create_outcomes_for_signal(signal_id, r, dt, direction, dir_int)
                 n += 1
             self.conn.commit()
         return n
+
+    @staticmethod
+    def _sentiment_of(row):
+        """从分析行 raw_json.hits 聚合五维情绪（第135轮：与 build_ml_samples.aggregate_sentiment
+        同口径，写入独立 sent_json 列，避免瘦身 raw_json 后 ML 特征丢失）。"""
+        try:
+            import factors
+            raw = row.get("hits") if isinstance(row, dict) else {}
+            facs = []
+            for item in raw or []:
+                try:
+                    news = item[1] if isinstance(item, (list, tuple)) else item.get("news")
+                    content = news.get("content", "")
+                except (AttributeError, IndexError, TypeError):
+                    continue
+                f = factors.sentiment_facets(content, variety=row.get("name"), cat=row.get("cat"))
+                if f:
+                    facs.append(f)
+            if not facs:
+                return {}
+            return {k: round(sum(f[k] for f in facs) / len(facs), 4)
+                    for k in ("strength", "uncertainty", "relevance", "forward")}
+        except Exception:
+            return {}
+
+    def _ensure_signals_sent_col(self):
+        """老库兼容：signals 表缺 sent_json 列时 ALTER 补上（幂等）。"""
+        try:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN sent_json TEXT")
+            self.conn.commit()
+        except Exception:
+            pass
 
     def _create_outcomes_for_signal(self, signal_id, row, entry_dt, direction, dir_int):
         """同一品种/方向/分档仍有未到期任务时不重复建单，避免每轮重复刷同一信号。"""
@@ -1251,6 +1310,12 @@ class MonitorDB:
             self.conn.execute(
                 "DELETE FROM signals WHERE ts < ? AND ABS(score) < ?",
                 (cutoff, config.SCORE_NEUTRAL))
+            # 第135轮瘦身 a'：非中性信号保留主字段/parts_json/sent_json（ML 特征仍在），
+            # 只把超过保留期的 raw_json 置空（丢新闻原文全文 hits + 展示性瞬态键），挡 signals 膨胀。
+            rj_cut = (datetime.now() - timedelta(days=config.SIGNALS_RAWJSON_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            self.conn.execute(
+                "UPDATE signals SET raw_json=NULL WHERE ts < ? AND raw_json IS NOT NULL",
+                (rj_cut,))
             # ml_samples 是监督学习样本资产，按更长的保留期清理（默认约10年，近似长期保留）。
             ml_cut = (datetime.now() - timedelta(days=config.ML_SAMPLES_RETENTION_DAYS)).strftime("%Y-%m-%d")
             self.conn.execute("DELETE FROM ml_samples WHERE bar_dt < ?", (ml_cut,))

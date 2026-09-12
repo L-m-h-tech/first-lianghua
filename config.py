@@ -90,6 +90,8 @@ LOG_BACKUP_COUNT = 5              # 保留 monitor.log.1 ~ .5
 DATA_DIR = os.path.join(BASE_DIR, "data")
 MONITOR_DB = os.path.join(DATA_DIR, "monitor.db")   # 标准库 sqlite3，零新增依赖
 DB_RETENTION_DAYS = 180          # 行情/新闻明细保留天数；信号与复盘结果长期保留
+# 第135轮瘦身 a'：非中性信号保留主字段/sent_json（ML 特征），超过该天数的 raw_json 置空
+SIGNALS_RAWJSON_RETENTION_DAYS = 90
 # 第127轮：main 内置每日热备（db_backup.py，在线热备 monitor.db + data/paper_accounts/*.db）
 DB_BACKUP_ENABLED = True
 DB_BACKUP_DAILY_TIME = "15:01"   # 每日计划时刻（日盘收盘后/夜盘前空档）；错过自动补跑

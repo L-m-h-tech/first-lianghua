@@ -217,8 +217,19 @@ def datetime_ts_date(ts):
 _FAC_KEYS = ("intensity", "uncertainty", "forwardness", "relevance")
 
 
-def aggregate_sentiment(raw_json, variety, cat):
-    """从一条信号 raw_json.hits 聚合五维情绪均值（信号当时消息，PIT）。无消息返回 {}。"""
+def aggregate_sentiment(raw_json, variety, cat, sent_json=None):
+    """聚合五维情绪均值（信号当时消息，PIT）。无消息返回 {}。
+
+    第135轮：优先读 signals.sent_json（瘦身后 raw_json 置空也能用），
+    仅当 sent_json 缺失才回退解析 raw_json.hits（旧库/历史数据）。
+    sent_json 是写入时预聚合的均值字典（含 strength/uncertainty/relevance/forward/
+    polarity/event/n_news 键）；回退路径重算后键集合一致。"""
+    try:
+        sent = json.loads(sent_json) if isinstance(sent_json, str) else (sent_json or {})
+        if sent and any(k in sent for k in ("strength", "polarity")):
+            return sent
+    except (TypeError, ValueError):
+        pass
     try:
         raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
         hits = raw.get("hits") or []
@@ -306,7 +317,8 @@ def build_symbol(item, args, sig_idx):
             except (TypeError, ValueError):
                 pass
             if args.with_sentiment:
-                sent = aggregate_sentiment(sig.get("raw_json"), name, cat)
+                sent = aggregate_sentiment(sig.get("raw_json"), name, cat,
+                                           sent_json=sig.get("sent_json"))
                 for k, v in sent.items():
                     feat["sent_" + k] = v
         samples.append({
