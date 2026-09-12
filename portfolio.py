@@ -350,6 +350,18 @@ class Portfolio:
             self.skipped.append({"dt": dt, "sym": sym, "reason": why or "未成交",
                                  "available": self.available(), "price": price})
             return None
+        # 第138轮 E5：组合层保证金占用硬上限——模拟开仓后 risk_degree 不得超 PORTFOLIO_MAX_RISK_DEGREE
+        max_risk = getattr(config, "PORTFOLIO_MAX_RISK_DEGREE", 0.90)
+        if max_risk and max_risk < 1.0:
+            rate = self.margin_rate_of(sym)
+            eq_now = self.equity()
+            _used_after = self.margin_used() + price * self.mult_of(sym) * lots * rate
+            if eq_now > 1e-9 and _used_after / eq_now > max_risk:
+                self.skipped.append({"dt": dt, "sym": sym,
+                                     "reason": "开仓后保证金占用%.0f%%超组合硬顶%.0f%%"
+                                               % (_used_after / eq_now * 100, max_risk * 100),
+                                     "available": self.available(), "price": price})
+                return None
         rate = self.margin_rate_of(sym)
         open_fee = self.fee_yuan(sym, price, "open", lots)
         self.realized -= open_fee

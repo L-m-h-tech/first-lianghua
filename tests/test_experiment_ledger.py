@@ -226,3 +226,22 @@ def test_env_disable_and_redirect(monkeypatch, tmp_path):
     monkeypatch.setenv(el.ENV_LEDGER, p)
     rec = el.safe_record("lab", {"a": 1}, now=FIXED)
     assert rec and os.path.isfile(p)
+
+
+# ---------- 第138轮 E4：code_fingerprint ----------
+
+def test_code_fingerprint_stable_and_deterministic(tmp_path):
+    import experiment_ledger as EL
+    import os
+    # 对固定目录算两次 → 一致（同代码）
+    fp1 = EL.code_fingerprint(rel_dirs=("",))
+    fp2 = EL.code_fingerprint(rel_dirs=("",))
+    assert fp1 == fp2 and fp1 is not None and len(fp1) == 16
+
+
+def test_make_record_includes_code_fingerprint():
+    import experiment_ledger as EL
+    rec = EL.make_record("lab", {"k": 1}, {"sharpe": 0.5}, inputs=[], artifacts=[],
+                         now=EL._now())
+    assert "code_fingerprint" in rec
+    assert rec["code_fingerprint"] is not None and len(rec["code_fingerprint"]) == 16

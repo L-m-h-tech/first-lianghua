@@ -1,0 +1,12 @@
+# 第138轮 E2：ruff lint/format 配置（dev 侧工具，生产零依赖不受影响）
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+  "E501",   # 行长限制已在 formatter 层处理
+  "E203",   # 与 black/ruff-format 冲突
+  "B008",   # 函数默认参数可变对象（代码库惯例）
+  "SIM108", # 三元表达式重构（保持可读性）
+]

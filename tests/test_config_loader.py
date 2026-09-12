@@ -146,3 +146,36 @@ def test_config_module_end_to_end(tmp_path):
                        text=True, env=env, cwd=root)
     assert r.returncode == 0, r.stderr
     assert "OK" in r.stdout
+
+
+# ---------- 第138轮 E3：schema 值域校验 ----------
+
+def test_schema_enum_rejects_invalid():
+    from config_loader import _check_schema
+    # 枚举类
+    assert _check_schema("PAPER_FILL_MODE", "close", "close")[0] is True
+    ok, reason = _check_schema("PAPER_FILL_MODE", "market", "close")
+    assert ok is False and "只允许" in reason
+    # 范围类
+    assert _check_schema("DB_BACKUP_KEEP", 7, 30)[0] is True
+    assert _check_schema("DB_BACKUP_KEEP", 0, 30)[0] is False
+    assert _check_schema("DB_BACKUP_KEEP", 61, 30)[0] is False
+    assert _check_schema("SIGNALS_RAWJSON_RETENTION_DAYS", 90, 90)[0] is True
+    assert _check_schema("FUND_BASIS_WEIGHT", 0.5, 0.1)[0] is True
+    assert _check_schema("FUND_BASIS_WEIGHT", 1.5, 0.1)[0] is False
+    # 无规则键放行
+    assert _check_schema("SOME_UNKNOWN", "x", "x")[0] is True
+
+
+def test_apply_overrides_schema_skips_invalid():
+    import config_loader
+    import types
+    ns = types.SimpleNamespace()
+    ns.DB_BACKUP_KEEP = 30
+    ns.PAPER_FILL_MODE = "next"
+    report = config_loader.apply_overrides(
+        vars(ns), {"DB_BACKUP_KEEP": 0, "PAPER_FILL_MODE": "market"})
+    assert ns.DB_BACKUP_KEEP == 30          # 0 越界 → 保留默认
+    assert ns.PAPER_FILL_MODE == "next"     # market 非枚举 → 保留默认
+    assert "DB_BACKUP_KEEP" in report["skipped"]
+    assert "PAPER_FILL_MODE" in report["skipped"]

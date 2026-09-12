@@ -1,0 +1,14 @@
+# 第138轮 E2：pre-commit 钩子（本地/CI 通用；量化项目零新增运行依赖的纪律下，lint 仅 dev 侧）
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

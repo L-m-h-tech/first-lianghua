@@ -90,3 +90,50 @@ def test_apply_gate_auto_downgrade(monkeypatch):
 
 def test_level_rank():
     assert risk_gate.level_rank(VETO) > risk_gate.level_rank(WARN) > risk_gate.level_rank(PASS)
+
+
+# ---------- 第138轮 E5：动态黑名单 ----------
+
+def test_blacklist_block_after_fail_rounds():
+    st = {}
+    # 连续 3 轮无有效行情 → 封禁
+    for i in range(2):
+        blocked, reason = risk_gate.record_streak(st, "RB", ok=False)
+        assert blocked is False and "RB" not in st["RB"]
+    blocked, reason = risk_gate.record_streak(st, "RB", ok=False)
+    assert blocked is True and reason and "黑名单" in reason
+    assert risk_gate.is_blocked(st, "RB") is True
+
+
+def test_blacklist_recover_after_ok_rounds():
+    st = {}
+    for _ in range(3):
+        risk_gate.record_streak(st, "MA", ok=False)
+    assert risk_gate.is_blocked(st, "MA") is True
+    # 连续 5 轮有效行情 → 解禁
+    for i in range(4):
+        blocked, _ = risk_gate.record_streak(st, "MA", ok=True)
+        assert risk_gate.is_blocked(st, "MA") is True
+    blocked, _ = risk_gate.record_streak(st, "MA", ok=True)
+    assert risk_gate.is_blocked(st, "MA") is False
+
+
+def test_blacklist_ok_resets_fail_streak():
+    st = {}
+    risk_gate.record_streak(st, "CU", ok=False)
+    risk_gate.record_streak(st, "CU", ok=False)
+    risk_gate.record_streak(st, "CU", ok=True)      # 一轮有效 → fail_streak 清零
+    for _ in range(2):
+        risk_gate.record_streak(st, "CU", ok=False)
+    assert risk_gate.is_blocked(st, "CU") is False  # 需重新累积 3 轮
+
+
+def test_evaluate_respects_blacklist():
+    st = {}
+    for _ in range(3):
+        risk_gate.record_streak(st, "RB", ok=False)
+    row = {"score": 6.0, "price": 3000.0, "volume": 1000, "sym": "RB", "chg": 0.01,
+           "_blacklist": st}
+    g = risk_gate.evaluate(row)
+    assert g["level"] == risk_gate.VETO
+    assert any("黑名单" in r for r in g["reasons"])

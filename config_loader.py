@@ -19,6 +19,51 @@ import os
 PROTECTED_NAMES = {"BASE_DIR", "DATA_DIR"}
 
 
+# 第138轮 E3：config.json 覆盖值域约束（比类型矫正更严：枚举/范围/格式）
+# 命中则必须满足规则，否则跳过保留默认。键为全大写常量名。
+SCHEMA_RULES = {
+    # 枚举类：值必须命中白名单
+    "PAPER_FILL_MODE": ("enum", ("close", "next")),
+    "RISK_GATE_ACTION": ("enum", ("observe", "paper_halt", "paper_delever")),
+    "CIRCUIT_ACTION": ("enum", ("observe", "paper_halt", "paper_delever")),
+    "PORTFOLIO_SIZING": ("enum", ("equal_notional", "equal_risk", "score")),
+    # 范围类：(min, max) 闭区间，值必须可数值化且落在区间内
+    "DB_BACKUP_KEEP": (1, 60),
+    "DB_BACKUP_MIN_INTERVAL_H": (1.0, 48.0),
+    "PAPER_TICK_INTERVAL": (0, 3600),
+    "SIGNALS_RAWJSON_RETENTION_DAYS": (1, 730),
+    "MAX_PRICE_JUMP_PCT": (0.0, 100.0),
+    "CONFLICT_DIFF_PCT": (0.0, 100.0),
+    "OPT_IV_HV_MAX_RATIO": (1.0, 3.0),
+    "RISK_GATE_MIN_VOLUME": (0, 10**9),
+    "FUND_BASIS_WEIGHT": (0.0, 1.0),
+    "FUND_CARRY_WEIGHT": (0.0, 1.0),
+    "FUND_INV_WEIGHT": (0.0, 1.0),
+    "FUND_RANK_WEIGHT": (0.0, 1.0),
+}
+
+
+def _check_schema(name, value, default):
+    """对 (name,value) 应用 SCHEMA_RULES；不满足返回 (False, 原因)，满足返回 (True, value)。"""
+    rule = SCHEMA_RULES.get(name)
+    if rule is None:
+        return True, value
+    kind, spec = (rule[0], rule[1]) if isinstance(rule, tuple) and len(rule) == 2         and isinstance(rule[0], str) and rule[0] in ("enum",) else ("range", rule)
+    if kind == "enum":
+        if value in spec:
+            return True, value
+        return False, "值域约束: %s 只允许 %s（给了 %r）" % (name, "/".join(spec), value)
+    # range
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False, "值域约束: %s 需为数值（给了 %r）" % (name, value)
+    lo, hi = float(spec[0]), float(spec[1])
+    if lo <= v <= hi:
+        return True, value
+    return False, "值域约束: %s 需在 [%s, %s]（给了 %s）" % (name, spec[0], spec[1], value)
+
+
 def _is_protected(name):
     if name in PROTECTED_NAMES:
         return True
@@ -169,6 +214,10 @@ def apply_overrides(namespace, overrides, source="config.json"):
         if not ok:
             report["skipped"][name] = "类型不符（默认 %s，给了 %s），保留默认" % (
                 type(default).__name__, type(value).__name__)
+            continue
+        ok2, reason = _check_schema(name, coerced, default)
+        if not ok2:
+            report["skipped"][name] = reason
             continue
         namespace[name] = coerced
         report["applied"][name] = coerced

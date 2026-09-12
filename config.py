@@ -647,6 +647,11 @@ RISK_GATE_HV_HIGH = 0.80          # HV 分位>=该值 -> warn（波动偏高，�
 RISK_GATE_FLOW_CONFLICT = True    # 信号方向与量仓资金方向相反 -> warn（价涨资金撤）
 RISK_GATE_NEAR_DELIVERY = True    # 主力合约临近交割/月份异常 -> warn
 RISK_GATE_ALERT = True            # veto 是否走声音/Webhook 告警通道（复用 alerts 聚合，自动限流）
+# 第138轮 E5：动态黑名单（freqtrade pair-locking 精神）——连续 N 轮无有效行情/流动性不足自动禁入
+RISK_GATE_BLACKLIST_FAIL_ROUNDS = 3      # 连续多少轮无有效行情（价格<=0 或 量<下限）→ 封禁
+RISK_GATE_BLACKLIST_RECOVER_ROUNDS = 5   # 连续多少轮恢复有效行情 → 自动解禁
+# 第138轮 E5：组合层保证金占用硬上限（risk_degree=保证金占用/权益 的硬顶，开新仓被拒）——防杠杆击穿
+PORTFOLIO_MAX_RISK_DEGREE = 0.90         # 开仓后 risk_degree 不得超过该值；超过则拒开（组合硬顶）
 
 # ---- G5④（第48轮）组合层单日浮亏熔断（与上面单品种信号级 risk_gate 正交；见 circuit_breaker.py）----
 # 纪律：默认 observe 只计算/标注、绝不改变纸面成交（等价旧版）；显式 paper_halt 才在 halt/delever 时停开新仓（平仓照常）。

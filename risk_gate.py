@@ -13,6 +13,50 @@ PASS, WARN, VETO = "pass", "warn", "veto"
 # veto 级别高于 warn；汇总时取最高
 _RANK = {PASS: 0, WARN: 1, VETO: 2}
 
+# 第138轮 E5：动态黑名单（freqtrade pair-locking 精神）
+# 品种连续 N 轮无有效价/流动性不足 → 自动禁入（veto"黑名单"），连续 K 轮恢复后自动解禁。
+# 状态显式传入（dict：sym -> {fail_streak, ok_streak}），纯函数可测，不进全局可变单例。
+_BLACKLIST_REASON = "品种进入动态黑名单（连续%d轮无有效行情/流动性不足），暂不给出开仓信号"
+
+
+def _blacklist_default():
+    return {}
+
+
+def record_streak(state, sym, ok, fail_threshold=None, recover_threshold=None):
+    """更新品种连续失效/恢复计数。返回 (blocked?, reason?)。
+
+    - ok=True 表示本轮有有效行情（价格>0 且量>=下限）：fail_streak 清零、ok_streak+1，
+      连续 recover_threshold 轮恢复则解禁（从 state 移除）；
+    - ok=False 表示本轮无有效行情：fail_streak+1、ok_streak 清零，连续 fail_threshold 轮则封禁。
+    任一计数达到阈值即生效；返回 (是否被封禁, 原因或 None)。"""
+    fail_threshold = fail_threshold if fail_threshold is not None         else getattr(config, "RISK_GATE_BLACKLIST_FAIL_ROUNDS", 3)
+    recover_threshold = recover_threshold if recover_threshold is not None         else getattr(config, "RISK_GATE_BLACKLIST_RECOVER_ROUNDS", 5)
+    st = state.setdefault(sym, {"fail_streak": 0, "ok_streak": 0, "blocked": False})
+    if ok:
+        st["fail_streak"] = 0
+        if st.get("blocked"):
+            # 封禁中的品种：需连续 recover_threshold 轮有效行情才解禁（ok_streak 累积）
+            st["ok_streak"] = st.get("ok_streak", 0) + 1
+            if st["ok_streak"] >= recover_threshold:
+                state.pop(sym, None)      # 连续恢复达阈值 → 解禁（整个状态移除）
+                return False, None
+            return True, _BLACKLIST_REASON % fail_threshold   # 仍在封禁中
+        st["ok_streak"] = 0
+        return False, None
+    st["ok_streak"] = 0
+    st["fail_streak"] = st.get("fail_streak", 0) + 1
+    if st["fail_streak"] >= fail_threshold:
+        st["blocked"] = True              # 触发封禁（标记独立于计数）
+        return True, _BLACKLIST_REASON % fail_threshold
+    return False, None
+
+
+def is_blocked(state, sym):
+    """品种当前是否在动态黑名单中（纯查询，不更新计数）。以显式 blocked 标记为准。"""
+    st = state.get(sym)
+    return bool(st and st.get("blocked"))
+
 
 def evaluate(row):
     """对单条品种分析结果做独立风控复核。
@@ -32,6 +76,13 @@ def evaluate(row):
         direction = 1 if score > 0 else (-1 if score < 0 else 0)
 
         # ---- 硬否决 veto（只在较极端情形触发，避免过度干预）----
+        # 0) 动态黑名单（连续 N 轮无有效行情/流动性不足自动禁入）
+        bl_state = row.get("_blacklist") or {}
+        bl_sym = row.get("sym") or row.get("code") or ""
+        if bl_sym and is_blocked(bl_state, bl_sym):
+            veto.append(_BLACKLIST_REASON %
+                        getattr(config, "RISK_GATE_BLACKLIST_FAIL_ROUNDS", 3))
+
         # 1) 无有效行情 / 流动性不足：没有可靠价格或成交量过低，信号无成交基础
         volume = float(row.get("volume", 0.0) or 0.0)
         if price <= 0:

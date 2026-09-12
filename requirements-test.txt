@@ -1,0 +1,2 @@
+# 第138轮 E1：测试专用依赖（CI 用；生产 requirements.txt 不含 pytest，保持项目纪律）
+pytest>=7.0

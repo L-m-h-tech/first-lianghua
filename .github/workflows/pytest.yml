@@ -1,0 +1,22 @@
+name: pytest
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-test.txt 2>/dev/null || pip install -r requirements.txt
+      - run: pip install pytest
+      - run: python -m pytest -q --tb=short

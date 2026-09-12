@@ -164,6 +164,49 @@ def get_default_ledger_path():
     return v
 
 
+_CORE_SRC_REL = None      # 核心源码目录相对路径（延迟计算，测试可注入）
+
+
+def code_fingerprint(rel_dirs=None, max_files=400, chunk=65536):
+    """核心代码目录内容身份（第138轮 E4）：对列出的相对目录里 .py 逐文件 sha256 汇总。
+
+    目的：区分"同 VERSION 但代码改了"的实验——config_hash 只看参数+输入数据，
+    加 code_fingerprint 后，改任何核心源码都会让台账条目可对照"跑在哪个代码状态"。
+    路径基于脚本所在目录解析；目录缺失/异常返回 None（不抛错，软降级）。"""
+    import hashlib as _hl
+    base = os.path.dirname(os.path.abspath(__file__))
+    dirs = rel_dirs if rel_dirs is not None else (_CORE_SRC_REL or ("", "tools"))
+    h = _hl.sha256()
+    n = 0
+    try:
+        for rel in dirs:
+            root = os.path.join(base, rel) if rel else base
+            if not os.path.isdir(root):
+                continue
+            for dp, _dn, fn in os.walk(root):
+                for f in sorted(fn):
+                    if not f.endswith(".py") or f.startswith("__pycache__") or "__pycache__" in dp:
+                        continue
+                    if n >= max_files:
+                        return h.hexdigest()[:16]
+                    p = os.path.join(dp, f)
+                    relp = os.path.relpath(p, base)
+                    h.update(relp.encode("utf-8"))
+                    try:
+                        with open(p, "rb") as fh:
+                            while True:
+                                blk = fh.read(chunk)
+                                if not blk:
+                                    break
+                                h.update(blk)
+                    except OSError:
+                        pass
+                    n += 1
+    except Exception:
+        return None
+    return h.hexdigest()[:16] if n else None
+
+
 def make_record(experiment, params, metrics=None, *, inputs=None, artifacts=None,
                 conclusion=None, reproduce=None, now=None, extra=None):
     """构造一条实验记录 dict（不落盘）。config_hash 只认 实验+参数+输入内容身份；
@@ -183,6 +226,7 @@ def make_record(experiment, params, metrics=None, *, inputs=None, artifacts=None
         "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "experiment": str(experiment),
         "config_hash": cfg_hash,
+        "code_fingerprint": code_fingerprint(),   # 第138轮 E4：核心源码内容身份
         "repeat_of": None,
         "version": read_version(),
         "py": "%d.%d" % sys.version_info[:2],
