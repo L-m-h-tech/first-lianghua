@@ -45,6 +45,7 @@ reports/*.log
 # ===== G19 db_backup online backups (binary snapshots & sidecars ignored; task XML template kept) =====
 backup/*.db
 backup/*.db.json
+backup/paper_accounts/
 backup/*.before_restore_*
 
 # ===== 隐私：券商原始导出（含投资者账号），本地保留不入库 =====
