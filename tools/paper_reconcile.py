@@ -338,14 +338,14 @@ def selftest():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="纸面账户三方对账（G1 验收，研究侧只读）")
     ap.add_argument("--accounts-dir", default=os.path.join(_ROOT, "data", "paper_accounts"))
     ap.add_argument("--monitor-db", default=config.MONITOR_DB)
     ap.add_argument("--reports-dir", default=os.path.join(_ROOT, "reports"))
     ap.add_argument("--match-window-min", type=int, default=30)
     ap.add_argument("--selftest", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     res = reconcile_all(args.accounts_dir, args.monitor_db, args.reports_dir,

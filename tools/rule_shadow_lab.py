@@ -288,7 +288,7 @@ def render(res):
     return "\n".join(L)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Phase2 规则影子实验室（单变量影子回放）")
     ap.add_argument("--codes", default="", help="品种，缺省取当前 portfolio_trades.csv 品种")
     ap.add_argument("--period", type=int, default=30)
@@ -297,7 +297,7 @@ def main():
     ap.add_argument("--r4-min-hold", type=int, default=2, dest="r4_min_hold")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--selftest", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     res = run_lab(codes=args.codes or None, period=args.period, lookback=args.lookback,

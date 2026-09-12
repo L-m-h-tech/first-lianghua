@@ -303,11 +303,11 @@ def selftest():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="PCR 因子影子体检（阶段D影子，研究侧只读）")
     ap.add_argument("--monitor-db", default=config.MONITOR_DB)
     ap.add_argument("--selftest", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     res = run(args.monitor_db)

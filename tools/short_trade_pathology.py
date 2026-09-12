@@ -267,7 +267,7 @@ def selftest():
     return 0
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="1-2bar 短单病理切片（Phase1，研究侧只读）")
     ap.add_argument("--trades", default=tj.DEFAULT_TRADES)
     ap.add_argument("--period", type=int, default=30)
@@ -275,7 +275,7 @@ def main():
     ap.add_argument("--post-bars", type=int, default=8, dest="post_bars")
     ap.add_argument("--no-bars", action="store_true", dest="no_bars", help="跳过分钟库回放（无 whipsaw 切片）")
     ap.add_argument("--selftest", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     trades = tj.load_trades(args.trades)

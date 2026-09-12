@@ -481,7 +481,7 @@ def selftest():
     return 0
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="成交量 PCR 采集器（天勤TqSdk，研究侧）")
     ap.add_argument("--backfill", type=int, default=1,
                     help="fast模式默认1=增量最新交易日；tqsdk模式建议15")
@@ -490,7 +490,7 @@ def main():
     ap.add_argument("--syms", default="", help="品种逗号分隔；缺省=option_chains 全部 sym")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个品种（0=全部）")
     ap.add_argument("--selftest", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     syms = set(s.strip().upper() for s in args.syms.split(",") if s.strip()) or None
