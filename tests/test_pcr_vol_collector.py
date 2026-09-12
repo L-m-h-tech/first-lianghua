@@ -43,6 +43,28 @@ def test_collect_variety_filters_future_placeholder():
     assert abs(rows[0]["pcr_vol"] - 0.5) < 1e-9
 
 
+def test_parse_contract_formats():
+    # 三交易所合约代码格式（第133轮协同解析）
+    assert PC._parse_contract("rb2610C2600") == ("RB", "C", 2600.0)
+    assert PC._parse_contract("MA610C2100") == ("MA", "C", 2100.0)
+    assert PC._parse_contract("m2611-C-3100") == ("M", "C", 3100.0)   # 大商所连字符式
+    assert PC._parse_contract("si2611P4000") == ("SI", "P", 4000.0)
+    assert PC._parse_contract("junk") is None
+
+
+def test_ak_vol_column():
+    import pandas as pd
+    assert PC._ak_vol_column(pd.DataFrame({"合约代码": [], "成交量": []})) == "成交量"
+    assert PC._ak_vol_column(pd.DataFrame({"合约代码": [], "成交量(手)": []})) == "成交量(手)"
+    assert PC._ak_vol_column(pd.DataFrame({"x": []})) is None
+
+
+def test_shadow_lab_style_selftest():
+    import importlib
+    mod = importlib.import_module("pcr_vol_collector")
+    assert mod.selftest() == 0          # 含 fast 协同编排端到端（fake 注入）
+
+
 def test_write_rows_idempotent(tmp_path):
     db = str(tmp_path / "m.db")
     rows = [{"sym": "RB", "trade_date": "2026-09-11", "call_vol": 8.0, "put_vol": 4.0,
