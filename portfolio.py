@@ -586,6 +586,8 @@ class SymbolFeed:
         self.pending = None
         self.blocked_entry = 0
         self.blocked_exit = 0
+        self.rev_block_dir = None      # R3（第130轮）：反向平仓后封锁的反方向（None=未封锁）
+        self.rev_neutral_seen = False  # R3：封锁后分数是否已回中性区一次
 
     def owner_at(self, t):
         """t 时刻该品种所属结算交易日 owner；t 无该品种bar（如无夜盘品种在夜盘）取最近已收盘bar。"""
@@ -651,18 +653,25 @@ def trailing_risk_weights(feeds, t, method, *, window=126, min_hist=40, shrink=0
 
 
 def _reset_feeds(feeds):
-    """清空引擎层可变状态（持仓/挂单/锁板计数），使同一批 feeds 可被确定性地重复回放（影子对照用）。"""
+    """清空引擎层可变状态（持仓/挂单/锁板计数/反手封锁），使同一批 feeds 可被确定性地重复回放（影子对照用）。"""
     for f in feeds.values():
         f.pos = None
         f.pending = None
         f.blocked_entry = 0
         f.blocked_exit = 0
+        f.rev_block_dir = None
+        f.rev_neutral_seen = False
 
 
 def run_portfolio(feeds, pf, *, entry_th, stop_atr, target_atr, flat_eod, max_bars,
-                  use_limit, limit_eps, minute_mode, hold_days=10, risk_cfg=None):
+                  use_limit, limit_eps, minute_mode, hold_days=10, risk_cfg=None,
+                  min_hold=0, no_reverse=False):
     """统一时间轴逐bar驱动共享账户。feeds: {sym: SymbolFeed}；pf: Portfolio。
-    risk_cfg 非空时（第41轮 G26续）按 rebalance 间隔用仅过去数据重估横截面风险权重并注入 pf。"""
+    risk_cfg 非空时（第41轮 G26续）按 rebalance 间隔用仅过去数据重估横截面风险权重并注入 pf。
+    第130轮 Phase2 研究开关（默认关闭=逐字节等价旧行为）：
+      - min_hold：反向信号离场的最小持仓 bar 数（止损/止盈/日终强平/到期不受限）——R4"持仓≥2根"；
+      - no_reverse：反向信号平仓后封锁立即反手，直到分数回到中性区（|分|<entry_th）出现一次
+        才允许同方向再入场——R3"反手改观望"（病理：反向信号桶 PF=0.03，追新方向单最差）。"""
     timeline = sorted({b["dt"] for f in feeds.values() for b in f.bars})
     risk_step = 0
     for t in timeline:
@@ -777,8 +786,12 @@ def run_portfolio(feeds, pf, *, entry_th, stop_atr, target_atr, flat_eod, max_ba
                                 f.pos.block += 1
                     if not handled and f.pos is not None:
                         sig = _sig_dir(f.scores[i], entry_th)
-                        if sig == -d:
+                        held_i = i - f.pos.entry_i
+                        if sig == -d and held_i >= min_hold:
                             f.pending = ("exit", "反向信号")
+                            if no_reverse:
+                                f.rev_block_dir = -d          # 封锁立即反手（新方向）
+                                f.rev_neutral_seen = False
                         elif (not flat_eod) and (i - f.pos.entry_i) >= max_bars:
                             f.pending = ("exit", "到期")
                 else:
@@ -790,7 +803,12 @@ def run_portfolio(feeds, pf, *, entry_th, stop_atr, target_atr, flat_eod, max_ba
 
             # 3) 空仓：本根收盘决策，下一根开盘入场
             if f.pos is None and f.pending is None and i < len(f.bars) - 1:
+                if no_reverse and getattr(f, "rev_block_dir", None) is not None:
+                    if abs(f.scores[i]) < entry_th:
+                        f.rev_block_dir = None        # 分数已回中性区=出现"新信号"，解除封锁
                 sig = _sig_dir(f.scores[i], entry_th)
+                if sig != 0 and no_reverse and getattr(f, "rev_block_dir", None) is not None                         and sig == f.rev_block_dir:
+                    sig = 0                            # 封锁持续的反向追单（R3，直到回中性区）
                 if sig != 0:
                     if minute_mode and (f.atrs[i] is None or f.atrs[i] <= 0):
                         pass  # 分钟无ATR不入场
@@ -1143,6 +1161,11 @@ def parse_args(argv=None):
     p.add_argument("--no-real-fees", action="store_true")
     p.add_argument("--no-cost", action="store_true")
     p.add_argument("--no-limit-filter", action="store_true")
+    # 第130轮 Phase2 研究开关（默认关=逐字节等价旧行为）
+    p.add_argument("--min-hold-bars", type=int, default=0, dest="min_hold_bars",
+                   help="R4：反向信号离场的最小持仓bar数（分钟模式；止损/止盈/日终强平不受限；0=关闭）")
+    p.add_argument("--no-reverse", action="store_true", dest="no_reverse",
+                   help="R3：反向信号平仓后封锁立即反手，直到分数回中性区（0=关闭）")
     p.add_argument("--calibrate", action="store_true",
                    help="WP-F2：启用历史同类信号胜率校准乘子作用于手数（默认关闭=影子，逐值与旧版一致）")
     # 第41轮 G26续：横截面风险型 sizing（默认全关=逐字节等价旧等名义）
@@ -1236,7 +1259,9 @@ def main(argv=None):
         run_portfolio(feeds, pf, entry_th=args.entry, stop_atr=args.stop_atr,
                       target_atr=args.target_atr, flat_eod=args.flat_eod, max_bars=args.max_bars,
                       use_limit=args.use_limit, limit_eps=config.INTRADAY_BT_LIMIT_TICK_EPS,
-                      minute_mode=not args.daily, hold_days=args.hold, risk_cfg=rcfg)
+                      minute_mode=not args.daily, hold_days=args.hold, risk_cfg=rcfg,
+                      min_hold=getattr(args, "min_hold_bars", 0),
+                      no_reverse=getattr(args, "no_reverse", False))
         return pf, pf.performance()
 
     # 基线（旧等名义；--risk-sizing 指定时基线改为该风险型单次运行）
