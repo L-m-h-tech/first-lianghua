@@ -29,6 +29,8 @@ Black-76期货期权定价 + Delta/Gamma/Vega/Theta希腊字母 + 六项严格�
 建议执行价按近似执行价间距取整，并给出合约代码示意（实际以交易所挂牌为准）。
 """
 import math
+import os
+import sqlite3
 
 import config
 import contracts as contracts_mod
@@ -139,6 +141,53 @@ def iv_pct_text(profile):
     return f"{profile['iv_src']}分位{pct * 100:.0f}%"
 
 
+_VOL_PCR_CACHE = {}          # (sym, trade_date) -> pcr_vol 或 None（当日只读一次）
+
+
+def _sym_of(name):
+    """中文品种名 → sym 代码（option_pcr_vol 用代码存；失败返回原值大写兼容例外）。"""
+    if not name:
+        return None
+    for vn, vc in config.VARIETIES.items():
+        if vn == name or vc.get("sym", "").upper() == str(name).upper():
+            return str(vc["sym"]).upper()
+    return str(name).upper()
+
+
+def vol_pcr_of(sym, day=None, db_path=None):
+    """第137轮：成交量 PCR 情绪档数据源——从 option_pcr_vol 表读该品种最新交易日成交量 PCR。
+
+    数据由 tools/pcr_vol_collector.py（天勤+AKShare 三源协同）按日写入，39品种×15日已积累；
+    成交量 PCR=当日 put 总成交量 / call 总成交量，反映**当日实际交易情绪**（持仓量 PCR 是慢变量）。
+    - day 缺省取该 sym 最新一行（数据按交易日写入）；返回 float 或 None（无数据诚实降级）；
+    - db_path 可注入（测试用 tmp 库）；查询失败/库缺返回 None，绝不抛错影响期权分析。"""
+    try:
+        if db_path is None:
+            db_path = getattr(config, "MONITOR_DB", None)
+        if not db_path or not os.path.isfile(db_path):
+            return None
+        if day:
+            key = (sym, day)
+            if key in _VOL_PCR_CACHE:
+                return _VOL_PCR_CACHE[key]
+        conn = sqlite3.connect("file:%s?mode=ro" % db_path.replace("\\", "/"), uri=True)
+        try:
+            if day:
+                row = conn.execute(
+                    "SELECT pcr_vol FROM option_pcr_vol WHERE sym=? AND trade_date=?",
+                    (str(sym).upper(), day)).fetchone()
+                _VOL_PCR_CACHE[(sym, day)] = float(row[0]) if row and row[0] is not None else None
+                return _VOL_PCR_CACHE[(sym, day)]
+            row = conn.execute(
+                "SELECT pcr_vol FROM option_pcr_vol WHERE sym=? "
+                "ORDER BY trade_date DESC LIMIT 1", (str(sym).upper(),)).fetchone()
+            return float(row[0]) if row and row[0] is not None else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 def analyze_option(name, fut_row):
     """对单个有场内期权的品种做严格分析，返回结果字典"""
     F = fut_row["price"]
@@ -163,8 +212,6 @@ def analyze_option(name, fut_row):
     chain_note = ""
     if chain and chain.get("pcr_oi") is not None:
         bits = ["持仓PCR=%.2f（%s）" % (chain["pcr_oi"], chain.get("sentiment") or "中性"),
-                ("成交量PCR=%.2f" % chain["pcr_vol"]) if chain.get("pcr_vol") is not None
-                else "成交量PCR: 暂无（需P_OP_快照，数据源待补齐）",
                 "C/P各%d/%d腿" % (chain.get("n_call", 0), chain.get("n_put", 0)),
                 "看涨持仓%.0f/看跌持仓%.0f" % (chain.get("call_oi", 0), chain.get("put_oi", 0))]
         if chain.get("max_call_oi_strike"):
@@ -175,6 +222,20 @@ def analyze_option(name, fut_row):
             bits.append("平值行权价%g" % chain["atm_strike"])
         if chain.get("pcr_pct") is not None:
             bits.append("PCR近%d日分位%.0f%%" % (config.PCR_LOOKBACK_DAYS, chain["pcr_pct"] * 100))
+        # 第137轮：成交量 PCR 情绪档（研究侧观察，不进综合分/六项检查）——
+        # 从 option_pcr_vol 表读当日成交量 PCR；与持仓 PCR 背离提示盘中情绪方向
+        vol_pcr = vol_pcr_of(_sym_of(name))
+        if vol_pcr is not None:
+            pcr_oi = chain.get("pcr_oi")
+            bits.append("成交量PCR=%.2f" % vol_pcr)
+            if pcr_oi is not None:
+                gap = vol_pcr - pcr_oi
+                if gap > 0.3:
+                    bits.append("盘中成交偏看跌(量PCR>持仓PCR)")
+                elif gap < -0.3:
+                    bits.append("盘中成交偏看涨(量PCR<持仓PCR)")
+        else:
+            bits.append("成交量PCR: 暂无(option_pcr_vol未采集)")
         chain_note = "；".join(bits)
 
     # 第12轮 WP-B：多到期日 IV 曲面（ATM IV期限结构 / 25Δ风险反转 / 曲面矩阵）
