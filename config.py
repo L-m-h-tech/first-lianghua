@@ -825,6 +825,14 @@ PAPER_ACCOUNTS = [
      "max_concurrent": 10, "risk_liquidate": 1.00, "risk_safe": 0.90,
      "opt_premium_ratio": 0.60, "stop_loss_ratio": 0.50, "priority": "futures_first",
      "target_basis": "margin"},
+    # 第136轮：ERC 影子账户（研究侧对照，与 10万_基准 同参数仅 risk_sizing 不同）。
+    # 实时权重由 paper_ticker 每轮从 minute_bars 历史算风险平价注入（set_risk_weights）；
+    # 权重缺失/品种不足时内核自动回退等名义（与 10万_基准 逐字节一致），报告诚实标注。
+    {"name": "10万_ERC", "equity0": 100_000, "fill_mode": "next", "entry_score": 4.0,
+     "per_symbol": 0.05, "max_symbol_weight": 0.25, "max_sector_weight": 0.40,
+     "max_concurrent": 10, "risk_liquidate": 1.00, "risk_safe": 0.90,
+     "opt_premium_ratio": 0.60, "stop_loss_ratio": 0.50, "priority": "futures_first",
+     "target_basis": "margin", "risk_sizing": "erc", "risk_gross": 1.5},
     {"name": "10万_保守", "equity0": 100_000, "fill_mode": "next", "entry_score": 5.0,
      "per_symbol": 0.03, "max_symbol_weight": 0.05, "max_sector_weight": 0.15,
      "max_concurrent": 6, "risk_liquidate": 1.00, "risk_safe": 0.90,

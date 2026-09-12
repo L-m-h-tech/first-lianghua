@@ -166,7 +166,8 @@ class State:
                             "per_symbol", "max_symbol_weight", "max_sector_weight",
                             "max_concurrent", "risk_liquidate", "risk_safe",
                             "opt_premium_ratio", "stop_loss_ratio", "priority",
-                            "futures_max", "options_max", "target_basis")}
+                            "futures_max", "options_max", "target_basis",
+                            "risk_sizing", "risk_gross")}   # 第136轮：ERC 影子账户接线
                         broker = paper_broker.PaperBroker(
                             db_path=db_path, name=name, **kwargs)
                         self.papers[name] = broker

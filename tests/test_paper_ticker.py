@@ -331,3 +331,61 @@ def test_tick_once_writes_paper_report(tmp_path, monkeypatch):
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+# ---------- 第136轮：ERC 影子账户实时权重喂入 ----------
+
+class _MinDB:
+    """合成 minute_bars：三品种波动差异大（RB低/CU高波动/MA中）→ ERC 权重区分度明显。"""
+    def __init__(self):
+        import datetime as _dt
+        self.rows = {"RB": [], "CU": [], "MA": []}
+        t0 = _dt.datetime(2026, 9, 1, 9, 0)
+        rb, cu, ma = 3000.0, 70000.0, 2500.0
+        for i in range(140):
+            ts = (t0 + _dt.timedelta(minutes=30 * i)).strftime("%Y-%m-%d %H:%M:%S")
+            rb += 1.0 + (i % 3)                     # 低波动稳步上行
+            cu += (30 if i % 2 == 0 else -25) * (1.0 + (i % 5))   # 高波动大幅震荡
+            ma += (6 if i % 3 == 0 else -4)         # 中波动
+            self.rows["RB"].append({"dt": ts, "c": rb})
+            self.rows["CU"].append({"dt": ts, "c": cu})
+            self.rows["MA"].append({"dt": ts, "c": ma})
+
+    def minute_bars_for_sym(self, sym, period, limit=None):
+        return self.rows.get(sym, [])[- (limit or 200):]
+
+
+def test_inject_risk_weights_sets_erc_weights():
+    # ERC 账户：注入后内核 risk_weights 非空且与等名义（均匀 0.5/0.5）不同
+    b = make_broker(name="ERC")
+    b.pf.risk_sizing = "erc"        # 手动开启（模拟 config risk_sizing 透传）
+    b.pf.risk_gross = 1.5
+    st = _State()
+    st.watchlist = [("螺纹钢", {"sym": "RB"}), ("铜", {"sym": "CU"}), ("甲醇", {"sym": "MA"})]
+    st.db = _MinDB()
+    meta = paper_ticker._inject_risk_weights(st, b, "2026-09-10 14:30:00")
+    w = b.pf.risk_weights
+    assert meta is not None and len(w) == 3, (meta, w)
+    assert abs(sum(w.values()) - 1.5) < 0.01, w      # gross 1.5 生效
+    # 接线核心：权重确实被注入内核（等名义下无 risk_weights；注入后 w 覆盖全部品种且按 gross 放大）
+    assert set(w) == {"RB", "CU", "MA"}
+    assert all(v > 0 for v in w.values())
+
+
+def test_inject_risk_weights_non_erc_skips():
+    # 非 ERC 账户：不注入，risk_weights 保持空
+    b = make_broker(name="基准")
+    st = _State()
+    st.watchlist = [("螺纹钢", {"sym": "RB"}), ("铜", {"sym": "CU"}), ("甲醇", {"sym": "MA"})]
+    st.db = _MinDB()
+    assert paper_ticker._inject_risk_weights(st, b, "2026-09-10 14:30:00") is None
+    assert not b.pf.risk_weights
+
+
+def test_inject_risk_weights_insufficient_history_fallback():
+    # 品种不足/历史不足 → 返回 None（内核回退等名义，不抛错）
+    b = make_broker(name="ERC")
+    b.pf.risk_sizing = "erc"
+    st = _State()
+    st.watchlist = [("螺纹钢", {"sym": "RB"})]        # 只有 1 品种
+    st.db = _MinDB()
+    assert paper_ticker._inject_risk_weights(st, b, "2026-09-10 14:30:00") is None

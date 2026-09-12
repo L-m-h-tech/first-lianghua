@@ -846,7 +846,10 @@ class PaperBroker:
                    "n_trades": len(cycle_trades), "n_pending": n_pending,
                    "n_positions": len(self.pf.positions), "n_delever": n_delever,
                    "n_skipped": len(self.pf.skipped), "circuit": self._last_circuit,
-                   "orders": cycle_orders, "trades": cycle_trades}
+                   "orders": cycle_orders, "trades": cycle_trades,
+                   # 第136轮：ERC 影子落账标记（报告/对账可用；未开启=等名义不标注）
+                   "risk_sizing": self.pf.risk_sizing if getattr(self.pf, "risk_sizing", None) else None,
+                   "risk_meta": getattr(self.pf, "risk_meta", None)}
         self.last_summary = summary
         return summary
 

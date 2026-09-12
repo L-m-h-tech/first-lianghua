@@ -32,6 +32,78 @@ import config
 import futures_data
 
 
+
+def _MinFeed(bars):
+    """极简 SymbolFeed 兼容物：只给 trailing_risk_weights 需要的 dts/bars（dt/c）。"""
+    from datetime import datetime as _dt
+    bars2 = []
+    for b in bars:
+        d = b.get("dt")
+        if d is None:
+            continue
+        if isinstance(d, str):
+            try:
+                d = _dt.strptime(d[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+        bars2.append({"dt": d, "c": b.get("c")})
+    class _Feed:
+        pass
+    f = _Feed()
+    f.bars = bars2
+    f.dts = [b["dt"] for b in bars2]
+    return f
+
+
+def _inject_risk_weights(state, broker, ts, syms=None):
+    """第136轮：ERC 影子账户实时权重喂入。
+
+    对开启了 risk_sizing 的纸面账户，用 minute_bars 实时历史（严格 PIT：只用到当前时刻）
+    调 portfolio.trailing_risk_weights 算风险平价目标权重，经 broker.set_risk_weights 注入内核。
+    - 权重缺失/品种不足<2/历史不足 min_hist：内核自动回退等名义（与非 ERC 账户一致）；
+    - 每轮都算（分钟级），与 paper_ticker 撮合节奏同步——目标权重随行情协方差滚动更新。
+    """
+    pf = getattr(broker, "pf", None)
+    rs = getattr(pf, "risk_sizing", None)          # PaperBroker 不存，读内核（main 透传后在这）
+    if not rs:
+        return None
+    try:
+        import portfolio as pf_mod
+        syms = list(syms) if syms else [m["sym"] for _, m in getattr(state, "watchlist", [])]
+        if len(syms) < 2 or not getattr(state, "db", None):
+            return None
+        db = state.db
+        feeds = {}
+        for sym in syms:
+            try:
+                bars = db.minute_bars_for_sym(sym, 60, limit=config.PRS_WINDOW + 8)
+            except Exception:
+                bars = []
+            if len(bars) >= 2:
+                feeds[sym] = _MinFeed(bars)
+        if len(feeds) < 2:
+            return None
+        from datetime import datetime as _dt
+        t = ts
+        if isinstance(t, str):
+            try:
+                t = _dt.strptime(t[:19], "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return None
+        wmap, meta = pf_mod.trailing_risk_weights(
+            feeds, t, rs,
+            window=getattr(config, "PRS_WINDOW", 126),
+            min_hist=getattr(config, "PRS_MIN_HIST", 40),
+            shrink=getattr(config, "PC_SHRINK", 0.10),
+            cap=getattr(config, "PRS_CAP", 0.25),
+            gross=getattr(pf, "risk_gross", None) or getattr(config, "PRS_GROSS", 1.5))
+        if wmap:
+            broker.set_risk_weights(wmap, meta)
+        return meta
+    except Exception:
+        return None
+
+
 def tick_once(state, ts, quotes):
     """单次纸面撮合驱动（纯逻辑、可单测）。返回 {name: summary|None}。
 
@@ -89,6 +161,8 @@ def tick_once(state, ts, quotes):
     out = {}
     for _name, _broker in papers.items():
         try:
+            # 第136轮：ERC 影子账户——对开启 risk_sizing 的 broker 在 on_cycle 前注入实时权重
+            _inject_risk_weights(state, _broker, ts)
             _prio = _broker.priority
             if _prio != "option_only":
                 last_papers[_name] = _broker.on_cycle(ts, fut_rows, quotes)
