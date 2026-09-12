@@ -86,3 +86,21 @@ def test_dev_cache_replay(tmp_path, monkeypatch):
     assert http_client._dev_replay("GET", resp.url, "other") is None
     monkeypatch.setattr(http_client, "_DEV_CACHE", False)
     assert http_client._dev_replay("GET", resp.url, "src_x") is None
+
+
+# ---------------- B7（第126轮）：TLS 指纹伪装通道 ----------------
+
+def test_curl_session_fallback_when_lib_missing(monkeypatch):
+    # curl_cffi 缺失（置 None 模拟）→ _curl_session 返回 None，调用方回退普通 requests
+    monkeypatch.setattr(http_client, "_curl_requests", None)
+    assert http_client._curl_session("src_c1") is None
+
+
+def test_curl_session_per_source_and_impersonate_cached():
+    if http_client._curl_requests is None:
+        return                                    # 环境无 curl_cffi 时静默跳过
+    s1 = http_client._curl_session("src_c2", "chrome")
+    s2 = http_client._curl_session("src_c2", "chrome")
+    s3 = http_client._curl_session("src_c3", "chrome")
+    assert s1 is s2 and s1 is not s3              # 同键复用、异键隔离
+    assert http_client._curl_session("src_c2", "firefox") is not s1

@@ -104,6 +104,35 @@ def get_session(source="__global__"):
         return sess
 
 
+# ---------------- B7（第126轮）：TLS 指纹伪装通道（curl_cffi 可选依赖） ----------------
+# 背景：生意社(100ppi)等站点按 TLS/JA3 指纹识别 Python-requests 特征并返回 HW_CHECK JS 挑战页，
+# requests 层面无论怎么带 cookie/头都过不去（挑战页不种cookie）；curl_cffi(libcurl-impersonate)
+# 重放浏览器指纹可直过（2026-09-12 实测：requests→636B挑战页，chrome指纹→58KB完整基差表）。
+# curl_cffi 缺失/会话创建失败时静默回退普通 requests（行为与旧版一致，由调用方按挑战页降级）。
+try:
+    from curl_cffi import requests as _curl_requests
+except Exception:                       # pragma: no cover - 本机已装，防御性回退
+    _curl_requests = None
+
+_CURL_SESSIONS = {}                     # "source|impersonate" -> curl_cffi.Session
+
+
+def _curl_session(source=None, impersonate="chrome"):
+    """按 (source, impersonate) 缓存的 curl_cffi 会话；库缺失/创建失败返回 None（调用方回退 requests）。"""
+    if _curl_requests is None:
+        return None
+    key = "%s|%s" % (source or "__global__", impersonate)
+    with _LOCK:
+        sess = _CURL_SESSIONS.get(key)
+        if sess is None:
+            try:
+                sess = _curl_requests.Session(impersonate=impersonate)
+            except Exception:
+                return None
+            _CURL_SESSIONS[key] = sess
+        return sess
+
+
 # ---------------- A5：请求级限流退避（对标 scrapling AutoThrottle / blocked detection） ----------------
 
 _THROTTLE = {}                 # host -> {"fail": 连续失败, "backoff_until": monotonic, "last": 单调时间}
@@ -212,10 +241,13 @@ def _dev_store(method, url, source, resp):
 
 
 class _Http:
-    """薄包装：把默认 timeout 注入，其余参数原样透传；A5 退避 / A6 缓存在此层统一处理。"""
+    """薄包装：把默认 timeout 注入，其余参数原样透传；A5 退避 / A6 缓存在此层统一处理。
+
+    impersonate（B7，第126轮）：传 "chrome" 等浏览器标识时走 curl_cffi 指纹伪装会话
+    （用于被 TLS 指纹反爬的源，如生意社）；库缺失自动回退普通 requests。"""
 
     @staticmethod
-    def _request(method, url, source, **kwargs):
+    def _request(method, url, source, impersonate=None, **kwargs):
         kwargs.setdefault("timeout", config.TIMEOUT)
         host = _host_of(url)
         # A6：dev 缓存命中直接重放（默认关）
@@ -226,7 +258,9 @@ class _Http:
         blocked, _ = _throttle_decision(host, time.monotonic())
         if blocked:
             return _synthetic_503(url)
-        sess = get_session(source)
+        sess = _curl_session(source, impersonate) if impersonate else None
+        if sess is None:
+            sess = get_session(source)
         resp = sess.request(method, url, **kwargs)
         # A5：登记结果（429/503/Retry-After → 指数退避；成功恢复）
         _record_result(host, resp.status_code, resp.headers.get("Retry-After") if resp.headers else None)
@@ -238,19 +272,19 @@ class _Http:
 
     @staticmethod
     def get(url, **kwargs):
-        return _Http._request("GET", url, kwargs.pop("source", None), **kwargs)
+        return _Http._request("GET", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
 
     @staticmethod
     def post(url, **kwargs):
-        return _Http._request("POST", url, kwargs.pop("source", None), **kwargs)
+        return _Http._request("POST", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
 
     @staticmethod
     def put(url, **kwargs):
-        return _Http._request("PUT", url, kwargs.pop("source", None), **kwargs)
+        return _Http._request("PUT", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
 
     @staticmethod
     def request(method, url, **kwargs):
-        return _Http._request(method.upper(), url, kwargs.pop("source", None), **kwargs)
+        return _Http._request(method.upper(), url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
 
 
 http = _Http()
