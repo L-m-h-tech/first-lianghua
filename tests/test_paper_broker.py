@@ -1,28 +1,35 @@
-# -*- coding: utf-8 -*-
 """G1 纸面交易引擎 PaperBroker 回归（第27轮，零网络、确定性）。
 
 覆盖：三阈值迟滞/锁板/滑点纯函数；close 与 next 两档成交时点；反手先平后开；
 锁板阻断顺延；双边手续费+滑点；风控强平；资金不足拒单；三表落库与进程重启恢复；
 权益快照幂等；默认开关休眠。账户表全部显式注入，不依赖外部 CSV、不触网。
 """
+
 import pytest
 
 import config
 import paper_broker as pb_mod
-from paper_broker import PaperBroker, want_position, locked_at_quote, apply_slip
-
+from paper_broker import PaperBroker, apply_slip, locked_at_quote, want_position
 
 # ---------------- 确定性账户表/行情构造 ----------------
 
-MARGIN = {"RB": {"broker_margin": 0.10, "limit_basic": 0.05, "multiplier": 10},
-          "CU": {"broker_margin": 0.12, "limit_basic": 0.09, "multiplier": 5},
-          "AU": {"broker_margin": 0.10, "limit_basic": 0.14, "multiplier": 1000}}
+MARGIN = {
+    "RB": {"broker_margin": 0.10, "limit_basic": 0.05, "multiplier": 10},
+    "CU": {"broker_margin": 0.12, "limit_basic": 0.09, "multiplier": 5},
+    "AU": {"broker_margin": 0.10, "limit_basic": 0.14, "multiplier": 1000},
+}
 
 
 def _fee(sym, mult, amt=1e-4, per_lot=3.0):
-    return {"multiplier": mult, "open_amt_rate": amt, "open_per_lot": per_lot,
-            "close_amt_rate": amt, "close_per_lot": per_lot,
-            "today_amt_rate": 0.0, "today_per_lot": 0.0}
+    return {
+        "multiplier": mult,
+        "open_amt_rate": amt,
+        "open_per_lot": per_lot,
+        "close_amt_rate": amt,
+        "close_per_lot": per_lot,
+        "today_amt_rate": 0.0,
+        "today_per_lot": 0.0,
+    }
 
 
 FEE = {"RB": _fee("RB", 10), "CU": _fee("CU", 5), "AU": _fee("AU", 1000)}
@@ -40,44 +47,60 @@ def loose(monkeypatch):
     monkeypatch.setattr(config, "PAPER_RISK_SAFE", 0.8)
 
 
-def make_broker(fill_mode="next", equity0=10_000_000, slip=0.0001, db=None,
-                restore=False, loose_on=True):
-    return PaperBroker(db=db, equity0=equity0, fill_mode=fill_mode,
-                       slip_rate=slip, margin_table=MARGIN, fee_table=FEE,
-                       sector_of=SECTOR, restore=restore)
+def make_broker(
+    fill_mode="next", equity0=10_000_000, slip=0.0001, db=None, restore=False, loose_on=True
+):
+    return PaperBroker(
+        db=db,
+        equity0=equity0,
+        fill_mode=fill_mode,
+        slip_rate=slip,
+        margin_table=MARGIN,
+        fee_table=FEE,
+        sector_of=SECTOR,
+        restore=restore,
+    )
 
 
 def row(sym, name, cat, score, price, atr=10.0, contract_code="", main_month=""):
-    return {"sym": sym, "name": name, "cat": cat, "code": sym + "0",
-            "score": score, "price": price, "atr": atr,
-            "contract_code": contract_code, "main_month": main_month}
+    return {
+        "sym": sym,
+        "name": name,
+        "cat": cat,
+        "code": sym + "0",
+        "score": score,
+        "price": price,
+        "atr": atr,
+        "contract_code": contract_code,
+        "main_month": main_month,
+    }
 
 
 def quote(price, prev, move, locked=False):
     if locked:
         px = prev * (1 + move)
         return {"latest": px, "prev_settle": prev, "high": px, "low": px}
-    return {"latest": price, "prev_settle": prev,
-            "high": price * 1.002, "low": price * 0.998}
+    return {"latest": price, "prev_settle": prev, "high": price * 1.002, "low": price * 0.998}
 
 
 # ---------------- 纯函数 ----------------
+
 
 def test_want_position_hysteresis():
     e, x = 4.0, 2.0
     assert want_position(1.0, 0, e, x) == (0, "hold")
     assert want_position(5.0, 0, e, x) == (1, "open")
     assert want_position(-5.0, 0, e, x) == (-1, "open")
-    assert want_position(2.5, 1, e, x) == (1, "hold")       # 迟滞带内继续持有
-    assert want_position(1.0, 1, e, x) == (0, "close")      # 跌回中性带离场
+    assert want_position(2.5, 1, e, x) == (1, "hold")  # 迟滞带内继续持有
+    assert want_position(1.0, 1, e, x) == (0, "close")  # 跌回中性带离场
     assert want_position(-5.0, 1, e, x) == (-1, "reverse")  # 反手
-    assert want_position(None, 1, e, x) == (1, "hold")      # 缺分不动作
+    assert want_position(None, 1, e, x) == (1, "hold")  # 缺分不动作
 
 
 def test_locked_at_quote():
     assert locked_at_quote(quote(None, 100, 0.05, locked=True), 0.05, True)
     assert not locked_at_quote(quote(101, 100, 0.05), 0.05, True)
-    assert not locked_at_quote({"latest": 101}, 0.05, True)       # 缺昨结放行
+    assert not locked_at_quote({"latest": 101}, 0.05, True)  # 缺昨结放行
     assert not locked_at_quote(quote(101, 100, 0.05), None, True)  # 缺幅度放行
     # 跌停封死、卖不出去
     dq = {"latest": 95.0, "prev_settle": 100.0, "high": 95.0, "low": 95.0}
@@ -92,6 +115,7 @@ def test_apply_slip():
 
 # ---------------- close 档：信号轮当轮成交 ----------------
 
+
 def test_close_fills_same_cycle(loose):
     pb = make_broker("close", slip=0.0)
     s = pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
@@ -103,6 +127,7 @@ def test_close_fills_same_cycle(loose):
 
 # ---------------- next 档：成交严格晚于信号 ----------------
 
+
 def test_next_fill_strictly_after_signal(loose):
     pb = make_broker("next")
     s1 = pb.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
@@ -110,7 +135,7 @@ def test_next_fill_strictly_after_signal(loose):
     s2 = pb.on_cycle("2026-09-02 09:10:00", [row("RB", "螺纹钢", "黑色", 5.0, 3010.0)])
     assert s2["n_trades"] == 1 and s2["n_positions"] == 1
     pos = pb.pf.positions["RB"]
-    assert pos.entry_dt == "2026-09-02 09:10:00"   # 成交价时间晚于信号 09:05
+    assert pos.entry_dt == "2026-09-02 09:10:00"  # 成交价时间晚于信号 09:05
     assert pos.entry_price == pytest.approx(3010.0 * 1.0001)
 
 
@@ -132,41 +157,41 @@ def test_next_retryable_constraint_keeps_queue(monkeypatch, loose):
     rows = [row("CU", "铜", "有色", 5.0, 70000.0), row("RB", "螺纹钢", "黑色", 5.0, 3000.0)]
     s1 = pb.on_cycle("t1", rows)
     assert s1["n_pending"] == 2 and s1["n_trades"] == 0
-    s2 = pb.on_cycle("t2", rows)   # CU 字母序先成交占满上限，RB 顺延
+    s2 = pb.on_cycle("t2", rows)  # CU 字母序先成交占满上限，RB 顺延
     assert s2["n_trades"] == 1 and "CU" in pb.pf.positions
-    assert s2["n_orders"] == 0 and s2["n_pending"] == 1   # 同向不重挂、委托不膨胀
+    assert s2["n_orders"] == 0 and s2["n_pending"] == 1  # 同向不重挂、委托不膨胀
     rb_order = pb.pending["RB"][0]
     assert rb_order["status"] == "pending" and "上限" in rb_order["reason"]
-    s3 = pb.on_cycle("t3", rows)   # 仍占满，继续顺延，不产生 rejected/新委托
+    s3 = pb.on_cycle("t3", rows)  # 仍占满，继续顺延，不产生 rejected/新委托
     assert s3["n_trades"] == 0 and s3["n_orders"] == 0 and s3["n_pending"] == 1
-
-
 
 
 # ---------------- 反手先平后开 / 离场 ----------------
 
+
 def test_reverse_close_then_open(loose):
     pb = make_broker("next", slip=0.0)
     pb.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
-    pb.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])     # 开多
+    pb.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])  # 开多
     s3 = pb.on_cycle("t3", [row("RB", "螺纹钢", "黑色", -5.0, 3000.0)])  # 反手信号
-    assert s3["n_pending"] == 2                                    # 平+开两腿
+    assert s3["n_pending"] == 2  # 平+开两腿
     s4 = pb.on_cycle("t4", [row("RB", "螺纹钢", "黑色", -5.0, 2990.0)])
     assert pb.pf.positions["RB"].direction == -1
-    assert len(pb.pf.closed) == 1                                  # 先平掉多单
+    assert len(pb.pf.closed) == 1  # 先平掉多单
 
 
 def test_exit_when_back_to_neutral(loose):
     pb = make_broker("next", slip=0.0)
     pb.on_cycle("t1", [row("RB", "螺纹钢", "黑色", -5.0, 3000.0)])
     pb.on_cycle("t2", [row("RB", "螺纹钢", "黑色", -5.0, 3000.0)])  # 开空
-    pb.on_cycle("t3", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])   # 回中性带->挂平
+    pb.on_cycle("t3", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])  # 回中性带->挂平
     assert pb.pending.get("RB") and len(pb.pending["RB"]) == 1
     pb.on_cycle("t4", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     assert len(pb.pf.positions) == 0 and len(pb.pf.closed) == 1
 
 
 # ---------------- 锁板阻断 / 顺延 ----------------
+
 
 def test_locked_blocks_close_then_releases(loose):
     pb = make_broker("next", slip=0.0)
@@ -177,12 +202,14 @@ def test_locked_blocks_close_then_releases(loose):
     s2 = pb.on_cycle("t2", [locked_row], lq)
     assert s2["n_trades"] == 0 and s2["n_pending"] == 1
     # t3 打开涨停，正常成交
-    s3 = pb.on_cycle("t3", [row("CU", "铜", "有色", 6.0, 70100.0)],
-                     {"CU0": quote(70100.0, 70000.0, 0.09)})
+    s3 = pb.on_cycle(
+        "t3", [row("CU", "铜", "有色", 6.0, 70100.0)], {"CU0": quote(70100.0, 70000.0, 0.09)}
+    )
     assert s3["n_trades"] == 1 and len(pb.pf.positions) == 1
 
 
 # ---------------- 双边手续费 + 滑点 ----------------
+
 
 def test_round_trip_costs(loose):
     pb = make_broker("close", slip=0.0001)
@@ -200,10 +227,12 @@ def test_round_trip_costs(loose):
     assert rec["exit_px"] == pytest.approx(3050.0 * (1 - 0.0001))
     assert rec["open_fee_yuan"] > 0 and rec["close_fee_yuan"] > 0
     assert rec["net_yuan"] == pytest.approx(
-        rec["gross_yuan"] - rec["open_fee_yuan"] - rec["close_fee_yuan"])
+        rec["gross_yuan"] - rec["open_fee_yuan"] - rec["close_fee_yuan"]
+    )
 
 
 # ---------------- 风控强平 / 资金不足拒单 ----------------
+
 
 def test_forced_liquidation(loose):
     pb = make_broker("close", slip=0.0)
@@ -226,7 +255,8 @@ def test_liquidate_pos_ref_preserves_for_restore(loose, tmp_db):
     pb1.on_cycle("t1", [row("AU", "黄金", "贵金属", 6.0, 500.0)])
     assert "AU" in pb1.pf.positions
     assert pb1.pos_ref.get("AU", "") != ""
-    pb1.pf.risk_liquidate = 0.0; pb1.pf.risk_safe = 0.0
+    pb1.pf.risk_liquidate = 0.0
+    pb1.pf.risk_safe = 0.0
     pb1.on_cycle("t2", [row("AU", "黄金", "贵金属", 6.0, 500.0)])
     assert "AU" not in pb1.pf.positions
     # 验证 DB：close 记录的 pos_ref 与 open 一致
@@ -254,11 +284,12 @@ def test_blank_inputs_safe(loose):
 
 # ---------------- 三表落库 + 重启恢复 ----------------
 
+
 def test_persistence_and_restore(loose, tmp_db):
     db = tmp_db
     pb1 = make_broker("next", db=db, restore=False)
     pb1.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
-    pb1.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])   # 开多落库
+    pb1.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])  # 开多落库
     counts = db.table_counts()
     assert counts["paper_orders"] >= 1 and counts["paper_trades"] == 1
     assert counts["paper_equity"] == 2
@@ -284,7 +315,7 @@ def test_restore_after_close(loose, tmp_db):
     net = pb1.pf.closed[0]["net_yuan"]
     pb2 = make_broker("close", db=db, restore=True, slip=0.0)
     assert len(pb2.pf.positions) == 0
-    assert pb2.pf.realized == pytest.approx(net)   # 已实现净盈亏完整恢复
+    assert pb2.pf.realized == pytest.approx(net)  # 已实现净盈亏完整恢复
 
 
 def test_restore_pending_then_fill(loose, tmp_db):
@@ -293,16 +324,16 @@ def test_restore_pending_then_fill(loose, tmp_db):
     pb1.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])  # 只挂单
     assert pb1.pending.get("RB")
     pb2 = make_broker("next", db=db, restore=True, slip=0.0)
-    assert pb2.pending.get("RB") and len(pb2.pending["RB"]) == 1    # 挂单恢复
+    assert pb2.pending.get("RB") and len(pb2.pending["RB"]) == 1  # 挂单恢复
     pb2.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 5.0, 3001.0)])
-    assert len(pb2.pf.positions) == 1                              # 下一轮成交
+    assert len(pb2.pf.positions) == 1  # 下一轮成交
 
 
 def test_paper_switch_on_user_decided():
     # 第89轮用户拍板：PAPER_ENABLED=True（纸面影子随 main 启停、三表持久化 restore 续跑）。
     # 回退承诺不变：改回 False 即完全休眠（main 不实例化、零开销），三表历史保留。
     assert config.PAPER_ENABLED is True
-    assert config.PAPER_FILL_MODE == "next"      # 成交严格晚于信号（保守影子默认）
+    assert config.PAPER_FILL_MODE == "next"  # 成交严格晚于信号（保守影子默认）
 
 
 # ---------------- 第28轮：实时平今/平昨 owner 判定 + 账户视图 ----------------
@@ -312,37 +343,48 @@ from datetime import date as _date
 
 def _today_free_fee(mult=10):
     """SHFE 风格：平今免费、平昨收费（金额费率1e-4 + 每手3元）。"""
-    return {"multiplier": mult, "open_amt_rate": 1e-4, "open_per_lot": 3.0,
-            "close_amt_rate": 1e-4, "close_per_lot": 3.0,
-            "today_amt_rate": 0.0, "today_per_lot": 0.0}
+    return {
+        "multiplier": mult,
+        "open_amt_rate": 1e-4,
+        "open_per_lot": 3.0,
+        "close_amt_rate": 1e-4,
+        "close_per_lot": 3.0,
+        "today_amt_rate": 0.0,
+        "today_per_lot": 0.0,
+    }
 
 
 def _owner_broker(owner_fn, db=None, equity0=10_000_000, restore=False):
     return PaperBroker(
-        db=db, fill_mode="close", equity0=equity0, slip_rate=0.0, restore=restore,
+        db=db,
+        fill_mode="close",
+        equity0=equity0,
+        slip_rate=0.0,
+        restore=restore,
         margin_table={"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}},
-        fee_table={"RB": _today_free_fee()}, sector_of={"RB": "黑色"}, owner_fn=owner_fn)
+        fee_table={"RB": _today_free_fee()},
+        sector_of={"RB": "黑色"},
+        owner_fn=owner_fn,
+    )
 
 
 def test_close_leg_today_same_owner_free():
-    own = {"2026-09-02 10:00:00": _date(2026, 9, 2),
-           "2026-09-02 14:00:00": _date(2026, 9, 2)}
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2), "2026-09-02 14:00:00": _date(2026, 9, 2)}
     pb = _owner_broker(lambda ts: own.get(str(ts)[:19]))
     pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     assert pb.pf.positions["RB"].entry_owner == _date(2026, 9, 2)  # 开仓 owner 落仓
     pb.on_cycle("2026-09-02 14:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     rec = pb.pf.closed[-1]
-    assert rec["leg"] == "平今" and rec["close_fee_yuan"] == 0.0   # 平今免费生效
+    assert rec["leg"] == "平今" and rec["close_fee_yuan"] == 0.0  # 平今免费生效
 
 
 def test_close_leg_yesterday_cross_owner_charged():
-    own = {"2026-09-02 10:00:00": _date(2026, 9, 2),
-           "2026-09-03 10:00:00": _date(2026, 9, 3)}
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2), "2026-09-03 10:00:00": _date(2026, 9, 3)}
     pb = _owner_broker(lambda ts: own.get(str(ts)[:19]))
     pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     pb.on_cycle("2026-09-03 10:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     rec = pb.pf.closed[-1]
-    assert rec["leg"] == "平昨" and rec["close_fee_yuan"] > 0.0    # 跨结算交易日按平昨收费
+    assert rec["leg"] == "平昨" and rec["close_fee_yuan"] > 0.0  # 跨结算交易日按平昨收费
 
 
 def test_close_leg_fallback_when_owner_unknown():
@@ -351,9 +393,11 @@ def test_close_leg_fallback_when_owner_unknown():
     pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     pb.on_cycle("2026-09-02 14:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     assert pb.pf.closed[-1]["leg"] == "平昨"
+
     # owner_fn 自身抛异常也不炸，同样保守平昨
     def boom(ts):
         raise RuntimeError("calendar down")
+
     pb2 = _owner_broker(boom)
     pb2.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     pb2.on_cycle("2026-09-02 14:00:00", [row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
@@ -361,12 +405,11 @@ def test_close_leg_fallback_when_owner_unknown():
 
 
 def test_liquidate_uses_realtime_leg():
-    own = {"2026-09-02 10:00:00": _date(2026, 9, 2),
-           "2026-09-02 10:05:00": _date(2026, 9, 2)}
+    own = {"2026-09-02 10:00:00": _date(2026, 9, 2), "2026-09-02 10:05:00": _date(2026, 9, 2)}
     pb = _owner_broker(lambda ts: own.get(str(ts)[:19]))
     pb.on_cycle("2026-09-02 10:00:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     assert pb.pf.positions.get("RB")
-    pb.pf.risk_liquidate = 0.0          # 与 selftest 同法：压平强平阈值，下一轮必触发
+    pb.pf.risk_liquidate = 0.0  # 与 selftest 同法：压平强平阈值，下一轮必触发
     pb.pf.risk_safe = 0.0
     pb.on_cycle("2026-09-02 10:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     assert pb.pf.liquidations and pb.pf.liquidations[-1]["leg"] == "平今"
@@ -404,9 +447,17 @@ import circuit_breaker as _cb
 
 def _delever_broker(mode):
     br = _cb.CircuitBreaker(action_mode=mode)
-    b = PaperBroker(db=None, equity0=10_000_000, fill_mode="close", slip_rate=0.0,
-                    margin_table=MARGIN, fee_table=FEE, sector_of=SECTOR,
-                    restore=False, circuit=br)
+    b = PaperBroker(
+        db=None,
+        equity0=10_000_000,
+        fill_mode="close",
+        slip_rate=0.0,
+        margin_table=MARGIN,
+        fee_table=FEE,
+        sector_of=SECTOR,
+        restore=False,
+        circuit=br,
+    )
     return b, br
 
 
@@ -418,7 +469,7 @@ def test_portfolio_partial_close_keeps_remainder(loose):
     half = held // 2
     rec = b.pf.close("RB", 3000.0, "2026-09-02 09:30:00", "熔断自动减仓", reduce_lots=half)
     assert rec["partial"] is True and rec["lots"] == half and rec["remaining"] == held - half
-    assert b.pf.positions["RB"].lots == held - half          # 剩余持仓保留
+    assert b.pf.positions["RB"].lots == held - half  # 剩余持仓保留
     # 分批平净盈亏之和 == 一次全平（同价、零滑点）
     rest = b.pf.close("RB", 3000.0, "2026-09-02 09:31:00", "清")
     b2 = make_broker("close", slip=0.0)
@@ -438,18 +489,18 @@ def test_paper_delever_auto_cuts_half_once(loose):
     b, br = _delever_broker(_cb.PAPER_DELEVER)
     pos = b.pf.open("RB", "螺纹", "黑色", 1, 3000.0, "2026-09-03 09:30:00")
     held = pos.lots
-    hold_row = [row("RB", "螺纹", "黑色", 3.0, 3000.0)]     # 迟滞带内：不平不开
-    s0 = b.on_cycle("2026-09-03 09:30:00", hold_row)        # 断路器记日初权益
+    hold_row = [row("RB", "螺纹", "黑色", 3.0, 3000.0)]  # 迟滞带内：不平不开
+    s0 = b.on_cycle("2026-09-03 09:30:00", hold_row)  # 断路器记日初权益
     assert "RB" in b.pf.positions
-    br.update("2026-09-03 10:00:00", s0["snapshot"]["equity"] * 0.94)   # 打到 delever
+    br.update("2026-09-03 10:00:00", s0["snapshot"]["equity"] * 0.94)  # 打到 delever
     assert br.level == _cb.DELEVER
-    s1 = b.on_cycle("2026-09-03 10:01:00", hold_row)        # 晚一轮自动减仓
+    s1 = b.on_cycle("2026-09-03 10:01:00", hold_row)  # 晚一轮自动减仓
     expect = held // 2
     assert s1["n_delever"] == 1
-    assert b.pf.positions["RB"].lots == held - expect       # 只减一半、剩余保留
+    assert b.pf.positions["RB"].lots == held - expect  # 只减一半、剩余保留
     cut = [t for t in s1["trades"] if t["reason"] == "熔断自动减仓"]
     assert len(cut) == 1 and cut[0]["side"] == "close" and cut[0]["lots"] == expect
-    s2 = b.on_cycle("2026-09-03 10:30:00", hold_row)        # 当日已减、不再减
+    s2 = b.on_cycle("2026-09-03 10:30:00", hold_row)  # 当日已减、不再减
     assert s2["n_delever"] == 0 and b.pf.positions["RB"].lots == held - expect
 
 
@@ -467,10 +518,13 @@ def test_observe_and_halt_do_not_auto_cut(loose):
 
 # ---------------- G1续（第63轮）：OMS 台账 / 主动撤单 / 成交回报 / 持仓对账 ----------------
 
+
 def test_reconcile_position_sets_pure():
     rec = pb_mod.reconcile_position_sets
-    internal = {"RB": {"direction": 1, "lots": 2, "entry_price": 3000.0},
-                "CU": {"direction": -1, "lots": 1, "entry_price": 70000.0}}
+    internal = {
+        "RB": {"direction": 1, "lots": 2, "entry_price": 3000.0},
+        "CU": {"direction": -1, "lots": 1, "entry_price": 70000.0},
+    }
     assert rec(internal, dict(internal))["clean"]
     # 方向反
     ext = dict(internal)
@@ -483,26 +537,59 @@ def test_reconcile_position_sets_pure():
     bk = [b for b in rec(internal, ext)["breaks"] if b["sym"] == "CU"][0]
     assert bk["type"] == "lots" and bk["lots_delta"] == 3
     # 内部漏记 / 外部漏仓
-    assert any(b["type"] == "missing_internal" and b["sym"] == "AU"
-               for b in rec(internal, {**internal, "AU": {"direction": 1, "lots": 1, "entry_price": 500.0}})["breaks"])
-    assert any(b["type"] == "missing_external" and b["sym"] == "RB"
-               for b in rec(internal, {"CU": internal["CU"]})["breaks"])
+    assert any(
+        b["type"] == "missing_internal" and b["sym"] == "AU"
+        for b in rec(
+            internal, {**internal, "AU": {"direction": 1, "lots": 1, "entry_price": 500.0}}
+        )["breaks"]
+    )
+    assert any(
+        b["type"] == "missing_external" and b["sym"] == "RB"
+        for b in rec(internal, {"CU": internal["CU"]})["breaks"]
+    )
     # 开仓价差超容差
     ext = dict(internal)
     ext["RB"] = {"direction": 1, "lots": 2, "entry_price": 3005.0}
     types = {b["sym"]: b["type"] for b in rec(internal, ext, price_tol=1e-6)["breaks"]}
     assert types["RB"] == "entry_price"
-    assert rec(internal, ext, price_tol=None)["clean"]   # 不比价即一致
+    assert rec(internal, ext, price_tol=None)["clean"]  # 不比价即一致
 
 
 def test_aggregate_fills():
-    agg = pb_mod.aggregate_fills([
-        {"side": "open", "direction": 1, "lots": 2, "notional": 100.0, "fee_yuan": 1.0,
-         "slip_yuan": 0.2, "realized_yuan": 0.0, "forced": 0},
-        {"side": "open", "direction": -1, "lots": 1, "notional": 50.0, "fee_yuan": 0.5,
-         "slip_yuan": 0.1, "realized_yuan": 0.0, "forced": 0},
-        {"side": "close", "direction": 1, "lots": 2, "notional": 110.0, "fee_yuan": 1.0,
-         "slip_yuan": 0.2, "realized_yuan": 8.0, "forced": 1}])
+    agg = pb_mod.aggregate_fills(
+        [
+            {
+                "side": "open",
+                "direction": 1,
+                "lots": 2,
+                "notional": 100.0,
+                "fee_yuan": 1.0,
+                "slip_yuan": 0.2,
+                "realized_yuan": 0.0,
+                "forced": 0,
+            },
+            {
+                "side": "open",
+                "direction": -1,
+                "lots": 1,
+                "notional": 50.0,
+                "fee_yuan": 0.5,
+                "slip_yuan": 0.1,
+                "realized_yuan": 0.0,
+                "forced": 0,
+            },
+            {
+                "side": "close",
+                "direction": 1,
+                "lots": 2,
+                "notional": 110.0,
+                "fee_yuan": 1.0,
+                "slip_yuan": 0.2,
+                "realized_yuan": 8.0,
+                "forced": 1,
+            },
+        ]
+    )
     assert agg["n_fills"] == 3 and agg["lots"] == 5
     assert agg["open_long"] == 2 and agg["open_short"] == 1 and agg["close_long"] == 2
     assert agg["n_open"] == 2 and agg["n_close"] == 1 and agg["n_forced"] == 1
@@ -512,7 +599,7 @@ def test_aggregate_fills():
 
 def test_oms_orders_view_and_cancel(loose):
     b = make_broker("next", db=None, restore=False, slip=0.0)
-    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])   # 只挂 pending
+    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])  # 只挂 pending
     assert len(b.orders_view()) == 1 and b.orders_view(status="pending")[0]["sym"] == "RB"
     assert b.cancel_order(sym="RB") == 1
     assert b.order_status_counts()["pending"] == 0
@@ -523,14 +610,16 @@ def test_oms_orders_view_and_cancel(loose):
 
 def test_fill_report_and_reconcile_broker(loose):
     b = make_broker("close", db=None, restore=False, slip=0.0)
-    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])   # close 当轮开多
+    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])  # close 当轮开多
     fills = b.fills_view()
     assert len(fills) == 1 and fills[0]["side"] == "open"
     rep = b.fill_report()
     assert rep["n_fills"] == 1 and rep["open_long"] == fills[0]["lots"] and rep["n_close"] == 0
     # 内部持仓与一份一致的外部台账对账：clean
-    ext = {x["sym"]: {"direction": x["direction"], "lots": x["lots"], "entry_price": x["entry_price"]}
-           for x in b.positions_view()}
+    ext = {
+        x["sym"]: {"direction": x["direction"], "lots": x["lots"], "entry_price": x["entry_price"]}
+        for x in b.positions_view()
+    }
     assert b.reconcile_positions(ext)["clean"]
     # 外部多一手 -> 抓 lots break
     ext["RB"]["lots"] += 1
@@ -553,7 +642,9 @@ def test_reconcile_against_db_roundtrip(loose, tmp_db):
 def test_paper_contract_recorded(loose, tmp_db):
     """第93轮：开仓要说明具体合约——contract_code/main_month 透传委托/成交/持仓/DB/报告视图。"""
     b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
-    b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0, contract_code="RB2610", main_month="2610")])
+    b.on_cycle(
+        "t1", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0, contract_code="RB2610", main_month="2610")]
+    )
     # 委托（已成交）带合约
     orders = b.orders_view()
     assert orders and orders[0]["contract_code"] == "RB2610"
@@ -566,10 +657,13 @@ def test_paper_contract_recorded(loose, tmp_db):
     assert len(pv) == 1 and pv[0]["contract_code"] == "RB2610"
     # DB 行带合约
     dbrow = tmp_db.conn.execute(
-        "SELECT contract_code, main_month FROM paper_trades WHERE side='open'").fetchone()
+        "SELECT contract_code, main_month FROM paper_trades WHERE side='open'"
+    ).fetchone()
     assert dbrow["contract_code"] == "RB2610" and dbrow["main_month"] == "2610"
     # 平仓腿继承开仓合约（从持仓对象取）
-    b.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 1.0, 3050.0, contract_code="RB2610", main_month="2610")])
+    b.on_cycle(
+        "t2", [row("RB", "螺纹钢", "黑色", 1.0, 3050.0, contract_code="RB2610", main_month="2610")]
+    )
     close_fill = [t for t in b.fills_view() if t["side"] == "close"]
     assert close_fill and close_fill[0]["contract_code"] == "RB2610"
 
@@ -577,7 +671,9 @@ def test_paper_contract_recorded(loose, tmp_db):
 def test_paper_restore_keeps_contract(loose, tmp_db):
     """第93轮：重启 restore 重建持仓仍带具体合约（paper_account 持仓表据此显示）。"""
     b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
-    b.on_cycle("t1", [row("CU", "铜", "有色", 6.0, 70000.0, contract_code="CU2610", main_month="2610")])
+    b.on_cycle(
+        "t1", [row("CU", "铜", "有色", 6.0, 70000.0, contract_code="CU2610", main_month="2610")]
+    )
     b2 = make_broker("close", db=tmp_db, restore=True, slip=0.0)
     pv = b2.positions_view()
     assert len(pv) == 1 and pv[0]["contract_code"] == "CU2610"
@@ -586,26 +682,52 @@ def test_paper_restore_keeps_contract(loose, tmp_db):
 def test_paper_backfill_null_contracts(loose, tmp_db):
     """第95轮：DB里 contract_code=NULL 的旧行被一次性补仓（NULL 安全匹配），restore后内存持仓带合约。"""
     # 用 storage 层插入一条无合约的成交记录（模拟旧 main 产出，contract_code=NULL）
-    t = {"ts": "t0", "pos_ref": "XX-1", "sym": "XX", "name": "占位", "sector": "未知",
-         "side": "open", "dir_text": "多", "direction": 1, "lots": 1, "price": 100.0,
-         "raw_price": 100.0, "notional": 1000.0, "slip_yuan": 0.0, "fee_yuan": 0.0,
-         "realized_yuan": 0.0, "leg": "开仓", "reason": "伪造", "forced": 0,
-         "order_id": 1, "entry_ts": "t0", "entry_price": 100.0, "score": None,
-         "margin_rate": 0.1, "contract_code": "", "main_month": "", "created_real": 1}
+    t = {
+        "ts": "t0",
+        "pos_ref": "XX-1",
+        "sym": "XX",
+        "name": "占位",
+        "sector": "未知",
+        "side": "open",
+        "dir_text": "多",
+        "direction": 1,
+        "lots": 1,
+        "price": 100.0,
+        "raw_price": 100.0,
+        "notional": 1000.0,
+        "slip_yuan": 0.0,
+        "fee_yuan": 0.0,
+        "realized_yuan": 0.0,
+        "leg": "开仓",
+        "reason": "伪造",
+        "forced": 0,
+        "order_id": 1,
+        "entry_ts": "t0",
+        "entry_price": 100.0,
+        "score": None,
+        "margin_rate": 0.1,
+        "contract_code": "",
+        "main_month": "",
+        "created_real": 1,
+    }
     tmp_db.insert_paper_trade(t)
     # 再把合约字段改成 NULL（模拟 ALTER 加列后旧代码写入的 NULL）
-    tmp_db.conn.execute("UPDATE paper_trades SET contract_code=NULL, main_month=NULL WHERE sym='XX'")
+    tmp_db.conn.execute(
+        "UPDATE paper_trades SET contract_code=NULL, main_month=NULL WHERE sym='XX'"
+    )
     tmp_db.conn.commit()
     # 信号表插入带合约的同 sym 最新行（补仓数据源）
     tmp_db.conn.execute(
         "INSERT INTO signals(ts,cycle,variety,code,sym,exchange,cat,price,score,direction_int,"
         "contract_code,main_month,created_real)"
-        " VALUES('t9',1,'XX','XX0','XX','NONE','未知',100,5,1,'XX2701','2701',1)")
+        " VALUES('t9',1,'XX','XX0','XX','NONE','未知',100,5,1,'XX2701','2701',1)"
+    )
     tmp_db.conn.commit()
     b = make_broker("close", db=tmp_db, restore=False, slip=0.0)
     b.restore()
     empties = tmp_db.conn.execute(
-        "SELECT COUNT(*) FROM paper_trades WHERE contract_code IS NULL OR contract_code=''").fetchone()[0]
+        "SELECT COUNT(*) FROM paper_trades WHERE contract_code IS NULL OR contract_code=''"
+    ).fetchone()[0]
     assert empties == 0, "DB仍残留空合约"
     assert len(b._known_contract) > 0 and b._known_contract.get("XX", ("", ""))[0] == "XX2701"
 
@@ -617,9 +739,9 @@ def test_repeat_cycle_same_signal_no_dup(loose):
     r = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
     s1 = b.on_cycle("t1", [r], {"RB0": quote(3010.0, 3000.0, 0.05)})
     assert s1["n_trades"] == 1 and s1["n_positions"] == 1
-    s2 = b.on_cycle("t2", [r], {"RB0": quote(3012.0, 3000.0, 0.05)})   # 同分同信号
-    assert s2["n_orders"] == 0 and s2["n_trades"] == 0           # 持多 hold，无新委托
-    assert s2["n_positions"] == 1                                 # 持仓未被清掉/重复
+    s2 = b.on_cycle("t2", [r], {"RB0": quote(3012.0, 3000.0, 0.05)})  # 同分同信号
+    assert s2["n_orders"] == 0 and s2["n_trades"] == 0  # 持多 hold，无新委托
+    assert s2["n_positions"] == 1  # 持仓未被清掉/重复
 
 
 def test_next_mode_repeat_same_signal_pending_preserved(loose):
@@ -631,7 +753,7 @@ def test_next_mode_repeat_same_signal_pending_preserved(loose):
     s2 = b.on_cycle("t2", [r], {"RB0": quote(3012.0, 3000.0, 0.05)})
     assert s2["n_trades"] == 1 and s2["n_positions"] == 1
     s3 = b.on_cycle("t3", [r], {"RB0": quote(3014.0, 3000.0, 0.05)})
-    assert s3["n_orders"] == 0 and s3["n_trades"] == 0           # 已持仓且信号未变：零新委托
+    assert s3["n_orders"] == 0 and s3["n_trades"] == 0  # 已持仓且信号未变：零新委托
 
 
 def test_broker_lock_rlock_reentrant(loose):
@@ -640,7 +762,7 @@ def test_broker_lock_rlock_reentrant(loose):
     # Python 3.x 中 threading.RLock 是函数不是类型，用 acquire 行为检测
     assert b._lock is not None, "broker._lock 未初始化"
     with b._lock:
-        with b._lock:                                            # 重入不阻塞
+        with b._lock:  # 重入不阻塞
             pass
     # 带锁方法正常可调（说明装饰器/锁未破坏既有路径）
     s = b.on_cycle("t1", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
@@ -649,10 +771,21 @@ def test_broker_lock_rlock_reentrant(loose):
 
 # ===================== 第104轮：统一资金池测试 =====================
 
+
 def _opt_leg(strike, bid, ask, cp="call"):
-    return {"code": "RB2610C%d" % int(strike), "cp": cp, "strike": strike,
-            "bid": bid, "bid_vol": 1, "last": (bid + ask) / 2.0 if bid and ask else 0,
-            "ask": ask, "ask_vol": 1, "oi": 10, "chg_pct": 0.0}
+    return {
+        "code": "RB2610C%d" % int(strike),
+        "cp": cp,
+        "strike": strike,
+        "bid": bid,
+        "bid_vol": 1,
+        "last": (bid + ask) / 2.0 if bid and ask else 0,
+        "ask": ask,
+        "ask_vol": 1,
+        "oi": 10,
+        "chg_pct": 0.0,
+    }
+
 
 def _opt_chain(sym="RB", yy=26, mm=10, strike=3000.0, bid=5.0, ask=6.0, cp="call"):
     leg = _opt_leg(strike, bid, ask, cp)
@@ -660,12 +793,20 @@ def _opt_chain(sym="RB", yy=26, mm=10, strike=3000.0, bid=5.0, ask=6.0, cp="call
     puts = [leg] if cp == "put" else []
     return {(sym.upper(), yy, mm): {"calls": calls, "puts": puts}}
 
-def _opt_strat(variety="RB", K=3000.0, cp="call", all_pass=True, score=5.0,
-               month_label="2610", days_left=40):
-    return {"name": "合成看涨", "all_pass": all_pass,
-            "legs": [{"buy": True, "kind": cp, "K": K, "prem": 5.5, "qty": 1}],
-            "variety": variety, "month_label": month_label, "days_left": days_left,
-            "net": score, "position": ""}
+
+def _opt_strat(
+    variety="RB", K=3000.0, cp="call", all_pass=True, score=5.0, month_label="2610", days_left=40
+):
+    return {
+        "name": "合成看涨",
+        "all_pass": all_pass,
+        "legs": [{"buy": True, "kind": cp, "K": K, "prem": 5.5, "qty": 1}],
+        "variety": variety,
+        "month_label": month_label,
+        "days_left": days_left,
+        "net": score,
+        "position": "",
+    }
 
 
 def test_unified_equity_no_double_count(loose):
@@ -725,12 +866,21 @@ def test_option_close_adds_realized(loose):
 
 def test_open_check_uses_unified_available(loose):
     """关键回归点：opt_equity0*premium_ratio 允许但统一可用资金不够时被拒。"""
-    b = PaperBroker(db=None, equity0=1_000, fill_mode="close",
-                    entry_score=2.0, exit_score=1.0,
-                    margin_table=MARGIN, fee_table=FEE,
-                    sector_of=SECTOR, slip_rate=0.0, restore=False,
-                    priority="option_first",
-                    opt_premium_ratio=0.9, options_max=None)
+    b = PaperBroker(
+        db=None,
+        equity0=1_000,
+        fill_mode="close",
+        entry_score=2.0,
+        exit_score=1.0,
+        margin_table=MARGIN,
+        fee_table=FEE,
+        sector_of=SECTOR,
+        slip_rate=0.0,
+        restore=False,
+        priority="option_first",
+        opt_premium_ratio=0.9,
+        options_max=None,
+    )
     # A: RB ask=80, premium=80*10=800; opt budget=0.9*1000=900 → 800<900 ✓；available ≈1000 → 800<1000 ✓
     chain_a = _opt_chain("RB", 26, 10, 3000.0, bid=75.0, ask=80.0)
     strat_a = _opt_strat(variety="RB", K=3000.0)
@@ -749,6 +899,7 @@ def test_paper_trading_only_gate_skips_off_hours():
     """第107轮：非交易时段 + PAPER_TRADING_ONLY=True 时，撮合被跳过（成交 ts 必落交易时段）。"""
     # 验证 config 开关存在且默认开启（main.py 据此跳过非交易时段撮合）
     import config as _cfg
+
     assert getattr(_cfg, "PAPER_TRADING_ONLY", False) is True
     # 模拟 main.py 的门控判定：非交易时段 → skip=True
     _trading_now = False
@@ -763,6 +914,7 @@ def test_paper_trading_only_gate_skips_off_hours():
 
 
 # ---------- 第140轮 R1：委托级风控上链（veto 拦截开仓） ----------
+
 
 def test_r1_veto_blocks_open_but_keeps_close():
     """row["risk"].level=veto → 拦截开仓腿，保留平仓腿。"""
@@ -800,6 +952,7 @@ def test_r1_no_risk_key_acts_as_before():
 
 # ---------- 第140轮 R3：委托流控（日订单/活动委托上限） ----------
 
+
 def test_r3_daily_order_cap_blocks_new_open():
     """同品种当日累计开仓委托达上限 → 后续新开仓被拒。"""
     b = make_broker(fill_mode="close")
@@ -824,16 +977,28 @@ def test_r3_active_cap_blocks_second_pending():
     b.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     assert len(b.pending.get("RB", [])) == 1
     # 手动再塞一笔同品种 open 模拟排队堆积 → 超 active 上限被 _enqueue 拒绝
-    b._enqueue([{"ts": "x", "sym": "RB", "action": "open", "side": "buy", "direction": 1,
-                 "status": "pending", "signal_price": 3000, "name": "螺纹钢"}])
-    assert len(b.pending.get("RB", [])) == 1          # 第2笔被拒
+    b._enqueue(
+        [
+            {
+                "ts": "x",
+                "sym": "RB",
+                "action": "open",
+                "side": "buy",
+                "direction": 1,
+                "status": "pending",
+                "signal_price": 3000,
+                "name": "螺纹钢",
+            }
+        ]
+    )
+    assert len(b.pending.get("RB", [])) == 1  # 第2笔被拒
     assert any("R3委托流控" in r.get("reason", "") for r in b.pf.skipped)
 
 
 def test_r3_close_not_limited():
     """平仓腿不受 R3 上限限制（只防频繁开仓，不阻碍离场）。"""
     b = make_broker(fill_mode="close")
-    b._max_daily_orders = 0            # 开仓全被拒
+    b._max_daily_orders = 0  # 开仓全被拒
     # 直接注入持仓（绕过 R3 开仓限制）
     b.pf.open("RB", "螺纹钢", "黑色", 1, 3000.0, "2026-09-02 09:05:00", atr=None, score=5.0)
     # 平仓应照常执行（close 腿不受 R3 限制）

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G13续（第99轮）：LLM复核历史观察——"LLM意见 vs 实际收益"一致性统计（研究侧）。
 
 读 llm_review_history.jsonl（G13守护线程产出）+ signal_outcomes（30分钟/2小时/次日回填），
@@ -8,6 +7,7 @@ r"""G13续（第99轮）：LLM复核历史观察——"LLM意见 vs 实际收益
 数据不足时诚实标注：样本量极小时不作"有效/无效"结论（项目铁律）。
 CLI：python tools/llm_review_analysis.py | --selftest
 """
+
 import argparse
 import json
 import os
@@ -21,7 +21,6 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import config  # noqa: E402
 
 HISTORY_PATH = os.path.join(_ROOT, "reports", "llm_review_history.jsonl")
 OUT_TXT = os.path.join(_ROOT, "reports", "llm_review_analysis.txt")
@@ -49,6 +48,7 @@ def _load_history():
 def _load_outcomes():
     """读 signal_outcomes 表中已评估的信号（status=hit/miss/flat/expired），返回 {sym: [(ts, direction, ret)]}。"""
     import sqlite3
+
     out = {}
     db_path = os.path.join(_ROOT, "data", "monitor.db")
     try:
@@ -111,14 +111,26 @@ def analyze():
             agree += 1
         else:
             disagree += 1
-        details.append({"sym": sym, "llm_direction": llm_dir, "outcome_return": ret,
-                        "agree": (llm_dir == "多" and ret > 0) or (llm_dir == "空" and ret < 0) or llm_dir == "中性"})
+        details.append(
+            {
+                "sym": sym,
+                "llm_direction": llm_dir,
+                "outcome_return": ret,
+                "agree": (llm_dir == "多" and ret > 0)
+                or (llm_dir == "空" and ret < 0)
+                or llm_dir == "中性",
+            }
+        )
 
     acc = agree / total_evaluated * 100 if total_evaluated > 0 else None
     results = {
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "n_history": len(history), "n_valid_review": llm_valid, "n_degraded": llm_degraded,
-        "n_evaluated": total_evaluated, "n_agree": agree, "n_disagree": disagree,
+        "n_history": len(history),
+        "n_valid_review": llm_valid,
+        "n_degraded": llm_degraded,
+        "n_evaluated": total_evaluated,
+        "n_agree": agree,
+        "n_disagree": disagree,
         "n_neutral": neutral_correct,
         "accuracy": round(acc, 1) if acc is not None else None,
         "details": details[:20],
@@ -129,24 +141,42 @@ def analyze():
 
 
 def _render(r):
-    lines = ["=" * 60,
-             " G13续 LLM复核历史观察（vs 实际收益一致性）",
-             " %s" % r["ts"], "=" * 60,
-             " 总记录 %d · 有效review %d · 降级 %d" % (r["n_history"], r["n_valid_review"], r["n_degraded"]),
-             " 可评估（有outcome）: %d · 一致 %d · 相反 %d · 中性 %d" % (
-                 r["n_evaluated"], r["n_agree"], r["n_disagree"], r["n_neutral"]),
-             " 准确率: %s" % ("%.1f%%" % r["accuracy"] if r["accuracy"] is not None else "不足（样本<%d）" % MIN_SAMPLES),
-             "",
-             "【品种明细】"]
+    lines = [
+        "=" * 60,
+        " G13续 LLM复核历史观察（vs 实际收益一致性）",
+        " %s" % r["ts"],
+        "=" * 60,
+        " 总记录 %d · 有效review %d · 降级 %d"
+        % (r["n_history"], r["n_valid_review"], r["n_degraded"]),
+        " 可评估（有outcome）: %d · 一致 %d · 相反 %d · 中性 %d"
+        % (r["n_evaluated"], r["n_agree"], r["n_disagree"], r["n_neutral"]),
+        " 准确率: %s"
+        % (
+            "%.1f%%" % r["accuracy"]
+            if r["accuracy"] is not None
+            else "不足（样本<%d）" % MIN_SAMPLES
+        ),
+        "",
+        "【品种明细】",
+    ]
     for d in r["details"]:
         mark = "✅" if d["agree"] else "❌"
-        lines.append(" %s %s → %s (收益%.4f) %s" % (
-            d["sym"], d["llm_direction"],
-            "正收益" if d["outcome_return"] > 0 else "负收益",
-            d["outcome_return"], mark))
-    lines += ["", " 注意：样本量为%d条（有效review极少，大部分LLM因无key/异常降级）。"
-              " 样本≥%d后才能下初步结论；LLM复核仅作第二意见参考，永不改综合分。"
-              % (r["n_evaluated"], MIN_SAMPLES)]
+        lines.append(
+            " %s %s → %s (收益%.4f) %s"
+            % (
+                d["sym"],
+                d["llm_direction"],
+                "正收益" if d["outcome_return"] > 0 else "负收益",
+                d["outcome_return"],
+                mark,
+            )
+        )
+    lines += [
+        "",
+        " 注意：样本量为%d条（有效review极少，大部分LLM因无key/异常降级）。"
+        " 样本≥%d后才能下初步结论；LLM复核仅作第二意见参考，永不改综合分。"
+        % (r["n_evaluated"], MIN_SAMPLES),
+    ]
     os.makedirs(os.path.dirname(OUT_TXT), exist_ok=True)
     with open(OUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -156,10 +186,12 @@ def _render(r):
 
 def selftest():
     checks = []
+
     def ck(name, cond):
         checks.append((name, bool(cond)))
         if not cond:
             raise AssertionError("FAIL: " + name)
+
     ck("历史文件存在", os.path.exists(HISTORY_PATH))
     results = analyze()
     ck("分析运行成功", "ts" in results)
@@ -174,7 +206,10 @@ def main(argv=None):
     if args.selftest:
         return selftest()
     results = analyze()
-    print("结果 → %s（有效review %d/降级 %d）" % (OUT_TXT, results["n_valid_review"], results["n_degraded"]))
+    print(
+        "结果 → %s（有效review %d/降级 %d）"
+        % (OUT_TXT, results["n_valid_review"], results["n_degraded"])
+    )
     return 0
 
 

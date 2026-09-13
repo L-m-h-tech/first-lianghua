@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G25（第38轮）表达式因子研究台 tools/expr_research.py——纯离线、零网络、只读 G21 面板，证明三件事：
 
 1) training-serving parity（实时/离线同一引擎逐值一致）：
@@ -11,6 +10,7 @@ r"""G25（第38轮）表达式因子研究台 tools/expr_research.py——纯离
 3) 截面算子在真实多品种上可用：取最近交易日 cross_rank 跨品种排序演示。
 不写生产库、不被 main import、零新增依赖（只用 sqlite3/json/标准库 + factor_expr/panel_builder）。
 """
+
 import argparse
 import json
 import os
@@ -22,12 +22,13 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import factor_expr as fe          # noqa: E402  根模块：表达式引擎+治理
-import panel_builder as pb        # noqa: E402  同 tools：G21 面板回读
-import expr_miner as em           # noqa: E402  第77轮：复用逐日截面IC原语（cross_section_ics/cs_summary）
+import expr_miner as em  # noqa: E402
+import panel_builder as pb  # noqa: E402
+
+import factor_expr as fe  # noqa: E402
 
 HORIZONS = (1, 5, 20)
-MIN_CS = em.MIN_CS                # 逐日截面IC最少品种数（与 expr_miner 同口径）
+MIN_CS = em.MIN_CS  # 逐日截面IC最少品种数（与 expr_miner 同口径）
 DEFAULT_DB = os.path.join(_ROOT, "cache", "research_panel.db")
 DEFAULT_TXT = os.path.join(_ROOT, "reports", "expr_research.txt")
 DEFAULT_JSON = os.path.join(_ROOT, "reports", "expr_research.json")
@@ -36,19 +37,25 @@ DEFAULT_JSON = os.path.join(_ROOT, "reports", "expr_research.json")
 # ---------------- 输入装配：面板列（离线） vs bar 回读（实时形状） ----------------
 def series_from_rows(rows):
     """离线：直接读面板存储列（KDJ 因子需 high/low，缺则回退用收盘；量仓因子需 oi）。"""
-    return {"close": [r["c"] for r in rows], "volume": [r["v"] for r in rows],
-            "high": [r.get("h", r["c"]) for r in rows],
-            "low": [r.get("l", r["c"]) for r in rows],
-            "oi": [r.get("oi", 0.0) for r in rows]}
+    return {
+        "close": [r["c"] for r in rows],
+        "volume": [r["v"] for r in rows],
+        "high": [r.get("h", r["c"]) for r in rows],
+        "low": [r.get("l", r["c"]) for r in rows],
+        "oi": [r.get("oi", 0.0) for r in rows],
+    }
 
 
 def series_from_bars(rows):
     """实时形状：面板行先回读成 bar-dict（研究工具读面板的统一桥梁），再取 c/v/h/l/oi。"""
     bars = pb.panel_rows_to_bars(rows)
-    return {"close": [b["c"] for b in bars], "volume": [b["v"] for b in bars],
-            "high": [b.get("h", b["c"]) for b in bars],
-            "low": [b.get("l", b["c"]) for b in bars],
-            "oi": [b.get("oi", b.get("p", 0.0)) for b in bars]}
+    return {
+        "close": [b["c"] for b in bars],
+        "volume": [b["v"] for b in bars],
+        "high": [b.get("h", b["c"]) for b in bars],
+        "low": [b.get("l", b["c"]) for b in bars],
+        "oi": [b.get("oi", b.get("p", 0.0)) for b in bars],
+    }
 
 
 def forward_return(close, t, h):
@@ -75,7 +82,7 @@ def parity_for_rows(rows):
         if len(a) != len(b):
             mismatch += 1
             continue
-        for x, y in zip(a, b):
+        for x, y in zip(a, b, strict=False):
             if fe._isnum(x) or fe._isnum(y):
                 nfinite += 1
                 if not (fe._isnum(x) and fe._isnum(y)):
@@ -95,7 +102,7 @@ def indicator_crosscheck(rows):
     stored = [r["ret5"] for r in rows]
     max_diff = 0.0
     n = 0
-    for x, y in zip(expr_ret5, stored):
+    for x, y in zip(expr_ret5, stored, strict=False):
         if fe._isnum(x) and fe._isnum(y):
             n += 1
             max_diff = max(max_diff, abs(x - y))
@@ -114,15 +121,20 @@ def symbol_factor_ic(expr, series, close, horizons=HORIZONS):
                 continue
             fwd = forward_return(close, t, h)
             if fe._isnum(fwd):
-                xs.append(fac[t]); ys.append(fwd)
+                xs.append(fac[t])
+                ys.append(fwd)
         out[h] = (fe.spearman(xs, ys), len(xs))
     return out
 
 
 # 第81轮：剩余旧特征精确镜像的 parity 交叉核对（表达式 vs 面板已落库列，逐位比对）
-MIRROR_KEYS = (("expr_day_chg_exact", "day_chg"), ("expr_ret63_exact", "ret63"),
-               ("expr_ret126_exact", "ret126"), ("expr_ret252_exact", "ret252"),
-               ("expr_hv60_exact", "hv60"))
+MIRROR_KEYS = (
+    ("expr_day_chg_exact", "day_chg"),
+    ("expr_ret63_exact", "ret63"),
+    ("expr_ret126_exact", "ret126"),
+    ("expr_ret252_exact", "ret252"),
+    ("expr_hv60_exact", "hv60"),
+)
 
 
 def feature_crosscheck(rows, min_warmup=252):
@@ -150,7 +162,9 @@ def feature_crosscheck(rows, min_warmup=252):
     return max_diff, n, mismatch
 
 
-def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbose=True, min_cs=None):
+def run(
+    db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbose=True, min_cs=None
+):
     store = pb.PanelStore(db_path)
     syms = sorted(store.symbols())
     lib = fe.LIBRARY
@@ -165,9 +179,9 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
     glob_mirror_mis = 0
     # per factor per horizon: 逐品种 ic 列表 + 池化 (x,y)
     per = {f["key"]: {h: {"ics": [], "px": [], "py": []} for h in HORIZONS} for f in lib}
-    fac_bd = {f["key"]: {} for f in lib}     # 第77轮：逐日截面层 {key: {sym: {date: val}}}
-    fwd_bd = {}                              # {sym: {h: {date: fwd}}}（与因子无关，每品种只算一次）
-    last_cs = {f["key"]: {} for f in lib}    # 最近交易日截面值
+    fac_bd = {f["key"]: {} for f in lib}  # 第77轮：逐日截面层 {key: {sym: {date: val}}}
+    fwd_bd = {}  # {sym: {h: {date: fwd}}}（与因子无关，每品种只算一次）
+    last_cs = {f["key"]: {} for f in lib}  # 最近交易日截面值
     loaded = []
     for sym in syms:
         rows = store.load_rows(sym)
@@ -188,18 +202,20 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
         series = series_from_rows(rows)
         close = series["close"]
         dates_sym = [r["date"] for r in rows]
-        fwd_bd[sym] = {h: {dates_sym[t]: forward_return(close, t, h)
-                           for t in range(len(close))} for h in HORIZONS}
+        fwd_bd[sym] = {
+            h: {dates_sym[t]: forward_return(close, t, h) for t in range(len(close))}
+            for h in HORIZONS
+        }
         for f in lib:
             fac = fe.compute_ts(f["expr"], series)
-            fac_bd[f["key"]][sym] = {dates_sym[t]: v for t, v in enumerate(fac)
-                                     if fe._isnum(v)}
+            fac_bd[f["key"]][sym] = {dates_sym[t]: v for t, v in enumerate(fac) if fe._isnum(v)}
             for h in HORIZONS:
                 xs, ys = [], []
                 for t in range(len(fac)):
                     fwd = forward_return(close, t, h)
                     if fe._isnum(fac[t]) and fe._isnum(fwd):
-                        xs.append(fac[t]); ys.append(fwd)
+                        xs.append(fac[t])
+                        ys.append(fwd)
                 ic = fe.spearman(xs, ys)
                 if fe._isnum(ic):
                     per[f["key"]][h]["ics"].append(ic)
@@ -216,105 +232,182 @@ def run(db_path=DEFAULT_DB, txt_path=DEFAULT_TXT, json_path=DEFAULT_JSON, verbos
 
     summary = {}
     for f in lib:
-        summary[f["key"]] = {"name": f["name"], "direction": f["direction"], "expr": f["expr"],
-                             "h": {}, "cs": {}}
+        summary[f["key"]] = {
+            "name": f["name"],
+            "direction": f["direction"],
+            "expr": f["expr"],
+            "h": {},
+            "cs": {},
+        }
         for h in HORIZONS:
             bucket = per[f["key"]][h]
             pooled = fe.spearman(bucket["px"], bucket["py"])
             summary[f["key"]]["h"][h] = {
-                "mean_ic": mean(bucket["ics"]), "pooled_ic": pooled,
-                "n_sym": len(bucket["ics"]), "n_pair": len(bucket["px"])}
+                "mean_ic": mean(bucket["ics"]),
+                "pooled_ic": pooled,
+                "n_sym": len(bucket["ics"]),
+                "n_pair": len(bucket["px"]),
+            }
             # 第77轮：逐日截面层（跨品种 Spearman 的均值/ICIR/t值/正比例，与 expr_miner 同口径）
-            summary[f["key"]]["cs"][h] = em.cs_summary(em.cross_section_ics(
-                fac_bd[f["key"]], {s: fwd_bd[s][h] for s in loaded},
-                MIN_CS if min_cs is None else min_cs))
+            summary[f["key"]]["cs"][h] = em.cs_summary(
+                em.cross_section_ics(
+                    fac_bd[f["key"]],
+                    {s: fwd_bd[s][h] for s in loaded},
+                    MIN_CS if min_cs is None else min_cs,
+                )
+            )
     # 截面 cross_rank 演示（短长均线比）最近日
     cs_rank_demo = fe.eval_cs("cross_rank(m)", {"m": last_cs["expr_ma_ratio"]})
-    finite_cs = sorted(((s, v) for s, v in cs_rank_demo.items() if fe._isnum(v)), key=lambda kv: kv[1])
+    finite_cs = sorted(
+        ((s, v) for s, v in cs_rank_demo.items() if fe._isnum(v)), key=lambda kv: kv[1]
+    )
     result = {
-        "n_symbols": len(syms), "horizons": list(HORIZONS),
-        "parity": {"max_abs_diff": glob_parity_diff, "points": glob_parity_pts, "mismatch": glob_parity_mis},
+        "n_symbols": len(syms),
+        "horizons": list(HORIZONS),
+        "parity": {
+            "max_abs_diff": glob_parity_diff,
+            "points": glob_parity_pts,
+            "mismatch": glob_parity_mis,
+        },
         "indicator_crosscheck_ret5": {"max_abs_diff": glob_xcheck_diff, "points": glob_xcheck_n},
-        "mirror_crosscheck": {"max_abs_diff": glob_mirror_diff, "points": glob_mirror_pts,
-                              "mismatch": glob_mirror_mis, "keys": [k for k, _ in MIRROR_KEYS]},
+        "mirror_crosscheck": {
+            "max_abs_diff": glob_mirror_diff,
+            "points": glob_mirror_pts,
+            "mismatch": glob_mirror_mis,
+            "keys": [k for k, _ in MIRROR_KEYS],
+        },
         "factors": summary,
-        "cs_demo_ma_ratio_bottom": finite_cs[:3], "cs_demo_ma_ratio_top": finite_cs[-3:],
+        "cs_demo_ma_ratio_bottom": finite_cs[:3],
+        "cs_demo_ma_ratio_top": finite_cs[-3:],
     }
 
     lines = []
     lines.append("=" * 92)
     lines.append("G25 表达式因子研究台 expr_research（纯离线读 G21 面板，research 因子不进综合分）")
-    lines.append("品种数=%d；面板路径 cache/research_panel.db；引擎=factor_expr（白名单DSL，无eval）" % len(syms))
+    lines.append(
+        "品种数=%d；面板路径 cache/research_panel.db；引擎=factor_expr（白名单DSL，无eval）"
+        % len(syms)
+    )
     lines.append("-" * 92)
     lines.append("[training-serving parity]")
-    lines.append("  面板列直读 vs bar回读 同表达式逐值：maxAbsDiff=%.3e，有限点=%d，不一致=%d（须0）"
-                 % (glob_parity_diff, glob_parity_pts, glob_parity_mis))
-    lines.append("  表达式5日动量 vs 实时管线落库 ret5：maxAbsDiff=%.3e，比对点=%d（须≈0）"
-                 % (glob_xcheck_diff, glob_xcheck_n))
-    lines.append("  第81轮 剩余旧特征镜像(day_chg/ret63/126/252/hv60) vs 落库列：maxAbsDiff=%.3e，比对点=%d，不一致=%d（须0；"
-                 "tsmom_blend 因动态n_valid分母+条件聚合在当前DSL不可表达，单独记录不硬做）"
-                 % (glob_mirror_diff, glob_mirror_pts, glob_mirror_mis))
+    lines.append(
+        "  面板列直读 vs bar回读 同表达式逐值：maxAbsDiff=%.3e，有限点=%d，不一致=%d（须0）"
+        % (glob_parity_diff, glob_parity_pts, glob_parity_mis)
+    )
+    lines.append(
+        "  表达式5日动量 vs 实时管线落库 ret5：maxAbsDiff=%.3e，比对点=%d（须≈0）"
+        % (glob_xcheck_diff, glob_xcheck_n)
+    )
+    lines.append(
+        "  第81轮 剩余旧特征镜像(day_chg/ret63/126/252/hv60) vs 落库列：maxAbsDiff=%.3e，比对点=%d，不一致=%d（须0；"
+        "tsmom_blend 因动态n_valid分母+条件聚合在当前DSL不可表达，单独记录不硬做）"
+        % (glob_mirror_diff, glob_mirror_pts, glob_mirror_mis)
+    )
     lines.append("-" * 92)
-    lines.append("[表达式因子 前向 RankIC]（严格未来收益；meanIC=逐品种IC均值，pooledIC=全样本池化）")
+    lines.append(
+        "[表达式因子 前向 RankIC]（严格未来收益；meanIC=逐品种IC均值，pooledIC=全样本池化）"
+    )
     lines.append("  %-18s %-8s | %-22s | %-22s | %-22s" % ("key", "方向", "H=1", "H=5", "H=20"))
     for f in lib:
         cells = []
         for h in HORIZONS:
             r = summary[f["key"]]["h"][h]
-            mi = r["mean_ic"]; pi = r["pooled_ic"]
-            cells.append("mean%+.3f/pool%+.3f/n%d" % (
-                mi if fe._isnum(mi) else float("nan"),
-                pi if fe._isnum(pi) else float("nan"), r["n_pair"]))
-        lines.append("  %-18s %+d      | %-22s | %-22s | %-22s" %
-                     (f["key"], f["direction"], cells[0], cells[1], cells[2]))
+            mi = r["mean_ic"]
+            pi = r["pooled_ic"]
+            cells.append(
+                "mean%+.3f/pool%+.3f/n%d"
+                % (
+                    mi if fe._isnum(mi) else float("nan"),
+                    pi if fe._isnum(pi) else float("nan"),
+                    r["n_pair"],
+                )
+            )
+        lines.append(
+            "  %-18s %+d      | %-22s | %-22s | %-22s"
+            % (f["key"], f["direction"], cells[0], cells[1], cells[2])
+        )
     # 第77轮：逐日截面层（与 expr_miner 同口径；时序层=逐品种均值，截面层=逐日跨品种 RankIC）
-    lines.append("  （第77轮新增逐日截面层 mean/ICIR/t/正比例，与 expr_miner 完全同口径——双工具口径统一）")
+    lines.append(
+        "  （第77轮新增逐日截面层 mean/ICIR/t/正比例，与 expr_miner 完全同口径——双工具口径统一）"
+    )
     for f in lib:
         cs = summary[f["key"]]["cs"]
         cells = []
         for h in HORIZONS:
             r = cs[h]
-            cells.append("mean%+.3f/t%+.1f/正%.0f%%" % (
-                r["mean_ic"], r["t_stat"] or 0.0, 100.0 * (r["pct_positive"] or 0.0))
-                if r["mean_ic"] is not None else "无有效截面样本")
-        lines.append("  %-18s %-8s | %-22s | %-22s | %-22s" %
-                     ("", "截面", cells[0], cells[1], cells[2]))
+            cells.append(
+                "mean%+.3f/t%+.1f/正%.0f%%"
+                % (r["mean_ic"], r["t_stat"] or 0.0, 100.0 * (r["pct_positive"] or 0.0))
+                if r["mean_ic"] is not None
+                else "无有效截面样本"
+            )
+        lines.append(
+            "  %-18s %-8s | %-22s | %-22s | %-22s" % ("", "截面", cells[0], cells[1], cells[2])
+        )
     cs_hits = []
     for f in lib:
-        vals = [abs(summary[f["key"]]["cs"][h]["mean_ic"]) for h in HORIZONS
-                if summary[f["key"]]["cs"][h]["mean_ic"] is not None]
+        vals = [
+            abs(summary[f["key"]]["cs"][h]["mean_ic"])
+            for h in HORIZONS
+            if summary[f["key"]]["cs"][h]["mean_ic"] is not None
+        ]
         if vals and max(vals) >= 0.05:
             cs_hits.append((f["key"], max(vals)))
     cs_hits.sort(key=lambda kv: -kv[1])
     if cs_hits:
-        lines.append("  [截面上榜 |逐日截面meanIC|≥0.05]：" +
-                     "、".join("%s(%.3f)" % (k, v) for k, v in cs_hits) +
-                     "（仅供人工复核，不自动上线）")
+        lines.append(
+            "  [截面上榜 |逐日截面meanIC|≥0.05]："
+            + "、".join("%s(%.3f)" % (k, v) for k, v in cs_hits)
+            + "（仅供人工复核，不自动上线）"
+        )
     else:
         lines.append("  [截面上榜 |逐日截面meanIC|≥0.05]  无（负结果照实）")
     lines.append("-" * 92)
     # G25续（第68/69轮）：量仓类表达式因子前向 IC 小结（自动识别 vol/oi/amount 系 key）
-    vol_keys = [f["key"] for f in lib
-                if f["key"].startswith("expr_vol") or f["key"].startswith("expr_oi")
-                or f["key"].startswith("expr_amount")]
+    vol_keys = [
+        f["key"]
+        for f in lib
+        if f["key"].startswith("expr_vol")
+        or f["key"].startswith("expr_oi")
+        or f["key"].startswith("expr_amount")
+    ]
     if vol_keys:
-        lines.append("[量仓类表达式因子前向 IC 小结]（|IC|<0.05 视为无稳定预测力；研究侧不进综合分）")
+        lines.append(
+            "[量仓类表达式因子前向 IC 小结]（|IC|<0.05 视为无稳定预测力；研究侧不进综合分）"
+        )
         for k in vol_keys:
             name = summary[k]["name"]
-            h1 = summary[k]["h"][1]; h5 = summary[k]["h"][5]
+            h1 = summary[k]["h"][1]
+            h5 = summary[k]["h"][5]
+
             def _ic(r):
-                mi = r["mean_ic"]; pi = r["pooled_ic"]
+                mi = r["mean_ic"]
+                pi = r["pooled_ic"]
                 if not (fe._isnum(mi) and fe._isnum(pi)):
                     return "无样本"
-                return "H1 mean%+.3f/pool%+.3f(n%d)  H5 mean%+.3f/pool%+.3f(n%d)" % (mi, pi, r["n_pair"], h5["mean_ic"] if fe._isnum(h5["mean_ic"]) else 0.0, h5["pooled_ic"] if fe._isnum(h5["pooled_ic"]) else 0.0, h5["n_pair"])
+                return "H1 mean%+.3f/pool%+.3f(n%d)  H5 mean%+.3f/pool%+.3f(n%d)" % (
+                    mi,
+                    pi,
+                    r["n_pair"],
+                    h5["mean_ic"] if fe._isnum(h5["mean_ic"]) else 0.0,
+                    h5["pooled_ic"] if fe._isnum(h5["pooled_ic"]) else 0.0,
+                    h5["n_pair"],
+                )
+
             lines.append("  %-22s %s" % (k, _ic(h1)))
-        lines.append("  注：量仓因子当前全部 |IC|<0.05 无稳定预测力（成交额/量仓比代理级），如实记录不进综合分；")
+        lines.append(
+            "  注：量仓因子当前全部 |IC|<0.05 无稳定预测力（成交额/量仓比代理级），如实记录不进综合分；"
+        )
         lines.append("      真实资金流向/持仓侧容量待 G14 一档盘口后深化。")
         lines.append("-" * 92)
     if finite_cs:
-        lines.append("[截面 cross_rank 演示·短长均线比 最近交易日] 最低3: %s；最高3: %s"
-                     % (finite_cs[:3], finite_cs[-3:]))
-    lines.append("注：|IC|<0.05 视为无稳定预测力；research 因子即便IC为正也须双样本+G29体检才谈影子，默认不进分。")
+        lines.append(
+            "[截面 cross_rank 演示·短长均线比 最近交易日] 最低3: %s；最高3: %s"
+            % (finite_cs[:3], finite_cs[-3:])
+        )
+    lines.append(
+        "注：|IC|<0.05 视为无稳定预测力；research 因子即便IC为正也须双样本+G29体检才谈影子，默认不进分。"
+    )
     text = "\n".join(lines)
     if verbose:
         print(text)
@@ -332,9 +425,20 @@ def _mk_rows(closes, vols=None, sym="T"):
     rows = []
     for i, c in enumerate(closes):
         ret5 = c / closes[i - 5] - 1.0 if i >= 5 else 0.0
-        rows.append({"sym": sym, "date": "2026-01-%02d" % (i + 1), "sector": "测试",
-                     "o": c, "h": c, "l": c, "c": c,
-                     "v": (vols[i] if vols else 1000.0 + i), "oi": 500.0, "ret5": ret5})
+        rows.append(
+            {
+                "sym": sym,
+                "date": "2026-01-%02d" % (i + 1),
+                "sector": "测试",
+                "o": c,
+                "h": c,
+                "l": c,
+                "c": c,
+                "v": (vols[i] if vols else 1000.0 + i),
+                "oi": 500.0,
+                "ret5": ret5,
+            }
+        )
     return rows
 
 
@@ -355,7 +459,8 @@ def selftest():
     for t in range(len(fac_inc)):
         fwd = forward_return(acc, t, 1)
         if fe._isnum(fac_inc[t]) and fe._isnum(fwd):
-            xs.append(fac_inc[t]); ys.append(fwd)
+            xs.append(fac_inc[t])
+            ys.append(fwd)
     assert abs(fe.spearman(xs, ys) + 1.0) < 1e-12, fe.spearman(xs, ys)
     assert forward_return(acc, len(acc) - 1, 1) is None  # 末端无未来
     lin = [float(v) for v in range(1, 41)]
@@ -363,8 +468,10 @@ def selftest():
     assert fe._isnum(ic1[0])
     # 4) 截面 cross_rank 在合成多品种上单调
     multi = {f["key"]: {} for f in fe.LIBRARY}
-    rows_by = {("S%d" % k2): _mk_rows([10.0 + k2 + 0.1 * i for i in range(30)], sym="S%d" % k2)
-               for k2 in range(5)}
+    rows_by = {
+        ("S%d" % k2): _mk_rows([10.0 + k2 + 0.1 * i for i in range(30)], sym="S%d" % k2)
+        for k2 in range(5)
+    }
     for sym, rr in rows_by.items():
         ss = series_from_rows(rr)
         val = fe.compute_ts("ts_mean(close,5)/ts_mean(close,20)-1", ss)
@@ -376,29 +483,38 @@ def selftest():
     # 5) 治理：正交+IC加权合成在研究台可直接用（残差正交于基）
     base1 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
     base2 = [3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0]
-    target = [2 * a - b for a, b in zip(base1, base2)]
+    target = [2 * a - b for a, b in zip(base1, base2, strict=False)]
     resid, beta = fe.orthogonalize(target, [base1, base2])
     assert abs(beta[0] - 2.0) < 1e-9 and abs(beta[1] + 1.0) < 1e-9
     assert all(abs(r) < 1e-9 for r in resid)
     # 6) 第77轮 逐日截面层：临时面板跑 run()，summary 含 cs 且结构齐、强截面因子 IC≈+1
     import tempfile
+
     tmpdir = tempfile.mkdtemp(prefix="expr_research_t_")
     tmpdb = os.path.join(tmpdir, "panel.db")
     st = pb.PanelStore(tmpdb)
     n_sym6 = 6
     for k2 in range(n_sym6):
         # 各品种差异化斜率（品种 k2 稳定跑赢 k2-1）→ ret5 的截面序稳定 → 截面IC≈+1
-        rows6 = _mk_rows([100.0 + k2 * 10.0 + (0.5 + 0.1 * k2) * i for i in range(60)],
-                         sym="S%d" % k2)
+        rows6 = _mk_rows(
+            [100.0 + k2 * 10.0 + (0.5 + 0.1 * k2) * i for i in range(60)], sym="S%d" % k2
+        )
         st.replace_symbol("S%d" % k2, rows6)
     st.close()
-    res6 = run(db_path=tmpdb, txt_path=os.path.join(tmpdir, "r.txt"),
-               json_path=os.path.join(tmpdir, "r.json"), verbose=False, min_cs=4)
+    res6 = run(
+        db_path=tmpdb,
+        txt_path=os.path.join(tmpdir, "r.txt"),
+        json_path=os.path.join(tmpdir, "r.json"),
+        verbose=False,
+        min_cs=4,
+    )
     r6 = res6["factors"]["expr_ret5_exact"]["cs"][5]
     assert r6["mean_ic"] is not None and r6["n_days"] > 0 and "t_stat" in r6
     assert "截面" in open(os.path.join(tmpdir, "r.txt"), encoding="utf-8").read()
-    print("expr_research selftest ALL PASS（面板/bar同表达式parity=0、表达式动量==实时ret5、"
-          "前向收益严格向未来且秩相关方向正确、多品种cross_rank、OLS正交恢复、逐日截面层 共6组）")
+    print(
+        "expr_research selftest ALL PASS（面板/bar同表达式parity=0、表达式动量==实时ret5、"
+        "前向收益严格向未来且秩相关方向正确、多品种cross_rank、OLS正交恢复、逐日截面层 共6组）"
+    )
     return 0
 
 

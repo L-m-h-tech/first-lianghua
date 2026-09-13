@@ -1,43 +1,44 @@
-# -*- coding: utf-8 -*-
 """把研究侧工具自带的零网络合成断言纳入 pytest（factor_eval/tsmom_eval/xsmom_eval/carry_eval/attribution/panel_builder/pit_audit/build_ml_samples/backtest_validation/db_archive，及根模块 factors_catalog）。"""
-import factor_eval
-import tsmom_eval
-import xsmom_eval
-import carry_eval
+
 import attribution
+import backtest_validation
+import build_ml_samples
+import carry_eval
+import db_archive
+import expr_miner
+import expr_research
+import factor_eval
+import factor_health
+import factor_regime
+import mask_compare_summary
+import microstructure_lab
+import orthogonal_blend_oos
 import panel_builder
 import pit_audit
-import build_ml_samples
-import backtest_validation
-import db_archive
-import factors_catalog
-import factor_plugin
-import factor_parts
-import factor_legacy_expr
-import factor_health
-import factor_expr
-import expr_research
-import factor_regime
-import microstructure_lab
-import spread_lab
-import orderbook_snapshot
-import spec_pressure_lab
-import web_dashboard
-import portfolio_constructor
 import portfolio_lab
-import trade_journal
-import research_review
-import experiment_ledger
-import wf_cost_lab
-import db_backup
-import portfolio_risk
 import portfolio_risk_lab
-import circuit_breaker
-import orthogonal_blend_oos
-import tradable_mask
-import mask_compare_summary
-import expr_miner
 import regime_cond_lab
+import research_review
+import spec_pressure_lab
+import spread_lab
+import tradable_mask
+import trade_journal
+import tsmom_eval
+import web_dashboard
+import wf_cost_lab
+import xsmom_eval
+
+import circuit_breaker
+import db_backup
+import experiment_ledger
+import factor_expr
+import factor_legacy_expr
+import factor_parts
+import factor_plugin
+import factors_catalog
+import orderbook_snapshot
+import portfolio_constructor
+import portfolio_risk
 
 
 def test_factor_eval_selftest():
@@ -222,40 +223,54 @@ def test_regime_cond_lab_selftest():
 def test_ml_train_dataset_selftest():
     """G16（第88轮）ml_train.dataset --selftest：purged折叠不相交/标准化/auc手算/缺库安全 共4组。"""
     import ml_train.dataset as mld
+
     assert mld.selftest() == 0
 
 
 def test_ml_train_train_lr_selftest():
     """G16（第88轮）ml_train.train_lr --selftest：sigmoid边界/可分恢复/前向手算 共3组。"""
     import ml_train.train_lr as mlt
+
     assert mlt.selftest() == 0
 
 
 def test_ml_inference_selftest():
     """G16（第88轮）ml_inference --selftest：缺模型/特征不全/跨度不足/前向手算/版本不符 共5组。"""
     import ml_inference as mli
+
     assert mli.selftest() == 0
 
 
 def test_tushare_client_selftest():
     """G18（第90轮）tushare_client --selftest：无token零请求/标准解包/非200降级/仓单聚合 共4组。"""
     import tushare_client as tc
+
     assert tc.selftest() == 0
 
 
 def test_tushare_ingest_selftest():
     """G18（第90轮）tushare_ingest --selftest：依赖 tushare_client 4组全过。"""
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import os
+    import sys
+
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+    )
     import tushare_ingest as ti
+
     assert ti.selftest() == 0
 
 
 def test_tushare_harvest_selftest():
     """G18续（第90轮）tushare_harvest --selftest：依赖 tushare_client 4组 + upsert 幂等 共5组。"""
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import os
+    import sys
+
+    sys.path.insert(
+        0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+    )
     import tushare_harvest as th
+
     assert th.selftest() == 0
 
 
@@ -267,72 +282,85 @@ def test_orderbook_snapshot_selftest():
 def test_html_text_selftest():
     """第94轮 A3：lxml/stdlib 双后端无断言后手算验证（clean_text/extract_tables）。"""
     import html_text
-    ok = (html_text.clean_text("<p>A</p>") == "A"
-          and html_text.extract_tables("<table><tr><td>1</td></tr></table>") == [[["1"]]])
+
+    ok = html_text.clean_text("<p>A</p>") == "A" and html_text.extract_tables(
+        "<table><tr><td>1</td></tr></table>"
+    ) == [[["1"]]]
     assert ok
 
 
 def test_parser_health_selftest():
     """第94轮 A1：滚动窗口告警（fail_streak/structure_change）+节流+报告输出。"""
     import parser_health
+
     assert parser_health.selftest() == 0
 
 
 def test_selector_heal_selftest():
     """第94轮 B2：LLM 修选择器（prompt/JSON提取/无key降级/报告），零网络。"""
     import selector_heal
+
     assert selector_heal.selftest() == 0
 
 
 def test_page_archive_selftest():
     """第94轮 B7：HTML→markdown 归档 + manifest（零网络）。"""
     import page_archive
+
     assert page_archive.selftest() == 0
 
 
 def test_iv_official_check_selftest():
     """第94轮 B5：官方IV交叉校验（零网络合成）。"""
     import iv_official_check
+
     assert iv_official_check.selftest() == 0
 
 
 def test_checkpoint_selftest():
     """第94轮 B6：阶段 checkpoint 幂等/容错（零网络）。"""
     import checkpoint
+
     assert checkpoint.selftest() == 0
 
 
 def test_holiday_updater_selftest():
     """第95轮：节假日年度维护工具（区间解析/官方日历推导/查重/渲染，零网络）。"""
     import holiday_updater
+
     assert holiday_updater.selftest() == 0
 
 
 def test_openvlab_map_selftest():
     """第96轮：OpenVLab 全市场波动率地图采集（合成ctamap解析/落库幂等/降级）。"""
     import openvlab_map
+
     assert openvlab_map.selftest() == 0
 
 
 def test_jiaoyikecha_selftest():
     """第96轮：jiaoyikecha 交易可查采集（合成端点解析/落库幂等）。"""
     import jiaoyikecha_collector
+
     assert jiaoyikecha_collector.selftest() == 0
 
 
 def test_openvlab_map_selftest():
     """第96轮：OpenVLab 83品种波动率地图采集（合成解析/落库幂等/降级）。"""
     import openvlab_map
+
     assert openvlab_map.selftest() == 0
 
 
 def test_jiaoyikecha_collector_selftest():
     """第96轮：jiaoyikecha 交易可查采集（合成端点解析/落库幂等）。"""
     import jiaoyikecha_collector
+
     assert jiaoyikecha_collector.selftest() == 0
 
 
 def test_newdata_factor_research_selftest():
     """第96/97轮：新数据源因子研究（spearman/对齐/样本天数判定）。"""
     import newdata_factor_research
+
     assert newdata_factor_research.selftest() == 0

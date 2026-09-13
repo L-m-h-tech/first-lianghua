@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G18 Tushare 零依赖适配层（第90轮解锁落地）——裸 HTTP、token 走环境变量、软降级。
 
 项目纪律：不 pip 装 tushare SDK（版本停更+拖依赖），只用现有 http_client 裸调代理端点。
@@ -21,6 +20,7 @@ r"""G18 Tushare 零依赖适配层（第90轮解锁落地）——裸 HTTP、tok
   D:\Python\python.exe tools\tushare_ingest.py            # T1 日历校验 + T2 仓单快照
   D:\Python\python.exe tushare_client.py --selftest
 """
+
 import os
 import sys
 from datetime import datetime
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
-import http_client                                   # noqa: E402  现有连接池
+import http_client  # noqa: E402
 
 DEFAULT_PROXY = "https://t.xiaodefa.top/"
 
@@ -57,7 +57,7 @@ def call(api_name, timeout=40, **params):
         data = obj.get("data") or {}
         fields = data.get("fields") or []
         items = data.get("items") or []
-        return [dict(zip(fields, row)) for row in items]
+        return [dict(zip(fields, row, strict=False)) for row in items]
     except Exception:
         return None
 
@@ -107,10 +107,13 @@ def fut_wsr_snapshot():
             pass
     out = {"trade_date": dates[-1] if dates else None, "by_symbol": {}}
     for sym, ent in by.items():
-        out["by_symbol"][sym] = {"name": ent["name"], "vol": round(ent["vol"], 1),
-                                 "pre_vol": round(ent["pre_vol"], 1),
-                                 "vol_chg": round(ent["vol"] - ent["pre_vol"], 1),
-                                 "n_warehouses": len(ent["warehouses"])}
+        out["by_symbol"][sym] = {
+            "name": ent["name"],
+            "vol": round(ent["vol"], 1),
+            "pre_vol": round(ent["pre_vol"], 1),
+            "vol_chg": round(ent["vol"] - ent["pre_vol"], 1),
+            "n_warehouses": len(ent["warehouses"]),
+        }
     return out
 
 
@@ -125,9 +128,10 @@ def selftest():
     def fake_post(url, json=None, timeout=None, **kw):
         class R:
             status_code = 200
+
             def json(self):
-                return {"code": 0, "data": {"fields": ["a", "b"],
-                                            "items": [[1, 2], [3, 4]]}}
+                return {"code": 0, "data": {"fields": ["a", "b"], "items": [[1, 2], [3, 4]]}}
+
         return R()
 
     http_client.http.post = fake_post
@@ -136,13 +140,17 @@ def selftest():
         assert rows == [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
     finally:
         http_client.http.post = _orig_post
+
     # 3) 非200/坏返回 → None
     def bad_post(url, json=None, timeout=None, **kw):
         class R:
             status_code = 500
+
             def json(self):
                 return {}
+
         return R()
+
     http_client.http.post = bad_post
     try:
         assert call("x") is None
@@ -150,22 +158,39 @@ def selftest():
         http_client.http.post = _orig_post
     # 4) 仓单聚合：重复行去名 + 按 symbol 汇总
     os.environ["TUSHARE_TOKEN"] = "test"
+
     def wsr_post(url, json=None, timeout=None, **kw):
         class R:
             status_code = 200
+
             def json(self):
-                return {"code": 0, "data": {"fields": ["trade_date", "symbol", "fut_name",
-                                                        "warehouse", "pre_vol", "vol"],
-                                            "items": [["20260904", "A", None, "库1", 10, 20],
-                                                      ["20260904", "A", "豆一", "库1", 10, 20],
-                                                      ["20260904", "A", "豆一", "库2", 30, 40],
-                                                      ["20260904", "B", None, "库X", 1, 2]]}}
+                return {
+                    "code": 0,
+                    "data": {
+                        "fields": [
+                            "trade_date",
+                            "symbol",
+                            "fut_name",
+                            "warehouse",
+                            "pre_vol",
+                            "vol",
+                        ],
+                        "items": [
+                            ["20260904", "A", None, "库1", 10, 20],
+                            ["20260904", "A", "豆一", "库1", 10, 20],
+                            ["20260904", "A", "豆一", "库2", 30, 40],
+                            ["20260904", "B", None, "库X", 1, 2],
+                        ],
+                    },
+                }
+
         return R()
+
     http_client.http.post = wsr_post
     try:
         snap = fut_wsr_snapshot()
         assert snap["trade_date"] == "20260904"
-        assert snap["by_symbol"]["A"]["vol"] == 80.0      # 20+20+40
+        assert snap["by_symbol"]["A"]["vol"] == 80.0  # 20+20+40
         assert snap["by_symbol"]["A"]["name"] == "豆一"
         assert snap["by_symbol"]["A"]["n_warehouses"] == 2
         assert snap["by_symbol"]["B"]["vol"] == 2.0
@@ -178,6 +203,7 @@ def selftest():
 
 def main(argv=None):
     import argparse
+
     ap = argparse.ArgumentParser(description="G18 Tushare 零依赖适配层（token 走 env）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)

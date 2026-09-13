@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 G4 续（第62轮）回测严谨性补强：滚动 walk-forward 样本外 + 对照基准（纯标准库、零网络）。
 
@@ -13,10 +12,12 @@ G4 续（第62轮）回测严谨性补强：滚动 walk-forward 样本外 + 对�
 
 设计铁律：默认（不开 --walk-forward、不开基准）时 backtest.py 既有口径与结果逐值不变。
 """
+
 import math
 
 try:
     import config
+
     _WARMUP = getattr(config, "BACKTEST_WARMUP_BARS", 60)
     _TRAIN = getattr(config, "BACKTEST_WF_TRAIN_BARS", 120)
     _TEST = getattr(config, "BACKTEST_WF_TEST_BARS", 40)
@@ -27,6 +28,7 @@ except Exception:  # pragma: no cover
 
 # ----------------------------- 切窗（无未来函数） -----------------------------
 
+
 def slice_prepared(prepared, a, b):
     """取 prepared 全局 bar 下标半开区间 [a,b) 的子窗，series 索引重映射为窗内局部。"""
     n = len(prepared["closes"])
@@ -36,12 +38,16 @@ def slice_prepared(prepared, a, b):
     sub["bars"] = prepared["bars"][a:b]
     for key in ("closes", "opens", "highs", "lows"):
         sub[key] = prepared[key][a:b]
-    sub["series"] = [{"i": it["i"] - a, "ind": it["ind"], "score": it["score"]}
-                     for it in prepared["series"] if a <= it["i"] < b]
+    sub["series"] = [
+        {"i": it["i"] - a, "ind": it["ind"], "score": it["score"]}
+        for it in prepared["series"]
+        if a <= it["i"] < b
+    ]
     return sub
 
 
 # ----------------------------- 对照基准：买入持有 -----------------------------
+
 
 def _first_valid(closes, start):
     for i in range(max(0, start), len(closes)):
@@ -104,6 +110,7 @@ def beat_benchmark_pairs(pairs):
 
 # ----------------------------- 滚动 walk-forward -----------------------------
 
+
 def wf_folds(n_bars, warmup, train_bars, test_bars):
     """生成 (is_a,is_b,oos_a,oos_b)：首折 OOS 起点=warmup+train_bars，
     之后每折整体向后推进 test_bars，相邻折 OOS 互不重叠；OOS 不足 2 根的尾折丢弃。"""
@@ -143,9 +150,16 @@ def _bar_date(bars, idx, default=""):
     return default
 
 
-def walk_forward_symbol(prepared, simulator, grid, default_param,
-                        train_bars=_TRAIN, test_bars=_TEST, min_is_trades=_MIN_IS,
-                        warmup=_WARMUP):
+def walk_forward_symbol(
+    prepared,
+    simulator,
+    grid,
+    default_param,
+    train_bars=_TRAIN,
+    test_bars=_TEST,
+    min_is_trades=_MIN_IS,
+    warmup=_WARMUP,
+):
     """单品种滚动 walk-forward。
 
     simulator(sub_prepared, hold, entry) -> result dict（含 trades/trade_metrics），由 backtest
@@ -175,13 +189,22 @@ def walk_forward_symbol(prepared, simulator, grid, default_param,
             t["wf_hold"] = hold
             t["wf_entry"] = entry
         oos_trades.extend(trades)
-        folds_out.append({
-            "fold": k,
-            "is_start": _bar_date(bars, ia), "is_end": _bar_date(bars, ib - 1),
-            "oos_start": _bar_date(bars, oa), "oos_end": _bar_date(bars, ob - 1),
-            "hold": hold, "entry": entry, "fallback": fallback,
-            "is_n": is_n, "is_avg": is_avg,
-            "oos_n": len(trades), "oos_avg": oos_avg})
+        folds_out.append(
+            {
+                "fold": k,
+                "is_start": _bar_date(bars, ia),
+                "is_end": _bar_date(bars, ib - 1),
+                "oos_start": _bar_date(bars, oa),
+                "oos_end": _bar_date(bars, ob - 1),
+                "hold": hold,
+                "entry": entry,
+                "fallback": fallback,
+                "is_n": is_n,
+                "is_avg": is_avg,
+                "oos_n": len(trades),
+                "oos_avg": oos_avg,
+            }
+        )
     return {"oos_trades": oos_trades, "folds": folds_out}
 
 
@@ -198,8 +221,12 @@ def is_vs_oos_avg(folds):
     """折级 IS 均收均值 vs OOS 均收均值（只统计两侧都有交易的折），用于看样本外衰减。"""
     is_v, oos_v = [], []
     for f in folds:
-        if f["is_avg"] is not None and f["oos_avg"] is not None and math.isfinite(f["is_avg"]) \
-                and math.isfinite(f["oos_avg"]):
+        if (
+            f["is_avg"] is not None
+            and f["oos_avg"] is not None
+            and math.isfinite(f["is_avg"])
+            and math.isfinite(f["oos_avg"])
+        ):
             is_v.append(f["is_avg"])
             oos_v.append(f["oos_avg"])
     if not is_v:

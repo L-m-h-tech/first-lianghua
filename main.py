@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 期货全品种监控分析 主程序
 ========================
@@ -50,8 +49,8 @@
   python main.py --once       只跑一轮分析后退出（测试用）
   python main.py --no-launch  不自动打开同花顺期货通、也不自动弹出首轮实时报告HTML
 """
+
 import argparse
-import math
 import os
 import subprocess
 import sys
@@ -60,7 +59,7 @@ import time
 import traceback
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, date
+from datetime import date, datetime
 
 import alerts
 import analyzer
@@ -69,7 +68,6 @@ import config
 import contracts
 import cross_section
 import data_health
-from data_router import REGISTRY
 import factors
 import flow_tracker
 import fundamental_data
@@ -91,50 +89,60 @@ import ths_app
 import trade_calendar
 import web_scan
 import webdata
-from utils import (LOG, clip, is_trading_time, is_variety_trading, next_cycle_time,
-                   next_transition, review_is_due, rotation_desc, setup_environment,
-                   trade_owner_date)
+from data_router import REGISTRY
+from utils import (
+    LOG,
+    is_trading_time,
+    next_cycle_time,
+    next_transition,
+    review_is_due,
+    rotation_desc,
+    setup_environment,
+    trade_owner_date,
+)
 
 
 class State:
     def __init__(self, universe):
         self.stop = threading.Event()
-        self.oil = oil_data.OilTracker()          # 原油10秒级行情与因子
-        self.news = factors.NewsFactor()          # 新闻滚动池与情绪因子
-        self.klines = futures_data.KlineCache()   # 日线指标缓存
+        self.oil = oil_data.OilTracker()  # 原油10秒级行情与因子
+        self.news = factors.NewsFactor()  # 新闻滚动池与情绪因子
+        self.klines = futures_data.KlineCache()  # 日线指标缓存
         self.contracts = contracts.ContractCache()  # 主力合约月份缓存
         self.opt_chains = option_chain.OptionChainCache()  # 第11轮：期权完整T链/PCR缓存
-        self.var_hist = {}                        # 各品种盘中价格序列
+        self.var_hist = {}  # 各品种盘中价格序列
         self.flow_tracker = flow_tracker.FlowTracker()  # 成交量/持仓量资金流因子
-        self.db = storage.MonitorDB()             # SQLite 结构化落库与信号效果追踪
-        self.alerts = alerts.AlertManager()       # 声音/Webhook 主动告警
-        self.watchlist = universe                 # [(品种名, meta)] 即分析范围
+        self.db = storage.MonitorDB()  # SQLite 结构化落库与信号效果追踪
+        self.alerts = alerts.AlertManager()  # 声音/Webhook 主动告警
+        self.watchlist = universe  # [(品种名, meta)] 即分析范围
         self.wl_source = "四大交易所全品种"
         self.universe_note = ""
         self.cycle = 0
-        self.store = report.ReportStore()         # 滚动窗口(5轮) + 归档管理
-        self.webdata = webdata.WebDataTracker()   # 交易可查机构观点 + OpenVlab期权日历
+        self.store = report.ReportStore()  # 滚动窗口(5轮) + 归档管理
+        self.webdata = webdata.WebDataTracker()  # 交易可查机构观点 + OpenVlab期权日历
         self.breader = browser_reader.BrowserReader()  # 浏览器页面直读(调试端口)
-        self.webscan = web_scan.WebScanner()      # 全网扫描(新闻/金融/突发事件,每3分钟)
-        self.rotation_desc = ""                   # 当前轮动节奏描述（写入报告）
-        self.kick = threading.Event()             # 统一紧急事件：原油急动/全网高影响消息都置位它
-        self.last_emergency = None                # 最近一次紧急触发信息 {"src": "oil"/"web", ...}
-        self.emergency_tag = ""                   # 紧急轮动块头标记（如[全网消息紧急轮动]）
-        self.emergency_note = ""                  # 本轮紧急轮动的正文说明（空串=正常定时轮）
-        self.review_date = ""                     # 已生成复盘报告的归属交易日
-        self.last_strat_rows = []                 # 末轮期权策略（供复盘引用）
-        self.last_forecasts = {}                  # 末轮预测走向（供复盘引用）
-        self.last_cross_section = {}             # 末轮横截面相对强弱（WP-F1，供报告/看板）
-        self.calibrator = signal_calibrator.SignalCalibrator(enabled=False)  # WP-F2 A3 历史胜率校准器（每轮4.7刷新，默认影子）
+        self.webscan = web_scan.WebScanner()  # 全网扫描(新闻/金融/突发事件,每3分钟)
+        self.rotation_desc = ""  # 当前轮动节奏描述（写入报告）
+        self.kick = threading.Event()  # 统一紧急事件：原油急动/全网高影响消息都置位它
+        self.last_emergency = None  # 最近一次紧急触发信息 {"src": "oil"/"web", ...}
+        self.emergency_tag = ""  # 紧急轮动块头标记（如[全网消息紧急轮动]）
+        self.emergency_note = ""  # 本轮紧急轮动的正文说明（空串=正常定时轮）
+        self.review_date = ""  # 已生成复盘报告的归属交易日
+        self.last_strat_rows = []  # 末轮期权策略（供复盘引用）
+        self.last_forecasts = {}  # 末轮预测走向（供复盘引用）
+        self.last_cross_section = {}  # 末轮横截面相对强弱（WP-F1，供报告/看板）
+        self.calibrator = signal_calibrator.SignalCalibrator(
+            enabled=False
+        )  # WP-F2 A3 历史胜率校准器（每轮4.7刷新，默认影子）
         self.health_monitor = data_health.HealthMonitor()  # G6 数据质量跨轮监控
-        self.last_health = None                           # G6 末轮数据健康结果（供报告渲染）
+        self.last_health = None  # G6 末轮数据健康结果（供报告渲染）
         # G1（二）纸面交易影子账户：PAPER_ENABLED=False 时为 None 完全休眠（不实例化、零开销、
         # 不动实时主链与综合分口径）；开启后由 run_cycle 第5.5步喂 fut_rows/quotes 持续虚拟撮合。
         self.paper = None
-        self.last_paper = None                            # 末轮纸面 on_cycle 结果（供报告渲染）
-        self.papers = {}                                  # 第102轮：多账户 {name: broker}
-        self.last_papers = {}                             # 第102轮：多账户 {name: summary}
-        self._paper_stash = {}                            # 第103轮：run_cycle 末落下的只读快照（纸面 ticker 用）
+        self.last_paper = None  # 末轮纸面 on_cycle 结果（供报告渲染）
+        self.papers = {}  # 第102轮：多账户 {name: broker}
+        self.last_papers = {}  # 第102轮：多账户 {name: summary}
+        self._paper_stash = {}  # 第103轮：run_cycle 末落下的只读快照（纸面 ticker 用）
         if getattr(config, "PAPER_ENABLED", False):
             accounts = getattr(config, "PAPER_ACCOUNTS", [])
             if not accounts:
@@ -142,15 +150,23 @@ class State:
                 try:
                     self.paper = paper_broker.PaperBroker(db=self.db)
                     self.papers = {"基准": self.paper}
-                    LOG.info("G1 纸面交易影子账户已启用（fill=%s，初始资金%.0f，平今/平昨按结算交易日判定）",
-                             self.paper.fill_mode, config.PAPER_EQUITY0)
+                    LOG.info(
+                        "G1 纸面交易影子账户已启用（fill=%s，初始资金%.0f，平今/平昨按结算交易日判定）",
+                        self.paper.fill_mode,
+                        config.PAPER_EQUITY0,
+                    )
                 except Exception:
-                    LOG.warning("纸面账户初始化失败，本轮完全休眠（不影响监控主链）:\n%s",
-                                traceback.format_exc())
+                    LOG.warning(
+                        "纸面账户初始化失败，本轮完全休眠（不影响监控主链）:\n%s",
+                        traceback.format_exc(),
+                    )
                     self.paper = None
             else:
-                db_dir = getattr(config, "PAPER_ACCOUNT_DB_DIR",
-                                 os.path.join(config.BASE_DIR, "data", "paper_accounts"))
+                db_dir = getattr(
+                    config,
+                    "PAPER_ACCOUNT_DB_DIR",
+                    os.path.join(config.BASE_DIR, "data", "paper_accounts"),
+                )
                 try:
                     os.makedirs(db_dir, exist_ok=True)
                 except Exception:
@@ -161,50 +177,81 @@ class State:
                         db_name = name.replace(" ", "_").replace("/", "_")
                         db_path = os.path.join(db_dir, f"paper_{db_name}.db")
                         # 去掉 name/priority/futures_max/options_max（PaperBroker.__init__ 自带默认）
-                        kwargs = {k: acct[k] for k in acct if k in (
-                            "equity0", "fill_mode", "entry_score", "exit_score",
-                            "per_symbol", "max_symbol_weight", "max_sector_weight",
-                            "max_concurrent", "risk_liquidate", "risk_safe",
-                            "opt_premium_ratio", "stop_loss_ratio", "priority",
-                            "futures_max", "options_max", "target_basis",
-                            "risk_sizing", "risk_gross",
-                            "max_daily_orders", "max_active_per_sym")}   # 第140轮 R3 + 第141轮账户级委托流控覆盖
-                        broker = paper_broker.PaperBroker(
-                            db_path=db_path, name=name, **kwargs)
+                        kwargs = {
+                            k: acct[k]
+                            for k in acct
+                            if k
+                            in (
+                                "equity0",
+                                "fill_mode",
+                                "entry_score",
+                                "exit_score",
+                                "per_symbol",
+                                "max_symbol_weight",
+                                "max_sector_weight",
+                                "max_concurrent",
+                                "risk_liquidate",
+                                "risk_safe",
+                                "opt_premium_ratio",
+                                "stop_loss_ratio",
+                                "priority",
+                                "futures_max",
+                                "options_max",
+                                "target_basis",
+                                "risk_sizing",
+                                "risk_gross",
+                                "max_daily_orders",
+                                "max_active_per_sym",
+                            )
+                        }  # 第140轮 R3 + 第141轮账户级委托流控覆盖
+                        broker = paper_broker.PaperBroker(db_path=db_path, name=name, **kwargs)
                         self.papers[name] = broker
                     except Exception:
-                        LOG.warning("账户 %s 初始化失败（跳过）: %s",
-                                    acct.get("name", "??"), traceback.format_exc())
+                        LOG.warning(
+                            "账户 %s 初始化失败（跳过）: %s",
+                            acct.get("name", "??"),
+                            traceback.format_exc(),
+                        )
                 if self.papers:
                     self.paper = list(self.papers.values())[0]  # 第一个=基准（向后兼容）
-                    LOG.info("G1 纸面交易影子账户已启用：%d 个账户%s",
-                             len(self.papers),
-                             "".join(f"  {n}({b.fill_mode}/{b.entry_score}/{'option_only' if b.priority=='option_only' else b.priority})"
-                                     for n, b in self.papers.items())[:200])
+                    LOG.info(
+                        "G1 纸面交易影子账户已启用：%d 个账户%s",
+                        len(self.papers),
+                        "".join(
+                            f"  {n}({b.fill_mode}/{b.entry_score}/{'option_only' if b.priority == 'option_only' else b.priority})"
+                            for n, b in self.papers.items()
+                        )[:200],
+                    )
                 else:
                     LOG.warning("G1 所有纸面账户初始化失败")
-        self.heartbeat_ts = time.time()           # 主循环最近一次心跳（看门狗监控卡死）
-        self.auto_open_report = False             # 首轮真实报告生成后是否自动用浏览器打开（由 --no-launch 关闭）
-        self.report_opened = False                # 实时报告 HTML 是否已自动打开过（全程只开一次）
+        self.heartbeat_ts = time.time()  # 主循环最近一次心跳（看门狗监控卡死）
+        self.auto_open_report = (
+            False  # 首轮真实报告生成后是否自动用浏览器打开（由 --no-launch 关闭）
+        )
+        self.report_opened = False  # 实时报告 HTML 是否已自动打开过（全程只开一次）
         # 第13轮 WP-C 基本面：fetcher 负责直连，fund_inv/fund_basis 为后台日频刷新的原料缓存
         self.fetcher = fundamental_data.FundamentalFetcher()
-        self.fund_inv = {}                        # sym大写 -> 库存/仓单时序（日频）
-        self.fund_basis = None                    # 生意社全市场基差表 {sym: 基差率}，反爬时为None
-        self.fund_day = ""                        # 最近一次完成日频刷新的自然日
+        self.fund_inv = {}  # sym大写 -> 库存/仓单时序（日频）
+        self.fund_basis = None  # 生意社全市场基差表 {sym: 基差率}，反爬时为None
+        self.fund_day = ""  # 最近一次完成日频刷新的自然日
         # 分钟K：新浪主连全周期(含1m)唯一采集器（第118轮：删除东财/通达信分钟K源，常驻自采落 minute_bars 表）
         self.minute_collector = intraday_bars.MinuteCollector()
 
 
 def build_universe():
     """按交易所归集全部分析品种并排序"""
-    uni = [(name, meta) for name, meta in config.VARIETIES.items()
-           if meta.get("ex") in config.ANALYZE_EXCHANGES]
+    uni = [
+        (name, meta)
+        for name, meta in config.VARIETIES.items()
+        if meta.get("ex") in config.ANALYZE_EXCHANGES
+    ]
     order = {ex: i for i, ex in enumerate(config.EXCHANGE_ORDER)}
     uni.sort(key=lambda x: (order.get(x[1]["ex"], 9), x[0]))
     return uni
 
 
 # ---------------- 后台线程：原油每10秒刷新 ----------------
+
 
 def oil_loop(state, interval):
     LOG.info("原油行情线程启动（每%d秒刷新 布伦特/纽约原油）", interval)
@@ -220,11 +267,17 @@ def oil_loop(state, interval):
                     state.last_emergency = {"src": "oil", **jump}
                     state.kick.set()
                     n_aff = sum(1 for m in config.VARIETIES.values() if m.get("oil_w", 0) > 0)
-                    LOG.warning("原油急动: %s 近%d秒 %+.2f%%（%.3f→%.3f），"
-                                "立即对全部品种及其期权（含%d个能化联动品种）按实时数据重新分析，"
-                                "原定轮动时间不推移",
-                                jump["name"], jump["window_sec"], jump["ret"] * 100,
-                                jump["base"], jump["price"], n_aff)
+                    LOG.warning(
+                        "原油急动: %s 近%d秒 %+.2f%%（%.3f→%.3f），"
+                        "立即对全部品种及其期权（含%d个能化联动品种）按实时数据重新分析，"
+                        "原定轮动时间不推移",
+                        jump["name"],
+                        jump["window_sec"],
+                        jump["ret"] * 100,
+                        jump["base"],
+                        jump["price"],
+                        n_aff,
+                    )
         except Exception as e:
             LOG.warning("原油行情获取失败: %s", e)
         state.stop.wait(interval)
@@ -232,34 +285,41 @@ def oil_loop(state, interval):
 
 # ---------------- 后台线程：全网数据查找每3分钟刷新（新闻/金融/突发事件） ----------------
 
+
 def web_scan_loop(state, interval):
     LOG.info("全网扫描线程启动（新闻/金融/突发事件 每%d秒；真实优先、存疑后排）", interval)
     while not state.stop.is_set():
         try:
             n_new, trigger, items = state.webscan.refresh()
             if items:
-                added = state.news.add(items)          # 进入统一新闻情绪池（内部再去重）
-                report.append_daily_news(items)        # 当日新闻缓存（供每日复盘）
+                added = state.news.add(items)  # 进入统一新闻情绪池（内部再去重）
+                report.append_daily_news(items)  # 当日新闻缓存（供每日复盘）
                 try:
-                    state.db.insert_news(items)        # P1：新闻结构化入库，支持后续检索/复盘
+                    state.db.insert_news(items)  # P1：新闻结构化入库，支持后续检索/复盘
                 except Exception:
                     LOG.warning("全网新闻结构化入库失败:\n%s", traceback.format_exc())
-                LOG.info("全网扫描新增 %d 条（入池 %d 条）%s",
-                         n_new, added, state.webscan.status_line())
+                LOG.info(
+                    "全网扫描新增 %d 条（入池 %d 条）%s", n_new, added, state.webscan.status_line()
+                )
             # 新出现的高影响消息/突发事件：与原油急动同样"插队"触发一轮全品种分析
             if trigger:
                 state.last_emergency = {"src": "web", **trigger}
                 state.kick.set()
                 it = trigger["item"]
-                LOG.warning("全网消息触发紧急轮动: 权重%+.2f %s｜%s｜影响品种: %s",
-                            trigger["weight"], it["source"],
-                            it["content"][:70], "、".join(trigger["varieties"][:8]) or "全板块")
+                LOG.warning(
+                    "全网消息触发紧急轮动: 权重%+.2f %s｜%s｜影响品种: %s",
+                    trigger["weight"],
+                    it["source"],
+                    it["content"][:70],
+                    "、".join(trigger["varieties"][:8]) or "全板块",
+                )
         except Exception:
             LOG.error("全网扫描异常:\n%s", traceback.format_exc())
         state.stop.wait(interval)
 
 
 # ---------------- 后台线程：日线指标预刷新 ----------------
+
 
 def kline_loop(state):
     """后台预刷新日线指标（30分钟TTL），避免某一轮分析被刷新拉长。
@@ -283,6 +343,7 @@ def kline_loop(state):
 
 # ---------------- 后台线程：主力合约月份定期刷新 ----------------
 
+
 def contract_loop(state, syms):
     """主力合约月份每30分钟后台重探（启动时已在主线程探测过一次）"""
     while not state.stop.is_set():
@@ -296,6 +357,7 @@ def contract_loop(state, syms):
 
 # ---------------- 后台线程：基本面日频数据（库存/仓单时序 + 基差表） ----------------
 
+
 def refresh_fundamentals(state, force=False):
     """并发拉取全品种库存/仓单时序与全市场基差表（日频，收盘后刷新一次；--once启动时force同步拉一次）。"""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -306,28 +368,37 @@ def refresh_fundamentals(state, force=False):
         syms = [meta["sym"] for _, meta in state.watchlist]
         with ThreadPoolExecutor(max_workers=8) as ex:
             series = list(ex.map(state.fetcher.inventory_series, syms))
-        state.fund_inv = {sym: ser for sym, ser in zip(syms, series) if ser}
+        state.fund_inv = {sym: ser for sym, ser in zip(syms, series, strict=False) if ser}
         state.fund_basis = state.fetcher.basis_table()
         state.fund_day = today
-        nb = "反爬不可用(已降级,由carry/库存/龙虎榜补位)" if state.fund_basis is None             else f"{len(state.fund_basis)}个品种"
-        LOG.info("基本面日频数据刷新完成：库存/仓单时序 %d 个品种；基差表 %s",
-                 len(state.fund_inv), nb)
+        nb = (
+            "反爬不可用(已降级,由carry/库存/龙虎榜补位)"
+            if state.fund_basis is None
+            else f"{len(state.fund_basis)}个品种"
+        )
+        LOG.info(
+            "基本面日频数据刷新完成：库存/仓单时序 %d 个品种；基差表 %s", len(state.fund_inv), nb
+        )
     except Exception:
         LOG.warning("基本面日频数据刷新失败（不影响主监控）:\n%s", traceback.format_exc())
 
 
 def fundamentals_loop(state):
-    LOG.info("基本面线程启动（每日%d点后刷新库存/仓单+基差；龙虎榜按主力合约日缓存）", config.FUND_REFRESH_HOUR)
+    LOG.info(
+        "基本面线程启动（每日%d点后刷新库存/仓单+基差；龙虎榜按主力合约日缓存）",
+        config.FUND_REFRESH_HOUR,
+    )
     while not state.stop.is_set():
         now = datetime.now()
         due = now.hour >= config.FUND_REFRESH_HOUR or now.weekday() >= 5
         if state.fund_day != now.strftime("%Y-%m-%d") and due:
             refresh_fundamentals(state)
-        if state.stop.wait(1800):               # 每30分钟检查是否到刷新点
+        if state.stop.wait(1800):  # 每30分钟检查是否到刷新点
             return
 
 
 # ---------------- 后台线程：主力合约分钟K常驻自采（第14轮 WP-D0） ----------------
+
 
 def collect_minute_bars(state, mode="incr"):
     """新浪分钟K并发采集并去重落 minute_bars：全周期(1/5/15/30/60m)走新浪主连（无需主力合约即可采，
@@ -348,7 +419,9 @@ def collect_minute_bars(state, mode="incr"):
         yy, mm = (mc.get("yy"), mc.get("mm")) if mc else (None, None)
         for p in periods:
             # 新浪主连全周期(含1m)均可采、无需主力合约（yy/mm 仅兼容旧 collect 签名）
-            jobs.append((meta["sym"], meta["ex"], meta.get("code"), yy, mm, p, int(lmts.get(p, 10))))
+            jobs.append(
+                (meta["sym"], meta["ex"], meta.get("code"), yy, mm, p, int(lmts.get(p, 10)))
+            )
 
     def _one(job):
         sym, ex_, sina_code, yy, mm, p, lmt = job
@@ -376,16 +449,29 @@ def collect_minute_bars(state, mode="incr"):
     cov = state.db.minute_bars_coverage()
     cov_txt = "、".join(f"{p}m{v['bars']}根/{v['contracts']}合约" for p, v in sorted(cov.items()))
     src_txt = "、".join(f"{k}{v}任务" for k, v in sorted(src_stat.items()))
-    LOG.info("分钟K自采(%s)：%d品种×%d周期=%d任务，拉取%d根、新增%d根、空/失败%d（源分布 %s）；库覆盖 %s",
-             mode, n_var, len(periods), len(jobs), fetched, inserted, empty, src_txt or "无", cov_txt or "空")
+    LOG.info(
+        "分钟K自采(%s)：%d品种×%d周期=%d任务，拉取%d根、新增%d根、空/失败%d（源分布 %s）；库覆盖 %s",
+        mode,
+        n_var,
+        len(periods),
+        len(jobs),
+        fetched,
+        inserted,
+        empty,
+        src_txt or "无",
+        cov_txt or "空",
+    )
     return {"tasks": len(jobs), "fetched": fetched, "inserted": inserted, "empty": empty}
 
 
 def minute_bars_loop(state):
     """常驻分钟自采：启动先回填一次历史窗口，之后交易时段5分钟、非交易时段30分钟增量采集。
     长期看，免费源历史分钟窗口很短，这份由程序滚动自采的 minute_bars 才是日内/平今回测的根本数据。"""
-    LOG.info("分钟K自采线程启动（先回填历史窗口，之后交易时段%ds/非交易%ds增量自采）",
-             config.MINUTE_LOOP_INTERVAL, config.MINUTE_OFFPEAK_INTERVAL)
+    LOG.info(
+        "分钟K自采线程启动（先回填历史窗口，之后交易时段%ds/非交易%ds增量自采）",
+        config.MINUTE_LOOP_INTERVAL,
+        config.MINUTE_OFFPEAK_INTERVAL,
+    )
     try:
         collect_minute_bars(state, "backfill")
     except Exception:
@@ -402,6 +488,7 @@ def minute_bars_loop(state):
 
 
 # ---------------- 启动时自动打开期货通 ----------------
+
 
 def startup_open_ths():
     try:
@@ -427,7 +514,8 @@ def startup_open_legend():
     try:
         p = subprocess.Popen(
             [legend_exe, f"--remote-debugging-port={port}", "--remote-allow-origins=*"],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         LOG.info("已自动拉起 Legend 调试模式（%s, pid=%d, CDP %d）", legend_exe, p.pid, port)
     except Exception as e:
         LOG.warning("Legend 启动失败: %s", e)
@@ -442,8 +530,7 @@ def _device_daemon_running():
     """防双开探测：装置状态文件 collector_status.json（每10秒刷新）60 秒内更新过 = 已有实例在跑。"""
     try:
         st = os.path.join(config.DEVICE_DIR, "data", "collector_status.json")
-        return (os.path.exists(st)
-                and (time.time() - os.path.getmtime(st)) < 60.0)
+        return os.path.exists(st) and (time.time() - os.path.getmtime(st)) < 60.0
     except Exception:
         return False
 
@@ -467,10 +554,12 @@ def startup_device_daemon():
         p = subprocess.Popen(
             [sys.executable, "run.py", "--daemon"],
             cwd=config.DEVICE_DIR,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         _DEVICE_DAEMON_PID = p.pid
-        _debug_browser_job(p.pid)   # 复用 Job Object：main 退出（含强杀）系统自动终止装置
+        _debug_browser_job(p.pid)  # 复用 Job Object：main 退出（含强杀）系统自动终止装置
         LOG.info("已自动拉起装置 daemon（pid=%d, cwd=%s）", p.pid, config.DEVICE_DIR)
     except Exception as e:
         LOG.warning("装置 daemon 启动失败（不影响主程序）: %s", e)
@@ -484,9 +573,12 @@ def close_device_daemon():
     if not pid:
         return
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                       timeout=15, capture_output=True)
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=15,
+            capture_output=True,
+        )
         LOG.info("已联动关闭装置 daemon（pid=%d）", pid)
     except Exception as e:
         LOG.warning("关闭装置 daemon 失败（可手动结束 python run.py 进程）: %s", e)
@@ -496,6 +588,7 @@ def _cdp_port_busy(port):
     """探测本地 9222/9223 调试端口是否已在监听（避免重复拉起浏览器）。"""
     try:
         import socket
+
         with socket.create_connection(("127.0.0.1", port), timeout=0.5):
             return True
     except OSError:
@@ -517,43 +610,49 @@ def _debug_browser_job(pid):
         return
     try:
         import ctypes
+
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
         class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
-                        ("WriteOperationCount", ctypes.c_ulonglong),
-                        ("OtherOperationCount", ctypes.c_ulonglong),
-                        ("ReadTransferCount", ctypes.c_ulonglong),
-                        ("WriteTransferCount", ctypes.c_ulonglong),
-                        ("OtherTransferCount", ctypes.c_ulonglong)]
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
 
         class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
-                        ("PerJobUserTimeLimit", ctypes.c_longlong),
-                        ("LimitFlags", ctypes.c_ulong),
-                        ("MinimumWorkingSetSize", ctypes.c_size_t),
-                        ("MaximumWorkingSetSize", ctypes.c_size_t),
-                        ("ActiveProcessLimit", ctypes.c_ulong),
-                        ("Affinity", ctypes.c_size_t),
-                        ("PriorityClass", ctypes.c_ulong),
-                        ("SchedulingClass", ctypes.c_ulong)]
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_ulong),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_ulong),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_ulong),
+                ("SchedulingClass", ctypes.c_ulong),
+            ]
 
         class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                        ("IoInfo", IO_COUNTERS),
-                        ("ProcessMemoryLimit", ctypes.c_size_t),
-                        ("JobMemoryLimit", ctypes.c_size_t),
-                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
 
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info),
-                                                ctypes.sizeof(info)):
+        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
             kernel32.CloseHandle(job)
             return
         PROCESS_SET_QUOTA = 0x0100
@@ -578,9 +677,12 @@ def close_debug_browser():
     if not pid:
         return
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                       timeout=15, capture_output=True)
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=15,
+            capture_output=True,
+        )
         LOG.info("调试浏览器已随 main 退出关闭（PID %d）", pid)
     except Exception as e:
         LOG.warning("关闭调试浏览器失败（可手动关闭窗口）: %s", e)
@@ -600,18 +702,21 @@ def startup_browser_debug():
         chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         browser = edge if os.path.exists(edge) else (chrome if os.path.exists(chrome) else None)
         if not browser:
-            LOG.info("未找到 Edge/Chrome，跳过自动拉起调试浏览器（可手动运行『打开行情网页(调试模式).bat』）")
+            LOG.info(
+                "未找到 Edge/Chrome，跳过自动拉起调试浏览器（可手动运行『打开行情网页(调试模式).bat』）"
+            )
             return
         url1 = browser_reader.OVL_URL
         url2 = browser_reader.JYKC_URL
         profile = os.path.join(os.environ.get("TEMP", "."), "ovl_jykc_profile")
-        proc = subprocess.Popen([browser, "--remote-debugging-port=9222",
-                                 f"--user-data-dir={profile}", url1, url2],
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        proc = subprocess.Popen(
+            [browser, "--remote-debugging-port=9222", f"--user-data-dir={profile}", url1, url2],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         _DEBUG_BROWSER_PID = proc.pid
         _debug_browser_job(proc.pid)  # 失败静默，兜底靠 finally/看门狗 taskkill
         # 短轮询确认调试端口就绪（最多 ~15s）
-        import socket
+
         for _ in range(30):
             time.sleep(0.5)
             if _cdp_port_busy(9222):
@@ -638,9 +743,10 @@ def open_realtime_report_once(state):
             LOG.warning("实时报告尚未生成，跳过自动打开：%s", path)
             return
         if sys.platform.startswith("win"):
-            os.startfile(path)          # Windows：用默认浏览器打开，调用本身不阻塞
+            os.startfile(path)  # Windows：用默认浏览器打开，调用本身不阻塞
         else:
             import webbrowser
+
             webbrowser.open("file:///" + path.replace("\\", "/"))
         LOG.info("已用默认浏览器打开实时报告：%s", path)
     except Exception:
@@ -650,6 +756,7 @@ def open_realtime_report_once(state):
 # ---------------- 工具 ----------------
 
 # ---------------- 看门狗：主循环心跳与卡死自重启（P0-6） ----------------
+
 
 def beat_heartbeat(state):
     """每轮分析（含紧急轮）开始时更新心跳；看门狗超时未更新即判定主循环卡死"""
@@ -670,16 +777,20 @@ def watchdog_loop(state):
             return
         gap = time.time() - state.heartbeat_ts
         if gap > config.HEARTBEAT_TIMEOUT_SEC:
-            LOG.critical("主循环 %.0f 秒无响应（超过看门狗阈值 %d 秒），判定卡死，"
-                         "强制退出以便外层自动重启", gap, config.HEARTBEAT_TIMEOUT_SEC)
+            LOG.critical(
+                "主循环 %.0f 秒无响应（超过看门狗阈值 %d 秒），判定卡死，强制退出以便外层自动重启",
+                gap,
+                config.HEARTBEAT_TIMEOUT_SEC,
+            )
             close_debug_browser()  # 卡死重启前也关闭调试浏览器，避免残留
-            ths_app.kill_ths()     # 卡死重启前关闭本程序启动的同花顺，避免残留
+            ths_app.kill_ths()  # 卡死重启前关闭本程序启动的同花顺，避免残留
             close_device_daemon()  # 卡死重启前联动关闭本程序拉起的装置 daemon
             time.sleep(1)
             os._exit(3)
 
 
 # ---------------- 后台线程：数据库每日热备（第127轮，G19 续） ----------------
+
 
 def backup_loop(state):
     """每日在线热备 monitor.db + data/paper_accounts/*.db（db_backup.backup_all，只读源库）。
@@ -691,54 +802,76 @@ def backup_loop(state):
     - 距上次尚近（如重启时当日 15:01 已备过）不重复备份；全部失败只写日志不拖垮主监控。"""
     if not getattr(config, "DB_BACKUP_ENABLED", True):
         return
-    LOG.info("数据库热备线程启动（每日 %s，滚动 %d 份；启动补备延迟 90 秒）",
-             config.DB_BACKUP_DAILY_TIME, config.DB_BACKUP_KEEP)
-    if state.stop.wait(90):                    # 等启动高峰（主力探测/分钟K回填）过去
+    LOG.info(
+        "数据库热备线程启动（每日 %s，滚动 %d 份；启动补备延迟 90 秒）",
+        config.DB_BACKUP_DAILY_TIME,
+        config.DB_BACKUP_KEEP,
+    )
+    if state.stop.wait(90):  # 等启动高峰（主力探测/分钟K回填）过去
         return
 
     def _run_once():
         try:
             import db_backup
+
             last = db_backup.newest_monitor_backup_time()
-            if not db_backup.backup_due(datetime.now(), last,
-                                        getattr(config, "DB_BACKUP_DAILY_TIME", "15:01"),
-                                        getattr(config, "DB_BACKUP_MIN_INTERVAL_H", 20)):
+            if not db_backup.backup_due(
+                datetime.now(),
+                last,
+                getattr(config, "DB_BACKUP_DAILY_TIME", "15:01"),
+                getattr(config, "DB_BACKUP_MIN_INTERVAL_H", 20),
+            ):
                 return
             t0 = time.time()
             res = db_backup.backup_all(keep=getattr(config, "DB_BACKUP_KEEP", 7))
-            LOG.info("数据库热备完成：monitor.db %.0fMB(qc=%s) + 纸面库 %d 个（失败 %d）"
-                     "→ 滚动清理 monitor %d 份/纸面 %d 份，耗时 %.0fs",
-                     res["monitor"]["backup_bytes"] / 1048576.0,
-                     res["monitor"]["backup_quick_check"],
-                     len(res["paper"]), len(res["paper_errors"]),
-                     len(res["pruned"]), len(res["paper_pruned"]), time.time() - t0)
+            LOG.info(
+                "数据库热备完成：monitor.db %.0fMB(qc=%s) + 纸面库 %d 个（失败 %d）"
+                "→ 滚动清理 monitor %d 份/纸面 %d 份，耗时 %.0fs",
+                res["monitor"]["backup_bytes"] / 1048576.0,
+                res["monitor"]["backup_quick_check"],
+                len(res["paper"]),
+                len(res["paper_errors"]),
+                len(res["pruned"]),
+                len(res["paper_pruned"]),
+                time.time() - t0,
+            )
             if res["paper_errors"]:
-                LOG.warning("纸面库备份失败明细（下次自动重试）: %s",
-                            "; ".join("%s: %s" % (k, str(v)[:80])
-                                      for k, v in list(res["paper_errors"].items())[:6]))
+                LOG.warning(
+                    "纸面库备份失败明细（下次自动重试）: %s",
+                    "; ".join(
+                        "%s: %s" % (k, str(v)[:80])
+                        for k, v in list(res["paper_errors"].items())[:6]
+                    ),
+                )
         except Exception:
-            LOG.warning("数据库热备失败（不影响主监控，下次轮询自动重试）:\n%s", traceback.format_exc())
+            LOG.warning(
+                "数据库热备失败（不影响主监控，下次轮询自动重试）:\n%s", traceback.format_exc()
+            )
 
     _run_once()
     while not state.stop.is_set():
-        if state.stop.wait(600):               # 每 10 分钟做一次 due 判断
+        if state.stop.wait(600):  # 每 10 分钟做一次 due 判断
             return
         _run_once()
 
 
 # ---------------- 主分析周期（每60秒） ----------------
 
+
 # =========================== G13/G22 轻量调度（第91轮抽取，零主周期改动、行为不变） ===========================
 def _maybe_review(state, fut_rows):
     """G13 LLM 第二意见调度（无 key 完全休眠；守护线程异步、只写独立 sidecar、绝不改综合分）。"""
     try:
         import llm_reviewer
+
         if llm_reviewer.enabled():
             _em = getattr(state, "last_emergency", None)
-            threading.Thread(target=llm_reviewer.review_async,
-                             args=(fut_rows, dict(_em) if _em else None),
-                             kwargs={"force": bool(getattr(state, "llm_force", False))},
-                             daemon=True).start()
+            threading.Thread(
+                target=llm_reviewer.review_async,
+                args=(fut_rows, dict(_em) if _em else None),
+                kwargs={"force": bool(getattr(state, "llm_force", False))},
+                daemon=True,
+            ).start()
     except Exception:
         LOG.error("G13 dispatch failed (swallowed)")
 
@@ -747,15 +880,21 @@ def _maybe_shadow(state):
     """G22续/G7续 影子信号跟随（每交易日首次周期+17:00后补当日；daemon 零阻塞、当日防重复）。"""
     try:
         import sys as _sys
+
         _tools_dir = os.path.join(config.BASE_DIR, "tools")
         if _tools_dir not in _sys.path:
             _sys.path.insert(0, _tools_dir)
         import shadow_track
+
         _now = datetime.now()
         _owner = trade_owner_date(_now).strftime("%Y-%m-%d")
         _seen = getattr(state, "shadow_seen_owner", None)
         _done = getattr(state, "shadow_done_owner", None)
-        _slot = (_seen != _owner) or (_now.hour >= config.SHADOW_FOLLOW_HOUR)                 or getattr(state, "shadow_fail", False)
+        _slot = (
+            (_seen != _owner)
+            or (_now.hour >= config.SHADOW_FOLLOW_HOUR)
+            or getattr(state, "shadow_fail", False)
+        )
         _attempted = getattr(state, "shadow_attempt", None) == "%s|%s" % (_owner, _now.hour)
         if _slot and not _attempted and _done != _owner:
             state.shadow_seen_owner = _owner
@@ -766,8 +905,11 @@ def _maybe_shadow(state):
                 try:
                     payload = shadow_track.daily(verbose=False)
                     state.shadow_done_owner = _owner
-                    LOG.info("影子每日链完成: %s | 快照日 %s",
-                             payload.get("logged"), payload.get("snapshot", {}).get("date"))
+                    LOG.info(
+                        "影子每日链完成: %s | 快照日 %s",
+                        payload.get("logged"),
+                        payload.get("snapshot", {}).get("date"),
+                    )
                 except Exception:
                     state.shadow_fail = True
                     LOG.error("影子每日链异常（已吞掉）: %s", traceback.format_exc())
@@ -783,12 +925,12 @@ def _maybe_snapshot(state):
     仅交易时段采集、失败全吞零阻塞；落 tick_snapshots 表 + 刷新 orderbook_stats 统计。"""
     try:
         import orderbook_snapshot
+
         res = orderbook_snapshot.collect_once(state.db)
         if res.get("stored"):
             LOG.info("G14 盘口快照已落库 %d 行", res["stored"])
     except Exception:
         LOG.warning("G14 盘口快照调度失败（已吞掉）: %s", traceback.format_exc())
-
 
 
 def _maybe_newdata(state):
@@ -797,14 +939,14 @@ def _maybe_newdata(state):
     采集器自带幂等落库 + A1 探针；研究侧纪律：只采集落库，不进综合分。"""
     try:
         import checkpoint
+
         day = checkpoint.today_str()
         import threading as _th
-        for stage, run in (("openvlab_map", _run_openvlab_map),
-                           ("jiaoyikecha", _run_jiaoyikecha)):
+
+        for stage, run in (("openvlab_map", _run_openvlab_map), ("jiaoyikecha", _run_jiaoyikecha)):
             if checkpoint.done(day, stage):
                 continue
-            _th.Thread(target=run, kwargs={"day": day, "stage": stage},
-                       daemon=True).start()
+            _th.Thread(target=run, kwargs={"day": day, "stage": stage}, daemon=True).start()
     except Exception:
         LOG.warning("新数据源调度失败（已吞掉）: %s", traceback.format_exc())
 
@@ -820,7 +962,10 @@ def _maybe_device_health(state):
         if not os.path.exists(dev_file):
             return 0
         import json as _json
-        dev_json = os.path.join(config.BASE_DIR, "..", "..", "界面操作收集装置", "data", "report_device.json")
+
+        dev_json = os.path.join(
+            config.BASE_DIR, "..", "..", "界面操作收集装置", "data", "report_device.json"
+        )
         dev_json = os.path.abspath(dev_json)
         if not os.path.exists(dev_json):
             # 兜底：量化 reports 目录下也可能由装置写入（fusion.save_report 双写）
@@ -835,21 +980,35 @@ def _maybe_device_health(state):
         for name, s in (rep.get("sources") or {}).items():
             ok = bool(s.get("ok"))
             hits = int(s.get("hits", 0))
-            rows.append({"source": "device_" + str(name)[:36],
-                         "req": hits, "ok": 1 if ok else 0,
-                         "fail": 0 if ok else max(1, hits),
-                         "stale": 0, "jump": 0,
-                         "latency_ms": 0,
-                         "state": "closed" if ok else "open",
-                         "note": "装置源"})
+            rows.append(
+                {
+                    "source": "device_" + str(name)[:36],
+                    "req": hits,
+                    "ok": 1 if ok else 0,
+                    "fail": 0 if ok else max(1, hits),
+                    "stale": 0,
+                    "jump": 0,
+                    "latency_ms": 0,
+                    "state": "closed" if ok else "open",
+                    "note": "装置源",
+                }
+            )
         # 软件在线状态也并入（legend/ths）
         for name, s in (rep.get("software") or {}).items():
             ok = bool(s.get("online"))
-            rows.append({"source": "device_sw_" + str(name)[:34],
-                         "req": 1, "ok": 1 if ok else 0, "fail": 0 if ok else 1,
-                         "stale": 0, "jump": 0, "latency_ms": 0,
-                         "state": "closed" if ok else "open",
-                         "note": str(s.get("detail") or "")[:40]})
+            rows.append(
+                {
+                    "source": "device_sw_" + str(name)[:34],
+                    "req": 1,
+                    "ok": 1 if ok else 0,
+                    "fail": 0 if ok else 1,
+                    "stale": 0,
+                    "jump": 0,
+                    "latency_ms": 0,
+                    "state": "closed" if ok else "open",
+                    "note": str(s.get("detail") or "")[:40],
+                }
+            )
         if rows:
             n = state.db.insert_data_health(ts, rows)
             LOG.info("装置健康已并入 data_health: %d 行（source 前缀 device_）", n)
@@ -863,17 +1022,22 @@ def _maybe_device_health(state):
 def _run_openvlab_map(day, stage):
     try:
         import sys as _sys
+
         _tools_dir = os.path.join(config.BASE_DIR, "tools")
         if _tools_dir not in _sys.path:
             _sys.path.insert(0, _tools_dir)
         import openvlab_map
+
         rows = openvlab_map.fetch_map()
         n = openvlab_map.store(rows=rows)
         checks = openvlab_map.cross_check(rows)
         openvlab_map.render(rows, checks)
         import checkpoint
+
         checkpoint.mark(day, stage)
-        LOG.info("openvlab_map 每日采集: %d 品种 / 落库 %d / 交叉校验 %d", len(rows), n, len(checks))
+        LOG.info(
+            "openvlab_map 每日采集: %d 品种 / 落库 %d / 交叉校验 %d", len(rows), n, len(checks)
+        )
     except Exception:
         LOG.warning("openvlab_map 每日采集失败（已吞掉，明日重试）: %s", traceback.format_exc())
 
@@ -881,12 +1045,15 @@ def _run_openvlab_map(day, stage):
 def _run_jiaoyikecha(day, stage):
     try:
         import sys as _sys
+
         _tools_dir = os.path.join(config.BASE_DIR, "tools")
         if _tools_dir not in _sys.path:
             _sys.path.insert(0, _tools_dir)
         import jiaoyikecha_collector as jykt
+
         res = jykt.run(verbose=False)
         import checkpoint
+
         checkpoint.mark(day, stage)
         eps = {k: v["n"] for k, v in res["endpoints"].items()}
         LOG.info("jiaoyikecha 每日采集: 会话%s %s", "OK" if res["session_ok"] else "FAIL", eps)
@@ -900,20 +1067,20 @@ def run_cycle(state):
     state.rotation_desc = rotation_desc()
     tag = state.emergency_tag or ""
     tag = ("【%s】" % tag.strip("[]")) if tag else ""
-    LOG.info("========== 第 %d 轮分析开始%s（%s）==========",
-             state.cycle, tag, state.rotation_desc)
+    LOG.info("========== 第 %d 轮分析开始%s（%s）==========", state.cycle, tag, state.rotation_desc)
 
     # 1. 新闻（每轮抓取一次）
     news = sina_news.fetch_all_news()
     if news:
         added = state.news.add(news)
-        report.append_daily_news(news)   # 当日新闻缓存（供每日复盘使用）
+        report.append_daily_news(news)  # 当日新闻缓存（供每日复盘使用）
         try:
-            state.db.insert_news(news)   # P1：新闻结构化入库
+            state.db.insert_news(news)  # P1：新闻结构化入库
         except Exception:
             LOG.warning("新闻结构化入库失败（不影响本轮监控）:\n%s", traceback.format_exc())
-        LOG.info("新闻抓取 %d 条（新增 %d 条，池内 %d 条）",
-                 len(news), added, len(state.news.items))
+        LOG.info(
+            "新闻抓取 %d 条（新增 %d 条，池内 %d 条）", len(news), added, len(state.news.items)
+        )
 
     # 2. 全品种行情
     watchlist = list(state.watchlist)
@@ -927,8 +1094,9 @@ def run_cycle(state):
     # P1：量仓资金因子需要相邻轮次快照；行情同时入 SQLite。
     flow_map = state.flow_tracker.update(quotes, now_ts)
     try:
-        state.db.insert_quotes(state.cycle, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                               watchlist, quotes)
+        state.db.insert_quotes(
+            state.cycle, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), watchlist, quotes
+        )
     except Exception:
         LOG.warning("行情结构化入库失败（不影响本轮监控）:\n%s", traceback.format_exc())
 
@@ -937,20 +1105,36 @@ def run_cycle(state):
         try:
             _trading_now = is_trading_time()[0]
             health_res = state.health_monitor.observe_cycle(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), quotes, codes,
-                REGISTRY.snapshots(), today_str=datetime.now().strftime("%Y-%m-%d"),
-                session_active=_trading_now)
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                quotes,
+                codes,
+                REGISTRY.snapshots(),
+                today_str=datetime.now().strftime("%Y-%m-%d"),
+                session_active=_trading_now,
+            )
             state.last_health = health_res
             state.db.insert_data_health(health_res["ts"], health_res["rows"])
             if health_res["alert_codes"]:
-                state.alerts.emit("数据缺失提醒",
-                    "以下品种连续%d轮无行情: %s" % (config.DATA_HEALTH_MISS_ALERT_CYCLES,
-                    ",".join(health_res["alert_codes"][:20])),
-                    level="info", key="dh_miss", cooldown=1800)
+                state.alerts.emit(
+                    "数据缺失提醒",
+                    "以下品种连续%d轮无行情: %s"
+                    % (
+                        config.DATA_HEALTH_MISS_ALERT_CYCLES,
+                        ",".join(health_res["alert_codes"][:20]),
+                    ),
+                    level="info",
+                    key="dh_miss",
+                    cooldown=1800,
+                )
             _src_bad = sorted(set(health_res["alert_sources"]) | set(health_res["open_sources"]))
             if _src_bad:
-                state.alerts.emit("数据源熔断提醒", "数据源异常/熔断: %s" % ",".join(_src_bad),
-                    level="strong", key="dh_source", cooldown=1800)
+                state.alerts.emit(
+                    "数据源熔断提醒",
+                    "数据源异常/熔断: %s" % ",".join(_src_bad),
+                    level="strong",
+                    key="dh_source",
+                    cooldown=1800,
+                )
         except Exception:
             LOG.warning("数据质量监控失败（不影响本轮监控）:\n%s", traceback.format_exc())
 
@@ -958,8 +1142,7 @@ def run_cycle(state):
     #     共享入口与 paper_ticker 同一份评分路径（analyzer.analyze_all_varieties），
     #     保证纸面 ticker 每分钟独立信号与主报告开仓口径一致；只读共享缓存，不写报告侧。
     fut_rows = analyzer.analyze_all_varieties(state, watchlist, quotes, flow_map)
-    state.last_forecasts = {row["name"]: row["forecast"]
-                            for row in fut_rows if row.get("forecast")}
+    state.last_forecasts = {row["name"]: row["forecast"] for row in fut_rows if row.get("forecast")}
 
     # 3.9 第11/12轮：期权完整T链（多到期日）并发预热（30分钟缓存，命中零请求）：
     #     主力月份链挂 row["option_chain"]（持仓PCR/ATM/最大持仓行权价，保持第11轮行为）；
@@ -972,20 +1155,23 @@ def run_cycle(state):
         sym = row["sym"]
         months = []
         cal_months = opt_cal.get(sym) or {}
-        for yymm in sorted(cal_months):                    # OpenVlab 真实挂牌月份+到期日
+        for yymm in sorted(cal_months):  # OpenVlab 真实挂牌月份+到期日
             # 日历键为完整年月6位（202611），新浪T链pinzhong需两位年（2611）；(//100)%100 同时兼容4位
             yy, mm = (yymm // 100) % 100, yymm % 100
             exp_date = cal_months[yymm].get("exp_date")
-            dleft = (exp_date - date.today()).days if exp_date \
+            dleft = (
+                (exp_date - date.today()).days
+                if exp_date
                 else contracts.estimate_option_days(yy, mm)
+            )
             if dleft < config.IV_SURFACE_MIN_DAYS:
                 continue
             months.append((yy, mm, dleft))
-        if not months:                                     # 日历缺失时回退到合约探测的期权月份
+        if not months:  # 日历缺失时回退到合约探测的期权月份
             om0 = row.get("opt_month") or {}
             if om0.get("yy"):
                 months = [(om0["yy"], om0["mm"], om0.get("opt_days", config.OPT_ASSUMED_DAYS))]
-        months = months[:config.IV_SURFACE_EXPIRIES]
+        months = months[: config.IV_SURFACE_EXPIRIES]
         if not months:
             continue
         variety_expiries[sym] = months
@@ -1011,22 +1197,27 @@ def run_cycle(state):
             label = "%02d%02d" % (int(yy), int(mm))
             chains_by_label[label] = ch
             days_map[label] = dleft
-            chain_rows_for_db.append((row["name"], ch))   # 每月份一行快照，为曲面/PCR积累历史
+            chain_rows_for_db.append((row["name"], ch))  # 每月份一行快照，为曲面/PCR积累历史
         om = row.get("opt_month") or {}
         main_label = "%02d%02d" % (int(om["yy"]), int(om["mm"])) if om.get("yy") else None
         if main_label and main_label in chains_by_label:
             row["option_chain"] = chains_by_label[main_label]
         try:
-            surf = iv_surface.build_surface(sym, row["ex"], row["price"],
-                                            chains_by_label, days_map, main_label=main_label)
+            surf = iv_surface.build_surface(
+                sym, row["ex"], row["price"], chains_by_label, days_map, main_label=main_label
+            )
             if surf:
                 row["iv_surface"] = surf
                 n_surface += 1
         except Exception:
             LOG.debug("IV曲面构建失败 %s:\n%s", row["name"], traceback.format_exc())
     if chain_tasks:
-        LOG.info("期权完整链就绪 %d 个月份/%d 个品种，IV曲面 %d 个品种（持仓PCR+T链反推IV口径）",
-                 len(chain_rows_for_db), len(variety_expiries), n_surface)
+        LOG.info(
+            "期权完整链就绪 %d 个月份/%d 个品种，IV曲面 %d 个品种（持仓PCR+T链反推IV口径）",
+            len(chain_rows_for_db),
+            len(variety_expiries),
+            n_surface,
+        )
 
     # 4. 期权严格分析（比期货更严格）
     opt_rows = []
@@ -1087,8 +1278,9 @@ def run_cycle(state):
         state.db.insert_future_signals(state.cycle, cycle_time, fut_rows)
         state.db.insert_options(state.cycle, cycle_time, opt_rows, strat_rows, fut_rows)
         state.db.insert_option_chains(state.cycle, cycle_time, chain_rows_for_db)
-        fund_db = [(r["name"], r["sym"], r.get("fundamental"))
-                   for r in fut_rows if r.get("fundamental")]
+        fund_db = [
+            (r["name"], r["sym"], r.get("fundamental")) for r in fut_rows if r.get("fundamental")
+        ]
         state.db.insert_fundamentals(cycle_time, fund_db)
         report.write_signal_tracking(state)
     except Exception:
@@ -1106,6 +1298,7 @@ def run_cycle(state):
         _pa = {}
         try:
             from paper_analysis import paper_analyze
+
             _pa = paper_analyze(state, quotes, watchlist)
         except Exception:
             LOG.warning("纸面独立分析失败（本轮纸面跳过，不影响主链）:\n%s", traceback.format_exc())
@@ -1136,7 +1329,7 @@ def run_cycle(state):
         # - 非交易时段两边都冻结，此处跳过条件不生效（_skip_paper 已提前短路）。
         _ticker_took_over = bool(getattr(state, "_paper_ticker_running", False)) and _trading_now
         if _skip_paper:
-            pass                      # 非交易时段：仅快照已落，撮合/报告/汇总全跳过（旧行为）
+            pass  # 非交易时段：仅快照已落，撮合/报告/汇总全跳过（旧行为）
         elif _ticker_took_over:
             LOG.debug("纸面由 paper_ticker 接管（run_cycle 5.5 跳过撮合/写盘，仅落快照）")
         elif _pa_fut:
@@ -1151,16 +1344,26 @@ def run_cycle(state):
                     # 期权撮合（所有账户都做；小资金档 priority 控制参与强度）
                     # 第110轮：额外传入 opt_rows（analyze_option 单腿信号），option_only/option_first 档启用
                     if (_pa_strat or _pa_opt) and _pa_chain:
-                        _ols = _broker.on_cycle_options(cycle_time, _pa_strat, _pa_chain,
-                                                        _pa_fut, opt_rows=_pa_opt if _pa_opt else None)
+                        _ols = _broker.on_cycle_options(
+                            cycle_time,
+                            _pa_strat,
+                            _pa_chain,
+                            _pa_fut,
+                            opt_rows=_pa_opt if _pa_opt else None,
+                        )
                         (state.last_papers.get(_name) or {})["opt"] = _ols
                 except Exception:
-                    LOG.warning("账户 %s 纸面撮合失败（不影响主链）: %s", _name, traceback.format_exc())
+                    LOG.warning(
+                        "账户 %s 纸面撮合失败（不影响主链）: %s", _name, traceback.format_exc()
+                    )
             # 向后兼容：state.paper/state.last_paper 指向第一个账户（基准）
             if state.papers:
                 _first = list(state.papers.values())[0]
-                state.last_paper = state.last_papers.get(_first.name) \
-                    if getattr(_first, "name", None) in state.last_papers else _first.last_summary
+                state.last_paper = (
+                    state.last_papers.get(_first.name)
+                    if getattr(_first, "name", None) in state.last_papers
+                    else _first.last_summary
+                )
             try:
                 report.write_paper_account(state)
             except Exception:
@@ -1171,9 +1374,14 @@ def run_cycle(state):
                 for _name, _broker in state.papers.items():
                     _s = state.last_papers.get(_name) or {}
                     _ls = _s.get("snapshot") or {}
-                    _parts.append("%s(权益%.2f/风险%.2f%%)" % (
-                        _name, float(_ls.get("equity", 0.0)),
-                        float(_ls.get("risk_degree", 0.0)) * 100.0))
+                    _parts.append(
+                        "%s(权益%.2f/风险%.2f%%)"
+                        % (
+                            _name,
+                            float(_ls.get("equity", 0.0)),
+                            float(_ls.get("risk_degree", 0.0)) * 100.0,
+                        )
+                    )
                 LOG.info("纸面账户本轮: %s", "  ".join(_parts)[:300])
             except Exception:
                 pass
@@ -1190,13 +1398,18 @@ def run_cycle(state):
     _maybe_device_health(state)
     try:
         import parser_health
+
         parser_health.emit_health_alerts(state)
     except Exception:
         pass
     state.alerts.observe_cycle(state, fut_rows, strat_rows)
-    LOG.info("第 %d 轮分析完成，报告已保存到 %s | %s | %s",
-             state.cycle, config.REPORT_FILE,
-             state.webdata.status_line(), state.breader.status_line())
+    LOG.info(
+        "第 %d 轮分析完成，报告已保存到 %s | %s | %s",
+        state.cycle,
+        config.REPORT_FILE,
+        state.webdata.status_line(),
+        state.breader.status_line(),
+    )
     # 第一轮真实报告生成并刷新实时HTML后，自动用默认浏览器打开一次（--no-launch/配置可关）
     if state.cycle == 1:
         open_realtime_report_once(state)
@@ -1206,8 +1419,9 @@ def run_cycle(state):
     now_dt = datetime.now()
     owner = trade_owner_date(now_dt)
     owner_s = owner.strftime("%Y-%m-%d")
-    if (review_is_due(owner, now_dt) or getattr(state, "force_review", False)) \
-            and state.review_date != owner_s:
+    if (
+        review_is_due(owner, now_dt) or getattr(state, "force_review", False)
+    ) and state.review_date != owner_s:
         try:
             review_text = report.build_daily_review(state, owner)
             report.write_daily_review(review_text, owner)
@@ -1219,6 +1433,7 @@ def run_cycle(state):
 
 # ---------------- 入口 ----------------
 
+
 def _build_emergency(state, nxt):
     """根据 state.last_emergency 生成 (块头标记, 正文说明)，兼容原油急动/全网消息两类"""
     em = state.last_emergency or {}
@@ -1229,8 +1444,15 @@ def _build_emergency(state, nxt):
         note = (
             "原油急动紧急轮动：%s 近%d秒 %+.2f%%（%.3f→%.3f），立即按实时数据重算全部品种及期权建议"
             "（全部报告同步写入、看板同步刷新）；原定%s的计划轮动时间不变，继续等待"
-            % (em.get("name", ""), em.get("window_sec", 0), em.get("ret", 0) * 100,
-               em.get("base", 0.0), em.get("price", 0.0), when))
+            % (
+                em.get("name", ""),
+                em.get("window_sec", 0),
+                em.get("ret", 0) * 100,
+                em.get("base", 0.0),
+                em.get("price", 0.0),
+                when,
+            )
+        )
     else:
         tag = "[全网消息紧急轮动]"
         it = em.get("item", {})
@@ -1242,8 +1464,8 @@ def _build_emergency(state, nxt):
             "全网扫描紧急轮动（%s）：%s『%s』%s 影响权重%+.2f，直接影响品种：%s；"
             "立即按实时数据重算全部品种及期权建议（全部报告同步写入、看板同步刷新）；"
             "原定%s的计划轮动时间不变，继续等待"
-            % (kind, src_name, it.get("content", "")[:90], doubt,
-               em.get("weight", 0.0), aff, when))
+            % (kind, src_name, it.get("content", "")[:90], doubt, em.get("weight", 0.0), aff, when)
+        )
     return tag, note
 
 
@@ -1254,7 +1476,7 @@ def wait_with_emergency(state, nxt):
     同时做**交易时段边沿检测**：非交易→交易（开盘）或交易→非交易（收盘/午休）的翻转点一到，
     立即返回 "edge"，由主循环马上跑一轮并按新时段节奏（交易=5/10分钟、非交易=1分钟）重排计划。
     返回值：True=已到计划时刻；"edge"=时段切换需立即轮动；False=收到停止信号。"""
-    enter_trading = is_trading_time()[0]      # 进入等待时的交易状态，作为边沿比对基线
+    enter_trading = is_trading_time()[0]  # 进入等待时的交易状态，作为边沿比对基线
     while not state.stop.is_set():
         now = datetime.now()
         # 同时等待"计划点 nxt"与"下一个时段翻转点"，谁先到先醒（翻转点缺失时只等 nxt）
@@ -1263,7 +1485,7 @@ def wait_with_emergency(state, nxt):
         if trans:
             waits.append((trans - now).total_seconds())
         remaining = min(waits)
-        wait = remaining if remaining > 0 else 1.0       # 已过时兜底1秒快速重估，不空转
+        wait = remaining if remaining > 0 else 1.0  # 已过时兜底1秒快速重估，不空转
         kicked = state.kick.wait(wait)
         if state.stop.is_set():
             return False
@@ -1283,9 +1505,9 @@ def wait_with_emergency(state, nxt):
         now = datetime.now()
         now_trading = is_trading_time(now)[0]
         if now_trading != enter_trading:
-            return "edge"                    # 开盘/收盘瞬间：立即回主循环跑一轮，再按新节奏重排
+            return "edge"  # 开盘/收盘瞬间：立即回主循环跑一轮，再按新节奏重排
         if (nxt - now).total_seconds() <= 1.0:
-            return True                      # 到达计划时刻，回主循环跑定时轮
+            return True  # 到达计划时刻，回主循环跑定时轮
         # 距计划点尚有时间、状态也未翻转（翻转点秒级抖动提前醒来）：继续等待
     return False
 
@@ -1296,6 +1518,7 @@ def _paper_single_instance():
     Windows msvcrt 文件锁随进程退出（含崩溃）自动释放，不留死锁。
     返回文件句柄（持有锁）或 None（未抢到锁，调用方应禁用纸面撮合）。"""
     import msvcrt
+
     try:
         lock_dir = os.path.join(config.BASE_DIR, "data", "paper_accounts")
         os.makedirs(lock_dir, exist_ok=True)
@@ -1313,24 +1536,38 @@ def _paper_single_instance():
 def main():
     parser = argparse.ArgumentParser(description="期货全品种监控分析")
     parser.add_argument("--once", action="store_true", help="只跑一轮分析后退出")
-    parser.add_argument("--no-launch", action="store_true",
-                        help="不自动打开同花顺期货通，也不自动弹出首轮实时报告HTML")
+    parser.add_argument(
+        "--no-launch",
+        action="store_true",
+        help="不自动打开同花顺期货通，也不自动弹出首轮实时报告HTML",
+    )
     parser.add_argument("--oil-interval", type=int, default=config.OIL_INTERVAL)
-    parser.add_argument("--news-interval", type=int, default=config.REPORT_INTERVAL,
-                        help="（兼容保留）非交易时段分析周期；交易时段轮动节奏自动接管")
-    parser.add_argument("--force-review", action="store_true",
-                        help="立即生成当日复盘报告（测试用）")
-    parser.add_argument("--llm-force", action="store_true",
-                        help="G13：本轮强制触发一次 LLM 第二意见（无自然触发器也复核 top-3；测试/自检用）")
-    parser.add_argument("--version", action="store_true",
-                        help="打印版本号（读 VERSION）后退出，不启动监控（G19）")
+    parser.add_argument(
+        "--news-interval",
+        type=int,
+        default=config.REPORT_INTERVAL,
+        help="（兼容保留）非交易时段分析周期；交易时段轮动节奏自动接管",
+    )
+    parser.add_argument(
+        "--force-review", action="store_true", help="立即生成当日复盘报告（测试用）"
+    )
+    parser.add_argument(
+        "--llm-force",
+        action="store_true",
+        help="G13：本轮强制触发一次 LLM 第二意见（无自然触发器也复核 top-3；测试/自检用）",
+    )
+    parser.add_argument(
+        "--version", action="store_true", help="打印版本号（读 VERSION）后退出，不启动监控（G19）"
+    )
     args = parser.parse_args()
 
     if getattr(args, "version", False):
         # G19：只读打印版本即退出，不初始化环境/不连库/不启动常驻，默认行为完全不变
         try:
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
-                      "r", encoding="utf-8-sig") as _vf:
+            with open(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+                encoding="utf-8-sig",
+            ) as _vf:
                 print(_vf.read().strip())
         except OSError:
             print("unknown")
@@ -1350,12 +1587,17 @@ def main():
     counts = {}
     for _, meta in universe:
         counts[meta["ex"]] = counts.get(meta["ex"], 0) + 1
-    note = "、".join(f"{config.EXCHANGE_NAMES[ex]}{counts.get(ex, 0)}个"
-                     for ex in config.EXCHANGE_ORDER)
+    note = "、".join(
+        f"{config.EXCHANGE_NAMES[ex]}{counts.get(ex, 0)}个" for ex in config.EXCHANGE_ORDER
+    )
     print("=" * 96)
-    print(" 期货全品种监控分析  (上期所/上期能源/大商所/郑商所/广期所 全品种+期权 | 原油10s | 消息60s)")
+    print(
+        " 期货全品种监控分析  (上期所/上期能源/大商所/郑商所/广期所 全品种+期权 | 原油10s | 消息60s)"
+    )
     print(f" 品种覆盖 {len(universe)} 个（{note}） | 报告: {config.REPORT_FILE}")
-    print(" 启动时将自动以调试模式打开同花顺期货通（独立 DevTools 窗口）；购买建议自动标注主力合约月份与期权月份")
+    print(
+        " 启动时将自动以调试模式打开同花顺期货通（独立 DevTools 窗口）；购买建议自动标注主力合约月份与期权月份"
+    )
     print("=" * 96, flush=True)
 
     state = State(universe)
@@ -1373,6 +1615,7 @@ def main():
     # P1-3：首份图表数据（组合CSV/因子JSON/SQLite 已可画；横截面/校准等首轮内存态补齐）
     try:
         import charts
+
         charts.write_chart_data(state)
     except Exception as _e:
         LOG.warning("首份图表数据生成失败: %s", _e)
@@ -1397,16 +1640,18 @@ def main():
     refresh_fundamentals(state, force=True)
 
     # 第14轮 WP-D0：启动同步做一次主力合约分钟K小回填（首轮即有自有分钟数据；常驻模式另由后台线程持续自采）
-    LOG.info("正在采集分钟K线（新浪主连全周期 1/5/15/30/60m 唯一源，第118轮：删除通达信/东财分钟K）...")
+    LOG.info(
+        "正在采集分钟K线（新浪主连全周期 1/5/15/30/60m 唯一源，第118轮：删除通达信/东财分钟K）..."
+    )
     try:
         collect_minute_bars(state, "once")
     except Exception as e:
         LOG.warning("启动分钟K采集失败（不影响主监控）: %s", e)
 
-    threading.Thread(target=oil_loop, args=(state, max(args.oil_interval, 3)),
-                     daemon=True).start()
-    threading.Thread(target=web_scan_loop, args=(state, config.WEB_SCAN_INTERVAL),
-                     daemon=True).start()
+    threading.Thread(target=oil_loop, args=(state, max(args.oil_interval, 3)), daemon=True).start()
+    threading.Thread(
+        target=web_scan_loop, args=(state, config.WEB_SCAN_INTERVAL), daemon=True
+    ).start()
     threading.Thread(target=state.webdata.loop, daemon=True).start()
     threading.Thread(target=state.breader.loop, daemon=True).start()
     threading.Thread(target=kline_loop, args=(state,), daemon=True).start()
@@ -1415,11 +1660,14 @@ def main():
     if not args.once:
         threading.Thread(target=minute_bars_loop, args=(state,), daemon=True).start()
     threading.Thread(target=watchdog_loop, args=(state,), daemon=True).start()
-    threading.Thread(target=backup_loop, args=(state,), daemon=True).start()   # 第127轮：每日热备
+    threading.Thread(target=backup_loop, args=(state,), daemon=True).start()  # 第127轮：每日热备
     # 第103轮：纸面撮合独立 ticker 线程（交易时段每分钟撮合；--once/PAPER关闭/间隔0 均不启动，
     # 间隔0=完全回退 run_cycle 同步驱动=旧行为）
-    if not args.once and getattr(config, "PAPER_ENABLED", False) and \
-            getattr(config, "PAPER_TICK_INTERVAL", 0) > 0:
+    if (
+        not args.once
+        and getattr(config, "PAPER_ENABLED", False)
+        and getattr(config, "PAPER_TICK_INTERVAL", 0) > 0
+    ):
         threading.Thread(target=paper_ticker.tick_loop, args=(state,), daemon=True).start()
         # 第115轮：记录 ticker 已接管纸面撮合+写盘，供 run_cycle 5.5 段在交易时段跳过
         # 同步 on_cycle/write_paper_account（避免 run_cycle 5/10 分钟写盘覆盖 ticker 每分钟写盘）。
@@ -1450,6 +1698,7 @@ def main():
                 # G13：--once 退出会杀掉 daemon 的 LLM 复核线程，退出前有界等待其完成
                 try:
                     import llm_reviewer
+
                     llm_reviewer.wait_last(timeout=90)
                 except Exception:
                     pass
@@ -1460,33 +1709,43 @@ def main():
                 break
             # 计划下一轮时刻只计算一次；等待期间原油急动/全网高影响消息可"插队"出紧急轮，但该时刻不重算、不推移
             nxt = next_cycle_time(datetime.now())
-            LOG.info("下一轮计划时间 %s（%.0f秒后；期间原油急动或全网消息会插入紧急轮，但不推移该时间）",
-                     nxt.strftime("%H:%M:%S"), (nxt - datetime.now()).total_seconds())
+            LOG.info(
+                "下一轮计划时间 %s（%.0f秒后；期间原油急动或全网消息会插入紧急轮，但不推移该时间）",
+                nxt.strftime("%H:%M:%S"),
+                (nxt - datetime.now()).total_seconds(),
+            )
             reason = wait_with_emergency(state, nxt)
-            if not reason:                    # False=收到停止信号
+            if not reason:  # False=收到停止信号
                 break
-            if reason == "edge":              # 交易/非交易时段切换：立即回循环顶部跑一轮，再按新时段节奏重排
+            if reason == "edge":  # 交易/非交易时段切换：立即回循环顶部跑一轮，再按新时段节奏重排
                 trading_now, sess_desc = is_trading_time()
                 if trading_now:
-                    LOG.warning("检测到进入交易时段（%s）：立即开始交易时段轮动；本轮之后按该时段节奏"
-                                "（开盘前30分钟每5分钟、其后每10分钟）排程", sess_desc)
+                    LOG.warning(
+                        "检测到进入交易时段（%s）：立即开始交易时段轮动；本轮之后按该时段节奏"
+                        "（开盘前30分钟每5分钟、其后每10分钟）排程",
+                        sess_desc,
+                    )
                 else:
-                    LOG.warning("检测到交易时段结束（%s）：立即轮动一轮，随后切换为非交易时段节奏"
-                                "（每%d秒一轮）", sess_desc, config.REPORT_INTERVAL)
+                    LOG.warning(
+                        "检测到交易时段结束（%s）：立即轮动一轮，随后切换为非交易时段节奏"
+                        "（每%d秒一轮）",
+                        sess_desc,
+                        config.REPORT_INTERVAL,
+                    )
                 continue
     except KeyboardInterrupt:
         print("\n收到退出指令，正在停止...", flush=True)
     finally:
         state.stop.set()
-        state.kick.set()          # 唤醒主循环等待，快速退出
+        state.kick.set()  # 唤醒主循环等待，快速退出
         try:
             state.db.close()
         except Exception:
             pass
-        close_debug_browser()     # 正常退出/KeyboardInterrupt/--once 时关闭调试浏览器
-        ths_app.kill_ths()        # 正常退出时联动关闭本程序启动的同花顺
-        close_device_daemon()     # 正常退出时联动关闭本程序拉起的装置 daemon（第125轮）
-        if paper_lock is not None:      # 释放纸面单实例锁（进程退出/崩溃时系统也会自动释放）
+        close_debug_browser()  # 正常退出/KeyboardInterrupt/--once 时关闭调试浏览器
+        ths_app.kill_ths()  # 正常退出时联动关闭本程序启动的同花顺
+        close_device_daemon()  # 正常退出时联动关闭本程序拉起的装置 daemon（第125轮）
+        if paper_lock is not None:  # 释放纸面单实例锁（进程退出/崩溃时系统也会自动释放）
             try:
                 paper_lock.close()
             except Exception:

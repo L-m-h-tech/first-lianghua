@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """通用工具。
 【需求⑩ + P0-1/P0-3/P0-4】交易时段判定与轮动调度：
   - 日盘 09:00-11:30 / 13:30-15:00 全品种一致；夜盘 21:00 开盘后按品种分档收市
@@ -9,12 +8,14 @@
   - RotatingFileHandler 日志轮转，monitor.log 不再无限增长。
 rotation_desc 供报告块头标明本轮时间/节奏/下一轮计划。
 其余为通用能力：终端安全文本、对齐、正态分布函数等。"""
+
 import logging
 import math
 import os
 import sys
 import unicodedata
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta
+from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
 
 import trade_calendar
@@ -25,12 +26,13 @@ LOG = logging.getLogger("monitor")
 # 日盘两段（分钟轴）；夜盘 21:00 开盘、全局最晚次日02:30 收（分档见 config.night_end_min）
 _DAY_SESSIONS = ((9 * 60, 11 * 60 + 30), (13 * 60 + 30, 15 * 60))
 _NIGHT_START = dtime(21, 0)
-_NIGHT_LAST_END = dtime(2, 30)          # 全局最晚收市（黄金/白银/原油）
+_NIGHT_LAST_END = dtime(2, 30)  # 全局最晚收市（黄金/白银/原油）
 
 
 def setup_environment():
     """初始化目录、日志（按大小轮转）、标准输出编码（避免Windows控制台GBK编码报错）"""
     import config
+
     for d in ("reports", "logs", "cache", "data"):
         os.makedirs(os.path.join(BASE_DIR, d), exist_ok=True)
     try:
@@ -42,15 +44,18 @@ def setup_environment():
     # basicConfig 抢占导致轮转文件挂不上；重复调用也不会累积重复句柄）
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    root.handlers = [h for h in root.handlers
-                     if not isinstance(h, (logging.StreamHandler, RotatingFileHandler))]
+    root.handlers = [
+        h for h in root.handlers if not isinstance(h, (logging.StreamHandler, RotatingFileHandler))
+    ]
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     fh = RotatingFileHandler(
         os.path.join(BASE_DIR, "logs", "monitor.log"),
-        maxBytes=config.LOG_MAX_BYTES, backupCount=config.LOG_BACKUP_COUNT,
-        encoding="utf-8")
+        maxBytes=config.LOG_MAX_BYTES,
+        backupCount=config.LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     fh.setFormatter(fmt)
     root.addHandler(sh)
     root.addHandler(fh)
@@ -77,12 +82,18 @@ def current_session(now=None):
     if trade_calendar.is_trade_day(d):
         for s_min, e_min in _DAY_SESSIONS:
             if s_min <= t < e_min:
-                return (datetime.combine(d, dtime(s_min // 60, s_min % 60)),
-                        datetime.combine(d, dtime(e_min // 60, e_min % 60)), "日盘")
+                return (
+                    datetime.combine(d, dtime(s_min // 60, s_min % 60)),
+                    datetime.combine(d, dtime(e_min // 60, e_min % 60)),
+                    "日盘",
+                )
         # 2) 今晚夜盘（21:00 之后，且今晚开夜盘）
         if t >= 21 * 60 and trade_calendar.has_night_session(d):
-            return (datetime.combine(d, _NIGHT_START),
-                    datetime.combine(d + timedelta(days=1), _NIGHT_LAST_END), "夜盘")
+            return (
+                datetime.combine(d, _NIGHT_START),
+                datetime.combine(d + timedelta(days=1), _NIGHT_LAST_END),
+                "夜盘",
+            )
     # 3) 凌晨 00:00-02:30：前一交易日晚夜盘的延续
     if t < 2 * 60 + 30:
         prev_d = d - timedelta(days=1)
@@ -96,7 +107,7 @@ def current_session(now=None):
 def _night_phase_desc(now):
     """夜盘当前阶段的文字（哪些档位的品种还在交易）"""
     t = now.hour * 60 + now.minute
-    axis = t if t >= 21 * 60 else t + 1440     # 映射到 21:00 起的夜盘轴
+    axis = t if t >= 21 * 60 else t + 1440  # 映射到 21:00 起的夜盘轴
     if axis < 23 * 60:
         return "夜盘交易时段(21:00开盘,多数品种23:00收市)"
     if axis < 24 * 60 + 60:
@@ -125,6 +136,7 @@ def is_variety_trading(meta, now=None):
     """某品种当前是否在其自身交易时段内：
     日盘全部品种一致；夜盘按该品种 sym 的收市分档（无夜盘品种夜盘段恒 False）。"""
     import config
+
     now = now or datetime.now()
     sess = current_session(now)
     if sess is None:
@@ -145,21 +157,24 @@ def trading_subset(watchlist, now=None):
     行情冻结为上一收盘价，喂进纸面撮合会产生"用冻结价成交"的无意义记录，
     故夜盘时段纸面/行情拉取只对活跃子集进行。now 可注入（测试用）。"""
     watchlist = list(watchlist or [])
-    return [(name, meta) for name, meta in watchlist
-            if is_variety_trading(meta, now=now)]
+    return [(name, meta) for name, meta in watchlist if is_variety_trading(meta, now=now)]
 
 
 def cycle_interval(now=None):
     """当前应使用的轮动间隔（秒）：
     交易时段前30分钟每5分钟一轮，之后每10分钟一轮；非交易时段每1分钟一轮"""
     import config
+
     now = now or datetime.now()
     sess = current_session(now)
     if not sess:
         return config.REPORT_INTERVAL
     elapsed_min = (now - sess[0]).total_seconds() / 60.0
-    return (config.SESSION_EARLY_INTERVAL if elapsed_min < config.SESSION_EARLY_MINUTES
-            else config.SESSION_INTERVAL)
+    return (
+        config.SESSION_EARLY_INTERVAL
+        if elapsed_min < config.SESSION_EARLY_MINUTES
+        else config.SESSION_INTERVAL
+    )
 
 
 def next_session_start(now, within_days=12):
@@ -180,23 +195,24 @@ def next_session_start(now, within_days=12):
 
 def next_cycle_time(now=None):
     """下一轮轮动的计划时刻（真实 datetime 计算，天然支持跨零点夜盘与周六凌晨）：
-      - 交易时段开盘前30分钟：对齐开盘后 5 分钟刻度；
-      - 交易时段30分钟之后：对齐 10 分钟刻度（首档=开盘后30分钟）；
-      - 时段最后一轮之后安排在收盘后1分钟；
-      - 非交易时段：下一整分钟；若1分钟内将开盘则直接对齐开盘时刻。"""
+    - 交易时段开盘前30分钟：对齐开盘后 5 分钟刻度；
+    - 交易时段30分钟之后：对齐 10 分钟刻度（首档=开盘后30分钟）；
+    - 时段最后一轮之后安排在收盘后1分钟；
+    - 非交易时段：下一整分钟；若1分钟内将开盘则直接对齐开盘时刻。"""
     import config
+
     now = now or datetime.now()
     sess = current_session(now)
     if sess:
         s, e, _kind = sess
         early_end = s + timedelta(minutes=config.SESSION_EARLY_MINUTES)
-        if now < early_end:                                  # 开盘前30分钟：5分钟刻度
+        if now < early_end:  # 开盘前30分钟：5分钟刻度
             step = config.SESSION_EARLY_INTERVAL
             n = int((now - s).total_seconds() // step) + 1
             nxt = s + timedelta(seconds=n * step)
             if nxt > early_end:
                 nxt = early_end
-        else:                                                # 之后：10分钟刻度
+        else:  # 之后：10分钟刻度
             step = config.SESSION_INTERVAL
             n = int((now - early_end).total_seconds() // step) + 1
             nxt = early_end + timedelta(seconds=n * step)
@@ -227,10 +243,10 @@ def next_transition(now=None, within_days=12):
         day = d + timedelta(days=i)
         cands = []
         if trade_calendar.is_trade_day(day):
-            cands.append(datetime.combine(day, dtime(9, 0)))     # 日盘上午开盘
+            cands.append(datetime.combine(day, dtime(9, 0)))  # 日盘上午开盘
             cands.append(datetime.combine(day, dtime(13, 30)))  # 日盘下午开盘
         if trade_calendar.has_night_session(day):
-            cands.append(datetime.combine(day, _NIGHT_START))   # 当晚夜盘开盘
+            cands.append(datetime.combine(day, _NIGHT_START))  # 当晚夜盘开盘
         for c in sorted(cands):
             if c > now:
                 return c
@@ -264,6 +280,7 @@ def review_is_due(owner_date, now=None):
 def rotation_desc(now=None):
     """当前轮动节奏的文字描述（写入报告，标明本轮时间、节奏与下一轮计划时间）"""
     import config
+
     now = now or datetime.now()
     trading, sess_desc = is_trading_time(now)
     nxt = next_cycle_time(now).strftime("%H:%M")
@@ -278,8 +295,10 @@ def rotation_desc(now=None):
         win = f"{s.strftime('%H:%M')}-次日{e.strftime('%H:%M')}"
     elapsed_min = (now - s).total_seconds() / 60.0
     if elapsed_min < config.SESSION_EARLY_MINUTES:
-        return (f"{win} {kind}·开盘前{config.SESSION_EARLY_MINUTES}分钟每5分钟轮动"
-                f"（本轮{cur}，下一轮约{nxt}）")
+        return (
+            f"{win} {kind}·开盘前{config.SESSION_EARLY_MINUTES}分钟每5分钟轮动"
+            f"（本轮{cur}，下一轮约{nxt}）"
+        )
     return f"{win} {kind}·每{config.SESSION_INTERVAL // 60}分钟轮动（本轮{cur}，下一轮约{nxt}）"
 
 
@@ -290,10 +309,10 @@ def sanitize(text):
     out = []
     for ch in text:
         o = ord(ch)
-        if o >= 0x10000:          # emoji等增补平面字符
+        if o >= 0x10000:  # emoji等增补平面字符
             continue
         if unicodedata.category(ch) == "Cc" and ch != " ":
-            continue              # 控制字符
+            continue  # 控制字符
         out.append(ch)
     return "".join(out)
 

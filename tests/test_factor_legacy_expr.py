@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G25续（第59轮）旧技术因子"过程式→表达式"parity 台测试（零网络/零DB，纯合成序列）。
 
 钉死：
@@ -8,6 +7,7 @@
   4. 无未来函数、ma10 假值退化；
   5. 回退铁律：main/analyzer/futures_data 源码不得 import factor_legacy_expr（不切主链）。
 """
+
 import math
 import os
 
@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def _closes(n=300, seed=123):
     import random
+
     rng = random.Random(seed)
     c = [100.0]
     for _ in range(n - 1):
@@ -87,6 +88,7 @@ def test_hv20_bit_exact():
 
 def test_orthogonal_ic_blend():
     import random
+
     rng = random.Random(99)
     n = 200
     base = [rng.gauss(0, 1) for _ in range(n)]
@@ -105,6 +107,7 @@ def test_orthogonal_ic_blend():
     assert one["weights"] == [1.0] and one["residuals"][0] == f1
     # 因子数/IC数不一致报错
     import pytest
+
     with pytest.raises(ValueError):
         fle.orthogonal_ic_blend([f1, f2], [0.1])
 
@@ -135,9 +138,22 @@ def test_parity_report_and_catalog():
     assert all(r["bit_exact"] for r in rep["macd"].values())
     assert rep["rsi"]["bit_exact_nonflat"]
     import factors_catalog as catalog
-    for k in ("expr_ret5_exact", "expr_ret20_exact", "expr_ma10", "expr_part_momentum_decl",
-              "expr_ma5", "expr_ma20", "expr_ma60", "expr_boll_std20", "expr_hv20",
-              "expr_macd_dif", "expr_macd_dea", "expr_macd_hist", "expr_rsi14"):
+
+    for k in (
+        "expr_ret5_exact",
+        "expr_ret20_exact",
+        "expr_ma10",
+        "expr_part_momentum_decl",
+        "expr_ma5",
+        "expr_ma20",
+        "expr_ma60",
+        "expr_boll_std20",
+        "expr_hv20",
+        "expr_macd_dif",
+        "expr_macd_dea",
+        "expr_macd_hist",
+        "expr_rsi14",
+    ):
         assert catalog.by_key(k) is not None and catalog.by_key(k)["status"] == "research"
     assert catalog.validate() == []
 
@@ -146,4 +162,6 @@ def test_main_chain_does_not_import_legacy_expr():
     # 回退铁律：生产链不得 import 旧因子表达式化 parity 台
     for fn in ("main.py", "analyzer.py", "futures_data.py"):
         src = open(os.path.join(ROOT, fn), encoding="utf-8").read()
-        assert "factor_legacy_expr" not in src, "%s 不得 import factor_legacy_expr（G25续仍不切主链）" % fn
+        assert "factor_legacy_expr" not in src, (
+            "%s 不得 import factor_legacy_expr（G25续仍不切主链）" % fn
+        )

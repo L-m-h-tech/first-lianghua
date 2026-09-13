@@ -1,31 +1,32 @@
-# -*- coding: utf-8 -*-
-"""同花顺期货通调试模式启动（DataCenter.xml Cef Console=true）回归（零网络/零DB/零进程）。
+r"""同花顺期货通调试模式启动（DataCenter.xml Cef Console=true）回归（零网络/零DB/零进程）。
 
 覆盖：_patch_debug_console 的四种结构补丁与幂等（已开启/Console未启/Cef无Console/无Cef/无Debug）；
 ensure_debug_mode 文件写回与 .bak 备份、已开启不重写、开关关闭、文件缺失。
 全部走 tmp_path + monkeypatch，不触碰真实 E:\同花顺期货通。
 """
+
 import os
 import re
-
-import pytest
 
 import config
 import ths_app
 from ths_app import _patch_debug_console, ensure_debug_mode
 
-BASE = ('<?xml version="1.0" encoding="utf-8"?>\n'
-        '<DataCenter>\n'
-        '  <Debug>\n'
-        '    <Cef>\n'
-        '      <Console enable="true"/>\n'
-        '    </Cef>\n'
-        '    <trade enable="true"/>\n'
-        '  </Debug>\n'
-        '</DataCenter>\n')
+BASE = (
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    "<DataCenter>\n"
+    "  <Debug>\n"
+    "    <Cef>\n"
+    '      <Console enable="true"/>\n'
+    "    </Cef>\n"
+    '    <trade enable="true"/>\n'
+    "  </Debug>\n"
+    "</DataCenter>\n"
+)
 
 
 # ---------------- _patch_debug_console 纯函数 ----------------
+
 
 def test_already_enabled_noop():
     assert _patch_debug_console(BASE) is None
@@ -40,7 +41,7 @@ def test_enable_false_to_true():
 
 
 def test_console_without_attr():
-    src = BASE.replace('<Console enable="true"/>', '<Console/>')
+    src = BASE.replace('<Console enable="true"/>', "<Console/>")
     out = _patch_debug_console(src)
     assert out is not None
     assert '<Console enable="true"/>' in out
@@ -54,30 +55,30 @@ def test_console_other_attr():
 
 
 def test_cef_without_console():
-    src = BASE.replace('      <Console enable="true"/>\n', '')
+    src = BASE.replace('      <Console enable="true"/>\n', "")
     out = _patch_debug_console(src)
     assert out is not None
     assert '<Console enable="true"/>' in out
 
 
 def test_no_cef_block():
-    src = BASE.replace('    <Cef>\n      <Console enable="true"/>\n    </Cef>\n', '')
+    src = BASE.replace('    <Cef>\n      <Console enable="true"/>\n    </Cef>\n', "")
     out = _patch_debug_console(src)
     assert out is not None
-    assert '<Cef>' in out and '<Console enable="true"/>' in out
+    assert "<Cef>" in out and '<Console enable="true"/>' in out
     assert '<trade enable="true"/>' in out  # 原有内容保留
 
 
 def test_no_debug_block():
-    src = re.sub(r'\s*<Debug>.*?</Debug>', '', BASE, flags=re.S)
+    src = re.sub(r"\s*<Debug>.*?</Debug>", "", BASE, flags=re.S)
     out = _patch_debug_console(src)
     assert out is not None
-    assert '<Debug>' in out and '<Cef>' in out and '<Console enable="true"/>' in out
+    assert "<Debug>" in out and "<Cef>" in out and '<Console enable="true"/>' in out
 
 
 def test_unrecognized_structure_noop():
     # 完全没有 DataCenter 包裹的结构：不改动
-    assert _patch_debug_console('<root><Foo/></root>') is None
+    assert _patch_debug_console("<root><Foo/></root>") is None
 
 
 def test_all_other_content_preserved():
@@ -89,6 +90,7 @@ def test_all_other_content_preserved():
 
 
 # ---------------- ensure_debug_mode 文件写回 ----------------
+
 
 def test_ensure_writes_and_backs_up(tmp_path, monkeypatch):
     src = BASE.replace('enable="true"', 'enable="false"')
@@ -153,6 +155,7 @@ def test_launch_ths_not_triggered_in_test():
 
 # ---------------- 重启判定/进程工具纯函数 ----------------
 
+
 def test_should_restart_switch_on(monkeypatch):
     monkeypatch.setattr(config, "THS_DEBUG_RESTART", True)
     # 已运行且无 DevTools 窗口 → 需要重启
@@ -171,21 +174,23 @@ def test_should_restart_switch_off(monkeypatch):
 def test_taskkill_path_resolves():
     p = ths_app._taskkill_path()
     assert isinstance(p, str) and len(p) > 0
-    if os.path.exists(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
-                                   "System32", "taskkill.exe")):
+    if os.path.exists(
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
+    ):
         assert p.endswith("taskkill.exe")
 
 
 def test_dec_utf8_and_gbk():
-    assert ths_app._dec("OK".encode("utf-8")) == "OK"
+    assert ths_app._dec(b"OK") == "OK"
     assert ths_app._dec("成功".encode("gbk")) == "成功"
 
 
 # ---------------- 启动 PID 记录 + 退出联动关闭（kill_ths） ----------------
 
+
 def test_launch_records_pid_and_kill_ths(monkeypatch):
-    import subprocess
     import os
+    import subprocess
 
     class FakePopen:
         def __init__(self, *a, **kw):
@@ -201,7 +206,7 @@ def test_launch_records_pid_and_kill_ths(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(os.path, "exists", lambda p: True)
     monkeypatch.setattr(config, "THS_EXE", r"C:\fake\happ.exe")
-    monkeypatch.setattr(config, "THS_DEBUG_MODE", False)   # 不碰真实 DataCenter.xml
+    monkeypatch.setattr(config, "THS_DEBUG_MODE", False)  # 不碰真实 DataCenter.xml
     monkeypatch.setattr(ths_app, "_launched_once", False)
     monkeypatch.setattr(ths_app, "_ths_pid", None)
     monkeypatch.setattr(ths_app, "_taskkill_path", lambda: "taskkill")
@@ -216,13 +221,13 @@ def test_launch_records_pid_and_kill_ths(monkeypatch):
         ths_app.kill_ths()
         assert len(tk_calls) == 1
     finally:
-        ths_app._launched_once = False   # 清理模块态，不影响其他用例
+        ths_app._launched_once = False  # 清理模块态，不影响其他用例
         ths_app._ths_pid = None
 
 
 def test_launch_does_not_record_when_already_once(monkeypatch):
-    import subprocess
     import os
+    import subprocess
 
     class FakePopen:
         def __init__(self, *a, **kw):
@@ -231,7 +236,7 @@ def test_launch_does_not_record_when_already_once(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     monkeypatch.setattr(os.path, "exists", lambda p: True)
     monkeypatch.setattr(config, "THS_DEBUG_MODE", False)
-    monkeypatch.setattr(ths_app, "_launched_once", True)   # 已启动过 → 不再拉起
+    monkeypatch.setattr(ths_app, "_launched_once", True)  # 已启动过 → 不再拉起
     monkeypatch.setattr(ths_app, "_ths_pid", None)
     try:
         assert ths_app.launch_ths() is False

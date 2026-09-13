@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G21（第36轮）标准研究面板层（research panel）——统一"品种×交易日×字段"离线研究底座，纯标准库。
 
 此前 tsmom_eval/xsmom_eval/factor_eval/carry_eval/attribution 各自联网拉数、各自造面板，口径只靠
@@ -19,6 +18,7 @@ r"""G21（第36轮）标准研究面板层（research panel）——统一"品�
   D:\Python\python.exe tools\panel_builder.py --all --days 1023               # 全64品种
   D:\Python\python.exe tools\panel_builder.py --selftest                      # 零网络/零DB合成断言
 """
+
 import argparse
 import bisect
 import math
@@ -31,14 +31,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+import backtest  # noqa: E402
 import config  # noqa: E402
-import futures_data  # noqa: E402
-import backtest  # noqa: E402  复用 ratio_adjusted_bars（主连比例复权，与所有研究工具同口径）
 import factors_catalog as fc  # noqa: E402
+import futures_data  # noqa: E402
 
 # 面板落库列：标识 + 原始/复权行情 + 日收益 + 技术特征 + 基本面(PIT)
 ID_COLS = ["sym", "date", "sector"]
-RAW_COLS = list(config.PANEL_RAW_KEYS)          # o h l c v oi（其中 o/h/l/c 为比例复权后）
+RAW_COLS = list(config.PANEL_RAW_KEYS)  # o h l c v oi（其中 o/h/l/c 为比例复权后）
 FEATURE_COLS = list(config.PANEL_FEATURE_KEYS)
 FUND_COLS = ["fund_score", "fund_carry", "fund_basis"]
 ALL_COLS = ID_COLS + RAW_COLS + ["ret1d"] + FEATURE_COLS + FUND_COLS
@@ -52,7 +52,11 @@ def asof_before(sorted_dates, target, strict=True):
     """
     if not sorted_dates:
         return -1
-    j = bisect.bisect_left(sorted_dates, target) if strict else bisect.bisect_right(sorted_dates, target)
+    j = (
+        bisect.bisect_left(sorted_dates, target)
+        if strict
+        else bisect.bisect_right(sorted_dates, target)
+    )
     return j - 1
 
 
@@ -74,8 +78,9 @@ def _num(v):
         return None
 
 
-def build_symbol_rows(name, sector, raw_bars, fund_pairs=None, warmup=None,
-                      feature_keys=None, strict_fund=True):
+def build_symbol_rows(
+    name, sector, raw_bars, fund_pairs=None, warmup=None, feature_keys=None, strict_fund=True
+):
     """raw_bars（新浪日K [{d,o,h,l,c,v,p,s}]）→ 逐交易日面板行 list（PIT、无未来函数）。
 
     fund_pairs: 该品种 [(trade_date, fund_score, carry, basis_rate)...]（任意序，内部排序、严格 as-of）。
@@ -99,13 +104,13 @@ def build_symbol_rows(name, sector, raw_bars, fund_pairs=None, warmup=None,
             continue
         # 实时同函数：只用 ≤t 的前缀算指标（compute_indicators 内部长窗在140截断前用全前缀，天然PIT）
         try:
-            ind = futures_data.compute_indicators(bars[:t + 1])
+            ind = futures_data.compute_indicators(bars[: t + 1])
         except RuntimeError:
             prev_close = close
             continue
         row = {"sym": name, "date": str(b.get("d", "")), "sector": sector}
         for k in RAW_COLS:
-            src = "p" if k == "oi" else k           # 新浪 p=持仓量
+            src = "p" if k == "oi" else k  # 新浪 p=持仓量
             row[k] = _num(b.get(src))
         row["ret1d"] = (close / prev_close - 1.0) if prev_close else None
         for k in feature_keys:
@@ -115,7 +120,10 @@ def build_symbol_rows(name, sector, raw_bars, fund_pairs=None, warmup=None,
         if j >= 0:
             _, fscore, fcarry, fbasis = funds[j]
             row["fund_score"], row["fund_carry"], row["fund_basis"] = (
-                _num(fscore), _num(fcarry), _num(fbasis))
+                _num(fscore),
+                _num(fcarry),
+                _num(fbasis),
+            )
         else:
             row["fund_score"] = row["fund_carry"] = row["fund_basis"] = None
         rows.append(row)
@@ -133,9 +141,11 @@ class PanelStore:
         self._init_schema()
 
     def _col_decl(self):
-        cols = ("sym TEXT NOT NULL, date TEXT NOT NULL, sector TEXT, "
-                + ", ".join("%s REAL" % c for c in (RAW_COLS + ["ret1d"] + FEATURE_COLS + FUND_COLS))
-                + ", PRIMARY KEY(sym,date))")
+        cols = (
+            "sym TEXT NOT NULL, date TEXT NOT NULL, sector TEXT, "
+            + ", ".join("%s REAL" % c for c in (RAW_COLS + ["ret1d"] + FEATURE_COLS + FUND_COLS))
+            + ", PRIMARY KEY(sym,date))"
+        )
         return cols
 
     def _init_schema(self):
@@ -162,15 +172,29 @@ class PanelStore:
         self.conn.execute(
             "INSERT INTO research_runs(ts,codes,days,n_sym,n_rows,date_min,date_max,source,adjust,roll_count,fields,note)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ",".join(codes), days, n_sym, n_rows,
-             dmin, dmax, "sina daily(主连)", "ratio_adjusted(换月跳空置0)", roll_count,
-             ",".join(FEATURE_COLS), note))
+            (
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ",".join(codes),
+                days,
+                n_sym,
+                n_rows,
+                dmin,
+                dmax,
+                "sina daily(主连)",
+                "ratio_adjusted(换月跳空置0)",
+                roll_count,
+                ",".join(FEATURE_COLS),
+                note,
+            ),
+        )
         self.conn.commit()
 
     def count(self, sym=None):
         c = self.conn.cursor()
         if sym:
-            return c.execute("SELECT COUNT(*) FROM research_panel WHERE sym=?", (sym,)).fetchone()[0]
+            return c.execute("SELECT COUNT(*) FROM research_panel WHERE sym=?", (sym,)).fetchone()[
+                0
+            ]
         return c.execute("SELECT COUNT(*) FROM research_panel").fetchone()[0]
 
     def date_range(self, sym=None):
@@ -182,8 +206,9 @@ class PanelStore:
         return self.conn.execute(q, args).fetchone()
 
     def symbols(self):
-        return [r[0] for r in self.conn.execute(
-            "SELECT DISTINCT sym FROM research_panel ORDER BY sym")]
+        return [
+            r[0] for r in self.conn.execute("SELECT DISTINCT sym FROM research_panel ORDER BY sym")
+        ]
 
     def load_rows(self, sym=None):
         q = "SELECT %s FROM research_panel" % ",".join(ALL_COLS)
@@ -195,13 +220,15 @@ class PanelStore:
         cur = self.conn.execute(q, args)
         out = []
         for tup in cur:
-            out.append(dict(zip(ALL_COLS, tup)))
+            out.append(dict(zip(ALL_COLS, tup, strict=False)))
         return out
 
     def manifests(self, limit=10):
         return self.conn.execute(
             "SELECT run_id,ts,codes,n_sym,n_rows,date_min,date_max,roll_count FROM research_runs "
-            "ORDER BY run_id DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY run_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
 
     def close(self):
         self.conn.close()
@@ -218,7 +245,9 @@ def _fund_pairs_for(sym):
     try:
         rows = conn.execute(
             "SELECT trade_date,fund_score,carry,basis_rate FROM fundamentals "
-            "WHERE sym=? AND trade_date IS NOT NULL ORDER BY trade_date", (sym,)).fetchall()
+            "WHERE sym=? AND trade_date IS NOT NULL ORDER BY trade_date",
+            (sym,),
+        ).fetchall()
     except sqlite3.Error:
         return []
     finally:
@@ -245,8 +274,18 @@ def panel_rows_to_bars(rows):
     """
     out = []
     for r in rows:
-        out.append({"d": r["date"], "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"],
-                    "v": r["v"], "p": r["oi"], "s": r["c"]})
+        out.append(
+            {
+                "d": r["date"],
+                "o": r["o"],
+                "h": r["h"],
+                "l": r["l"],
+                "c": r["c"],
+                "v": r["v"],
+                "p": r["oi"],
+                "s": r["c"],
+            }
+        )
     return out
 
 
@@ -285,23 +324,48 @@ def build_items(items, days, store=None, use_fund=True, verbose=False):
             dates = [r["date"] for r in rows]
             total_rows += n
             total_roll += roll
-            results.append({"name": name, "sym": sym, "n": n, "roll": roll,
-                            "dmin": dates[0] if dates else None,
-                            "dmax": dates[-1] if dates else None, "err": ""})
+            results.append(
+                {
+                    "name": name,
+                    "sym": sym,
+                    "n": n,
+                    "roll": roll,
+                    "dmin": dates[0] if dates else None,
+                    "dmax": dates[-1] if dates else None,
+                    "err": "",
+                }
+            )
             if verbose:
-                print("  %-5s %-6s 行=%d 换月=%d %s~%s" %
-                      (sym, name, n, roll, dates[0] if dates else "-", dates[-1] if dates else "-"))
+                print(
+                    "  %-5s %-6s 行=%d 换月=%d %s~%s"
+                    % (sym, name, n, roll, dates[0] if dates else "-", dates[-1] if dates else "-")
+                )
         except Exception as e:
-            results.append({"name": name, "sym": sym, "n": 0, "roll": 0,
-                            "dmin": None, "dmax": None, "err": "%s: %s" % (type(e).__name__, e)})
+            results.append(
+                {
+                    "name": name,
+                    "sym": sym,
+                    "n": 0,
+                    "roll": 0,
+                    "dmin": None,
+                    "dmax": None,
+                    "err": "%s: %s" % (type(e).__name__, e),
+                }
+            )
             if verbose:
                 print("  %-5s 失败：%s" % (sym, results[-1]["err"]))
     if store is not None and results:
         ok = [r for r in results if not r["err"]]
         if ok:
-            store.record_run([r["sym"] for r in ok], days, len(ok), total_rows,
-                             min(r["dmin"] for r in ok if r["dmin"]),
-                             max(r["dmax"] for r in ok if r["dmax"]), total_roll)
+            store.record_run(
+                [r["sym"] for r in ok],
+                days,
+                len(ok),
+                total_rows,
+                min(r["dmin"] for r in ok if r["dmin"]),
+                max(r["dmax"] for r in ok if r["dmax"]),
+                total_roll,
+            )
     return results
 
 
@@ -309,16 +373,23 @@ def manifest_text(results, days, store=None):
     ok = [r for r in results if not r["err"]]
     bad = [r for r in results if r["err"]]
     n_rows = sum(r["n"] for r in ok)
-    L = ["标准研究面板 G21 构建 manifest  生成于 %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         "=" * 96,
-         "口径：主连比例复权(换月跳空置0)；逐行只用≤当日bar前缀经 futures_data.compute_indicators 计算(PIT)；",
-         "      基本面严格取 trade_date<当日 的最近一条(as-of)；缓存独立 SQLite、可幂等重建、不接main不改综合分。",
-         "请求交易日 days=%d；成功品种 %d、失败 %d；面板总行数 %d。" %
-         (days, len(ok), len(bad), n_rows)]
+    L = [
+        "标准研究面板 G21 构建 manifest  生成于 %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "=" * 96,
+        "口径：主连比例复权(换月跳空置0)；逐行只用≤当日bar前缀经 futures_data.compute_indicators 计算(PIT)；",
+        "      基本面严格取 trade_date<当日 的最近一条(as-of)；缓存独立 SQLite、可幂等重建、不接main不改综合分。",
+        "请求交易日 days=%d；成功品种 %d、失败 %d；面板总行数 %d。"
+        % (days, len(ok), len(bad), n_rows),
+    ]
     if ok:
-        L.append("日期区间 %s ~ %s；累计换月跳空处理 %d 次。" %
-                 (min(r["dmin"] for r in ok if r["dmin"]),
-                  max(r["dmax"] for r in ok if r["dmax"]), sum(r["roll"] for r in ok)))
+        L.append(
+            "日期区间 %s ~ %s；累计换月跳空处理 %d 次。"
+            % (
+                min(r["dmin"] for r in ok if r["dmin"]),
+                max(r["dmax"] for r in ok if r["dmax"]),
+                sum(r["roll"] for r in ok),
+            )
+        )
     L.append("字段：%s" % ",".join(ALL_COLS))
     L.append("特征注册表：%s" % fc.catalog_text().splitlines()[0])
     if bad:
@@ -326,8 +397,10 @@ def manifest_text(results, days, store=None):
         for r in bad:
             L.append("  %s %s" % (r["sym"], r["err"]))
     if store is not None:
-        L.append("库内累计：品种 %d、总行数 %d、区间 %s" %
-                 (len(store.symbols()), store.count(), store.date_range()))
+        L.append(
+            "库内累计：品种 %d、总行数 %d、区间 %s"
+            % (len(store.symbols()), store.count(), store.date_range())
+        )
     return "\n".join(L) + "\n"
 
 
@@ -366,17 +439,28 @@ def _synthetic_bars(n=60, start=100.0, drift=0.002, seed=0):
         o = c - 0.1
         h = c + 0.2
         l = c - 0.3
-        bars.append({"d": "2026-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
-                     "o": o, "h": h, "l": l, "c": c, "v": 1000 + i, "p": 5000 + i, "s": c})
+        bars.append(
+            {
+                "d": "2026-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
+                "o": o,
+                "h": h,
+                "l": l,
+                "c": c,
+                "v": 1000 + i,
+                "p": 5000 + i,
+                "s": c,
+            }
+        )
         price = c
     return bars
 
 
 def selftest():
     import tempfile
+
     # 1) as-of：严格早于 / ≤ 两档，边界手算
     ds = ["2026-01-01", "2026-01-03", "2026-01-05"]
-    assert asof_before(ds, "2026-01-01", strict=True) == -1      # 严格：当日不可用
+    assert asof_before(ds, "2026-01-01", strict=True) == -1  # 严格：当日不可用
     assert asof_before(ds, "2026-01-01", strict=False) == 0
     assert asof_before(ds, "2026-01-04", strict=True) == 1
     assert asof_before([], "2026-01-01") == -1
@@ -387,7 +471,7 @@ def selftest():
     # 2) 逐行面板：暖机、ret1d 手算、行数与日期对齐
     raw = _synthetic_bars(60)
     rows, _ = build_symbol_rows("RB", "黑色", raw, warmup=10)
-    assert len(rows) == 60 - 9                      # t+1>=10 → 从 t=9 起，共51行
+    assert len(rows) == 60 - 9  # t+1>=10 → 从 t=9 起，共51行
     r0, r1 = rows[0], rows[1]
     assert r0["date"] == raw[9]["d"] and r0["sym"] == "RB"
     expect_ret = raw[10]["c"] / raw[9]["c"] - 1
@@ -398,19 +482,30 @@ def selftest():
     # 3) 无未来函数：扰动 t 之后的全部价格，t 及之前的行逐值不变（结构性PIT）
     rows_a, _ = build_symbol_rows("RB", "黑色", raw, warmup=10)
     pert = [dict(b) for b in raw]
-    for k in range(40, 60):                        # 篡改第40根以后
+    for k in range(40, 60):  # 篡改第40根以后
         pert[k]["c"] *= 1.5
         pert[k]["h"] *= 1.5
     rows_b, _ = build_symbol_rows("RB", "黑色", pert, warmup=10)
-    for ra, rb in zip(rows_a[:31], rows_b[:31]):   # t=9..39 共31行必须完全一致
-        for col in (["ret1d"] + FEATURE_COLS):
+    for ra, rb in zip(rows_a[:31], rows_b[:31], strict=False):  # t=9..39 共31行必须完全一致
+        for col in ["ret1d"] + FEATURE_COLS:
             assert ra[col] == rb[col], ("未来函数泄漏", ra["date"], col, ra[col], rb[col])
 
     # 4) 基本面严格 as-of：当日基本面不得进当日行，只能用前一日（日期取在暖机后的面板区间内）
     funds = [("2026-01-15", 0.5, 0.01, 0.0), ("2026-01-20", -0.5, -0.01, 0.0)]
     # 构造日期覆盖 2026-01 的bars（面板从第10根 01-10 起）
-    bars = [{"d": "2026-01-%02d" % (i + 1), "o": 100 + i, "h": 101 + i, "l": 99 + i,
-             "c": 100.5 + i, "v": 1, "p": 10, "s": 100.5 + i} for i in range(28)]
+    bars = [
+        {
+            "d": "2026-01-%02d" % (i + 1),
+            "o": 100 + i,
+            "h": 101 + i,
+            "l": 99 + i,
+            "c": 100.5 + i,
+            "v": 1,
+            "p": 10,
+            "s": 100.5 + i,
+        }
+        for i in range(28)
+    ]
     fr, _ = build_symbol_rows("X", "有色", bars, funds, warmup=10)
     by_date = {r["date"]: r for r in fr}
     # 2026-01-15 当天：strict 只能取 <01-15 → 无 → None（防当日基本面偷看）
@@ -426,7 +521,7 @@ def selftest():
     pr, _ = build_symbol_rows("RB", "黑色", raw5, warmup=10)
     for idx in (0, 10, 25, 40):
         t = idx + 9
-        live = futures_data.compute_indicators(raw5[:t + 1])
+        live = futures_data.compute_indicators(raw5[: t + 1])
         panel_row = pr[idx]
         for k in FEATURE_COLS:
             a, b = panel_row[k], _num(live.get(k))
@@ -442,11 +537,11 @@ def selftest():
         rb_rows, roll = build_symbol_rows("RB", "黑色", _synthetic_bars(50), warmup=10)
         n1 = st.replace_symbol("RB", rb_rows)
         rows_back_1 = st.load_rows("RB")
-        n2 = st.replace_symbol("RB", rb_rows)          # 再建一次
+        n2 = st.replace_symbol("RB", rb_rows)  # 再建一次
         rows_back_2 = st.load_rows("RB")
         assert n1 == n2 == len(rb_rows) == len(rows_back_1) == len(rows_back_2)
-        assert rows_back_1 == rows_back_2              # 幂等逐值一致
-        assert st.count("RB") == len(rb_rows)          # 主键去重不翻倍
+        assert rows_back_1 == rows_back_2  # 幂等逐值一致
+        assert st.count("RB") == len(rb_rows)  # 主键去重不翻倍
         st.record_run(["RB"], 50, 1, n1, rb_rows[0]["date"], rb_rows[-1]["date"], roll)
         assert len(st.manifests()) == 1
         # 回读字段一致
@@ -463,24 +558,28 @@ def selftest():
     recon8 = panel_rows_to_bars(rows8)
     assert len(recon8) == len(rows8)
     # 面板行存的 c 就是已复权 c；回读逐值一致（对齐暖机后的 adj8）
-    for rb_row, bar in zip(rows8, recon8):
+    for rb_row, bar in zip(rows8, recon8, strict=False):
         assert bar["d"] == rb_row["date"] and abs(bar["c"] - rb_row["c"]) < 1e-12
         assert bar["p"] == rb_row["oi"]
     # 回读序列（已复权）再跑一次复权：不产生新换月、收盘价不变（幂等，SC/J 类误判在合成平滑序列上为0）
     re_adj, re_roll = backtest.ratio_adjusted_bars(recon8)
     assert re_roll == 0
-    for a, b in zip(recon8, re_adj):
+    for a, b in zip(recon8, re_adj, strict=False):
         assert abs(a["c"] - b["c"]) < 1e-12
     # load_adjusted_bars 面板路径回读==网络路径复权（同输入、临时库）
     with tempfile.TemporaryDirectory() as td:
         dbp = os.path.join(td, "p.db")
-        st = PanelStore(dbp); st.replace_symbol("RB", rows8); st.close()
+        st = PanelStore(dbp)
+        st.replace_symbol("RB", rows8)
+        st.close()
         pb_bars, src = load_adjusted_bars("RB0", 1023, prefer_panel=True, db_path=dbp)
         assert src == "panel" and len(pb_bars) == len(rows8)
         assert abs(pb_bars[-1]["c"] - adj8[-1]["c"]) < 1e-9
         # 缺品种时面板路径软回退到网络（不编造）；此处断网会抛，故只验证缺库返回 network 分支不命中面板
-    print("panel_builder selftest ALL PASS（asof边界/暖机ret1d/未来扰动PIT/基本面严格asof/"
-          "训练服务一致/PanelStore幂等/manifest/注册表联动/面板回读不二次复权 共8组）")
+    print(
+        "panel_builder selftest ALL PASS（asof边界/暖机ret1d/未来扰动PIT/基本面严格asof/"
+        "训练服务一致/PanelStore幂等/manifest/注册表联动/面板回读不二次复权 共8组）"
+    )
     return 0
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G2（第58轮第二切片 / 第59轮第三切片）综合分 live part 的插件适配器 —— 纯标准库、纯增量、**仍不接主链**。
 
 第一切片（factor_plugin.py，第57轮）只落地了"插件契约 + 有序注册表 + 异常隔离 + catalog 一致性"
@@ -25,12 +24,13 @@ context 契约（未来宿主组装，与 analyzer.analyze_variety 入参一一�
 分层依赖：模块顶层只 import 标准库 + factor_plugin/factors_catalog（纯数据/纯宿主，零网络零DB）；
 对 analyzer 的真实 parity 采用**函数内惰性 import**，保证纯函数层在缺主链依赖的环境也能自测。
 """
+
 import math
 import random
 
 try:
     import factor_plugin as fp
-except Exception:                # 极端环境缺宿主时延迟到使用处报错
+except Exception:  # 极端环境缺宿主时延迟到使用处报错
     fp = None
 try:
     import factors_catalog as catalog
@@ -80,11 +80,21 @@ def daily_momentum_plugin():
     """构造「日线动量」live 插件；元数据（方向/界/层级）必须与 factors_catalog 登记一致。"""
     if fp is None:
         raise RuntimeError("factor_plugin 宿主不可用")
-    meta = {"legacy": "analyzer.analyze_variety 内联公式（第61~66行）",
-            "slice": 58, "formula": "tanh(ret5*160)*2.5+tanh(ret20*70)*2.0+tanh(price/ma10-1)*220"}
-    return fp.make_plugin(PART_KEY, daily_momentum_compute, name=PART_KEY,
-                          layer="技术", direction=+1, bound=(-4.5, 4.5),
-                          status="live", meta=meta)
+    meta = {
+        "legacy": "analyzer.analyze_variety 内联公式（第61~66行）",
+        "slice": 58,
+        "formula": "tanh(ret5*160)*2.5+tanh(ret20*70)*2.0+tanh(price/ma10-1)*220",
+    }
+    return fp.make_plugin(
+        PART_KEY,
+        daily_momentum_compute,
+        name=PART_KEY,
+        layer="技术",
+        direction=+1,
+        bound=(-4.5, 4.5),
+        status="live",
+        meta=meta,
+    )
 
 
 def _part_plugin(key, compute, meta):
@@ -94,16 +104,31 @@ def _part_plugin(key, compute, meta):
     rec = catalog.by_key(key)
     if rec is None:
         raise RuntimeError("part %r 未在 factors_catalog 登记" % key)
-    return fp.make_plugin(key, compute, name=key, layer=rec["layer"],
-                          direction=rec["direction"], bound=tuple(rec["bound"]),
-                          status="live", meta=meta)
+    return fp.make_plugin(
+        key,
+        compute,
+        name=key,
+        layer=rec["layer"],
+        direction=rec["direction"],
+        bound=tuple(rec["bound"]),
+        status="live",
+        meta=meta,
+    )
 
 
 def builtin_part_plugins():
     """第60轮第四切片后：9 个 live part 全部适配器化（按 PART_KEYS 规范序）。"""
-    return [news_plugin(), oil_link_plugin(), institution_plugin(), daily_momentum_plugin(),
-            tech_resonance_plugin(), minute_resonance_plugin(),
-            intraday_momentum_plugin(), flow_capital_plugin(), fundamental_plugin()]
+    return [
+        news_plugin(),
+        oil_link_plugin(),
+        institution_plugin(),
+        daily_momentum_plugin(),
+        tech_resonance_plugin(),
+        minute_resonance_plugin(),
+        intraday_momentum_plugin(),
+        flow_capital_plugin(),
+        fundamental_plugin(),
+    ]
 
 
 def register_builtin_parts(replace=False):
@@ -117,8 +142,9 @@ def register_builtin_parts(replace=False):
     return keys
 
 
-def assemble_live_parts(*, news_score, oil_w, oil_score, inst, ind, kline_ok, price,
-                        tick_mom, flow, term, fund_raw):
+def assemble_live_parts(
+    *, news_score, oil_w, oil_score, inst, ind, kline_ok, price, tick_mom, flow, term, fund_raw
+):
     """【G2 最后一切片·宿主装配】用注册表 9 个 live part 重建 analyzer 的 parts 有序 dict。
 
     严格按 catalog.PART_KEYS 序求值——该序与 analyzer 内联 parts 的插入序完全一致，
@@ -134,8 +160,15 @@ def assemble_live_parts(*, news_score, oil_w, oil_score, inst, ind, kline_ok, pr
         "原油联动": {"oil_w": oil_w, "oil_score": oil_score},
         "机构动向": {"inst": inst},
         "日线动量": {"kline_ok": kline_ok, "price": price, "ind": ind},
-        "技术共振": {"kline_ok": kline_ok, "price": price, "resonance": tech.get("resonance_score")},
-        "分钟共振": {"intraday_ok": intra.get("ok"), "intra_resonance": intra.get("resonance_score")},
+        "技术共振": {
+            "kline_ok": kline_ok,
+            "price": price,
+            "resonance": tech.get("resonance_score"),
+        },
+        "分钟共振": {
+            "intraday_ok": intra.get("ok"),
+            "intra_resonance": intra.get("resonance_score"),
+        },
         "盘中动量": {"tick_mom": tick_mom},
         "量仓资金": {"flow_score": (flow or {}).get("score")},
         "基本面": {"term": term, "fund_raw": fund_raw},
@@ -236,6 +269,7 @@ def fundamental_compute(context):
     rank_in = fund_raw.get("rank")
     basis_in = fund_raw.get("basis")
     import fundamental_factors as ff
+
     inv_f = ff.inventory_factor(inv_in) if inv_in else None
     rank_f = ff.rank_factor(*rank_in) if rank_in else None
     carry_f = ff.carry_factor(term)
@@ -247,58 +281,87 @@ def fundamental_compute(context):
 
 
 _COMPUTE = {
-    "新闻消息面": news_compute, "原油联动": oil_link_compute, "机构动向": institution_compute,
-    "技术共振": tech_resonance_compute, "分钟共振": minute_resonance_compute,
-    "盘中动量": intraday_momentum_compute, "量仓资金": flow_capital_compute,
+    "新闻消息面": news_compute,
+    "原油联动": oil_link_compute,
+    "机构动向": institution_compute,
+    "技术共振": tech_resonance_compute,
+    "分钟共振": minute_resonance_compute,
+    "盘中动量": intraday_momentum_compute,
+    "量仓资金": flow_capital_compute,
     "基本面": fundamental_compute,
 }
-THIRD_SLICE_KEYS = tuple(k for k in _COMPUTE.keys() if k != "基本面")
+THIRD_SLICE_KEYS = tuple(k for k in _COMPUTE if k != "基本面")
 FOURTH_SLICE_KEY = "基本面"
 
 
 def news_plugin():
-    return _part_plugin("新闻消息面", news_compute, {"legacy": "parts 初始化透传 news_score", "slice": 59})
+    return _part_plugin(
+        "新闻消息面", news_compute, {"legacy": "parts 初始化透传 news_score", "slice": 59}
+    )
 
 
 def oil_link_plugin():
-    return _part_plugin("原油联动", oil_link_compute,
-                        {"legacy": "oil_score*oil_w，门控 oil_w>0，主链动态键", "slice": 59})
+    return _part_plugin(
+        "原油联动",
+        oil_link_compute,
+        {"legacy": "oil_score*oil_w，门控 oil_w>0，主链动态键", "slice": 59},
+    )
 
 
 def institution_plugin():
-    return _part_plugin("机构动向", institution_compute,
-                        {"legacy": "tanh((bull-bear)/total*2)*2，门控 total>=3", "slice": 59})
+    return _part_plugin(
+        "机构动向",
+        institution_compute,
+        {"legacy": "tanh((bull-bear)/total*2)*2，门控 total>=3", "slice": 59},
+    )
 
 
 def tech_resonance_plugin():
-    return _part_plugin("技术共振", tech_resonance_compute,
-                        {"legacy": "tech.resonance_score 透传，门控 kline&price>0 且|r|>0.01", "slice": 59})
+    return _part_plugin(
+        "技术共振",
+        tech_resonance_compute,
+        {"legacy": "tech.resonance_score 透传，门控 kline&price>0 且|r|>0.01", "slice": 59},
+    )
 
 
 def minute_resonance_plugin():
-    return _part_plugin("分钟共振", minute_resonance_compute,
-                        {"legacy": "intraday.resonance_score 透传，门控 ok 且|r|>0.01", "slice": 59})
+    return _part_plugin(
+        "分钟共振",
+        minute_resonance_compute,
+        {"legacy": "intraday.resonance_score 透传，门控 ok 且|r|>0.01", "slice": 59},
+    )
 
 
 def intraday_momentum_plugin():
-    return _part_plugin("盘中动量", intraday_momentum_compute,
-                        {"legacy": "tick_mom 透传，门控 |x|>0.01", "slice": 59})
+    return _part_plugin(
+        "盘中动量",
+        intraday_momentum_compute,
+        {"legacy": "tick_mom 透传，门控 |x|>0.01", "slice": 59},
+    )
 
 
 def flow_capital_plugin():
-    return _part_plugin("量仓资金", flow_capital_compute,
-                        {"legacy": "flow.score 透传，门控 |x|>0.01", "slice": 59})
+    return _part_plugin(
+        "量仓资金", flow_capital_compute, {"legacy": "flow.score 透传，门控 |x|>0.01", "slice": 59}
+    )
 
 
 def fundamental_plugin():
-    return _part_plugin("基本面", fundamental_compute,
-                        {"legacy": "fundamental_factors 四子项 build，门控 |score|>0.01", "slice": 60})
+    return _part_plugin(
+        "基本面",
+        fundamental_compute,
+        {"legacy": "fundamental_factors 四子项 build，门控 |score|>0.01", "slice": 60},
+    )
 
 
 _PLUGINS = {
-    "新闻消息面": news_plugin, "原油联动": oil_link_plugin, "机构动向": institution_plugin,
-    "技术共振": tech_resonance_plugin, "分钟共振": minute_resonance_plugin,
-    "盘中动量": intraday_momentum_plugin, "量仓资金": flow_capital_plugin,
+    "新闻消息面": news_plugin,
+    "原油联动": oil_link_plugin,
+    "机构动向": institution_plugin,
+    "技术共振": tech_resonance_plugin,
+    "分钟共振": minute_resonance_plugin,
+    "盘中动量": intraday_momentum_plugin,
+    "量仓资金": flow_capital_plugin,
     "基本面": fundamental_plugin,
 }
 
@@ -336,14 +399,21 @@ def part_parity_cases(key, seed=20260904, n_random=160):
                 for r in (-1.2, -0.02, -0.01, 0.0, 0.01, 0.02, 1.2):
                     cases.append({"kline_ok": k, "price": price, "resonance": r})
         for _ in range(n_random):
-            cases.append({"kline_ok": rng.random() < 0.85, "price": rng.uniform(0.0, 10000.0),
-                          "resonance": rng.uniform(-1.2, 1.2)})
+            cases.append(
+                {
+                    "kline_ok": rng.random() < 0.85,
+                    "price": rng.uniform(0.0, 10000.0),
+                    "resonance": rng.uniform(-1.2, 1.2),
+                }
+            )
     elif key == "分钟共振":
         for ok in (False, True):
             for r in (-0.4, -0.02, -0.01, 0.0, 0.01, 0.02, 0.4):
                 cases.append({"intraday_ok": ok, "intra_resonance": r})
         for _ in range(n_random):
-            cases.append({"intraday_ok": rng.random() < 0.7, "intra_resonance": rng.uniform(-0.4, 0.4)})
+            cases.append(
+                {"intraday_ok": rng.random() < 0.7, "intra_resonance": rng.uniform(-0.4, 0.4)}
+            )
     elif key in ("盘中动量", "量仓资金"):
         field = "tick_mom" if key == "盘中动量" else "flow_score"
         for x in (-1.5, -0.02, -0.01, 0.0, 0.01, 0.02, 1.5):
@@ -357,37 +427,60 @@ def part_parity_cases(key, seed=20260904, n_random=160):
             rows, yy, mm = [], 26, 9
             for i, pr in enumerate(prices):
                 y, m2 = yy + (mm + i - 1) // 12, ((mm + i - 1) % 12) + 1
-                rows.append({"code": "RB%02d%02d" % (y, m2), "yy": y, "mm": m2, "latest": pr, "oi": 1000})
+                rows.append(
+                    {"code": "RB%02d%02d" % (y, m2), "yy": y, "mm": m2, "latest": pr, "oi": 1000}
+                )
             return {"list": rows}
 
         def _case(prices=None, inv=None, rank=None, basis=None):
             info = _info_of(prices) if prices else None
-            return {"contract": info, "term": _ct.term_structure(info) if info else None,
-                    "fund_raw": {"inv": inv, "rank": rank, "basis": basis}}
+            return {
+                "contract": info,
+                "term": _ct.term_structure(info) if info else None,
+                "fund_raw": {"inv": inv, "rank": rank, "basis": basis},
+            }
 
-        cases.append({"contract": None, "term": None, "fund_raw": None})               # 四子项全缺
-        for pr in ([3100, 3050, 3000], [3000, 3050, 3100], [3000, 3000, 3000]):        # 仅 carry：back/contango/平
+        cases.append({"contract": None, "term": None, "fund_raw": None})  # 四子项全缺
+        for pr in (
+            [3100, 3050, 3000],
+            [3000, 3050, 3100],
+            [3000, 3000, 3000],
+        ):  # 仅 carry：back/contango/平
             cases.append(_case(prices=pr))
-        for b in (-0.08, -0.001, 0.0, 0.001, 0.05):                                     # 仅基差
+        for b in (-0.08, -0.001, 0.0, 0.001, 0.05):  # 仅基差
             cases.append(_case(basis=b))
-        for tup in ((1000, 800, 900, 900), (800, 1000, None, None), (1000, 1000, 1000, 800)):  # 仅龙虎
+        for tup in (
+            (1000, 800, 900, 900),
+            (800, 1000, None, None),
+            (1000, 1000, 1000, 800),
+        ):  # 仅龙虎
             cases.append(_case(rank=tup))
-        inv20 = [{"date": "d%02d" % i, "stock": 100 + i, "chg": 0} for i in range(20)]  # 仅库存（>=15 点）
+        inv20 = [
+            {"date": "d%02d" % i, "stock": 100 + i, "chg": 0} for i in range(20)
+        ]  # 仅库存（>=15 点）
         cases.append(_case(inv=inv20))
-        cases.append(_case(prices=[3100, 3000], rank=(1200, 800, 1100, 900), basis=0.03, inv=inv20))  # 四项齐
+        cases.append(
+            _case(prices=[3100, 3000], rank=(1200, 800, 1100, 900), basis=0.03, inv=inv20)
+        )  # 四项齐
         for _ in range(n_random):
             kw = {}
             if rng.random() < 0.7:
                 base = 3000.0
-                kw["prices"] = [base * (1 + rng.uniform(-0.06, 0.06) * ((i + 1) / 2.0))
-                                for i in range(rng.randint(2, 4))]
+                kw["prices"] = [
+                    base * (1 + rng.uniform(-0.06, 0.06) * ((i + 1) / 2.0))
+                    for i in range(rng.randint(2, 4))
+                ]
             if rng.random() < 0.6:
-                kw["inv"] = [{"date": "d", "stock": rng.uniform(50, 500)}
-                             for _ in range(rng.randint(15, 30))]
+                kw["inv"] = [
+                    {"date": "d", "stock": rng.uniform(50, 500)} for _ in range(rng.randint(15, 30))
+                ]
             if rng.random() < 0.6:
                 L, S = rng.randint(0, 2000), rng.randint(0, 2000)
-                kw["rank"] = ((L, S, rng.randint(0, 2000), rng.randint(0, 2000))
-                              if rng.random() < 0.5 else (L, S, None, None))
+                kw["rank"] = (
+                    (L, S, rng.randint(0, 2000), rng.randint(0, 2000))
+                    if rng.random() < 0.5
+                    else (L, S, None, None)
+                )
             if rng.random() < 0.6:
                 kw["basis"] = rng.uniform(-0.1, 0.1)
             cases.append(_case(**kw))
@@ -405,6 +498,7 @@ def _force_inline_analyzer():
 
     parity 的语义是"内联公式 vs 插件适配器"，若 analyzer 自身也走注册表，真值就不再是内联，会自引用。"""
     import config
+
     saved = getattr(config, "PLUGIN_PARTS_ENABLED", False)
     config.PLUGIN_PARTS_ENABLED = False
     try:
@@ -416,6 +510,7 @@ def _force_inline_analyzer():
 def _drive_main(key, ctx):
     """把插件 context 映射为 analyze_variety 最小桩入参，隔离出目标 part（其余 part 置空/关门）。"""
     import analyzer
+
     meta = {"code": "RB0", "sym": "RB", "ex": "SHFE", "cat": "黑色", "oil_w": 0.0}
     quote = {"latest": 0.0}
     ind = {"tech": {}, "intraday": {}}
@@ -433,11 +528,12 @@ def _drive_main(key, ctx):
         kline_ok = bool(ctx.get("kline_ok"))
         quote = {"latest": ctx.get("price")}
         # 门控开时主链同时计算日线动量，需补 ret5/ret20（不影响目标 part 提取）
-        ind.update({"ret5": 0.0, "ret20": 0.0,
-                    "tech": {"resonance_score": ctx.get("resonance")}})
+        ind.update({"ret5": 0.0, "ret20": 0.0, "tech": {"resonance_score": ctx.get("resonance")}})
     elif key == "分钟共振":
-        ind["intraday"] = {"ok": bool(ctx.get("intraday_ok")),
-                           "resonance_score": ctx.get("intra_resonance")}
+        ind["intraday"] = {
+            "ok": bool(ctx.get("intraday_ok")),
+            "resonance_score": ctx.get("intra_resonance"),
+        }
     elif key == "盘中动量":
         tick_mom = ctx.get("tick_mom")
     elif key == "量仓资金":
@@ -447,8 +543,20 @@ def _drive_main(key, ctx):
         fund_raw = ctx.get("fund_raw")
     with _force_inline_analyzer():
         return analyzer.analyze_variety(
-            "parity", dict(meta), quote, ind, kline_ok, news_score, news_hits,
-            oil_score, tick_mom, contract=contract, inst=inst, flow=flow, fund_raw=fund_raw)
+            "parity",
+            dict(meta),
+            quote,
+            ind,
+            kline_ok,
+            news_score,
+            news_hits,
+            oil_score,
+            tick_mom,
+            contract=contract,
+            inst=inst,
+            flow=flow,
+            fund_raw=fund_raw,
+        )
 
 
 def _main_value(row, key):
@@ -483,13 +591,20 @@ def parity_part_against_analyzer(key, cases=None):
                 if err:
                     mismatches.append({"key": key, "ctx": ctx, "reason": "plugin_error:%s" % err})
                 if present:
-                    mismatches.append({"key": key, "ctx": ctx, "reason": "main_has_but_plugin_none",
-                                       "main": main_val})
+                    mismatches.append(
+                        {
+                            "key": key,
+                            "ctx": ctx,
+                            "reason": "main_has_but_plugin_none",
+                            "main": main_val,
+                        }
+                    )
                 continue
             n_open += 1
             if not present:
-                mismatches.append({"key": key, "ctx": ctx, "reason": "plugin_has_but_main_none",
-                                   "got": got})
+                mismatches.append(
+                    {"key": key, "ctx": ctx, "reason": "plugin_has_but_main_none", "got": got}
+                )
                 continue
             if _bits(got) != _bits(main_val):
                 mismatches.append({"key": key, "ctx": ctx, "got": got, "main": main_val})
@@ -497,8 +612,13 @@ def parity_part_against_analyzer(key, cases=None):
                 max_diff = max(max_diff, abs(got - main_val))
     finally:
         fp.clear()
-    return {"key": key, "n_open": n_open, "n_closed": n_closed,
-            "max_diff": max_diff, "mismatches": mismatches}
+    return {
+        "key": key,
+        "n_open": n_open,
+        "n_closed": n_closed,
+        "max_diff": max_diff,
+        "mismatches": mismatches,
+    }
 
 
 def parity_all_against_analyzer():
@@ -537,7 +657,7 @@ def parity_cases(seed=20260903, n_random=256):
         price = rng.uniform(50.0, 100000.0)
         ma = price * (1.0 + rng.uniform(-0.08, 0.08))
         ind = {"ret5": r5, "ret20": r20}
-        if rng.random() < 0.85:                      # 多数带 ma10，少数刻意缺失
+        if rng.random() < 0.85:  # 多数带 ma10，少数刻意缺失
             ind["ma10"] = ma
         cases.append({"kline_ok": True, "price": price, "ind": ind})
     return cases
@@ -584,8 +704,7 @@ def parity_against_formula(cases=None):
                 max_diff = max(max_diff, abs(got - want))
     finally:
         fp.clear()
-    return {"n_open": n_open, "n_closed": n_closed, "max_diff": max_diff,
-            "mismatches": mismatches}
+    return {"n_open": n_open, "n_closed": n_closed, "max_diff": max_diff, "mismatches": mismatches}
 
 
 def parity_against_analyzer(cases=None, meta=None):
@@ -596,6 +715,7 @@ def parity_against_analyzer(cases=None, meta=None):
     因此任何一处公式漂移都会在这里暴露。返回结构同 parity_against_formula。
     """
     import analyzer
+
     cases = cases if cases is not None else parity_cases()
     if fp is None:
         raise RuntimeError("factor_plugin 宿主不可用")
@@ -604,8 +724,9 @@ def parity_against_analyzer(cases=None, meta=None):
     fp.clear()
     fp.register(daily_momentum_plugin(), replace=True)
     import config as _cfg
+
     _saved_flag = getattr(_cfg, "PLUGIN_PARTS_ENABLED", False)
-    _cfg.PLUGIN_PARTS_ENABLED = False     # parity 真值必须取内联路径（第61轮起默认开注册表）
+    _cfg.PLUGIN_PARTS_ENABLED = False  # parity 真值必须取内联路径（第61轮起默认开注册表）
     n_open = n_closed = 0
     max_diff = 0.0
     mismatches = []
@@ -616,8 +737,16 @@ def parity_against_analyzer(cases=None, meta=None):
             ind.setdefault("tech", {})
             ind.setdefault("intraday", {})
             row = analyzer.analyze_variety(
-                "parity", dict(base_meta), {"latest": price}, ind, bool(ctx.get("kline_ok")),
-                0.0, [], 0.0, 0.0)
+                "parity",
+                dict(base_meta),
+                {"latest": price},
+                ind,
+                bool(ctx.get("kline_ok")),
+                0.0,
+                [],
+                0.0,
+                0.0,
+            )
             main_val = row["parts"].get(PART_KEY)
             got, err = fp.evaluate(ctx, PART_KEY)
             gate_open = bool(ctx.get("kline_ok")) and isinstance(price, (int, float)) and price > 0
@@ -626,7 +755,9 @@ def parity_against_analyzer(cases=None, meta=None):
                 if PART_KEY in row["parts"]:
                     mismatches.append({"ctx": ctx, "reason": "main_has_part_when_gate_closed"})
                 if got is not None or err:
-                    mismatches.append({"ctx": ctx, "reason": "plugin_closed_gate", "got": got, "err": err})
+                    mismatches.append(
+                        {"ctx": ctx, "reason": "plugin_closed_gate", "got": got, "err": err}
+                    )
                 continue
             n_open += 1
             if main_val is None:
@@ -639,13 +770,13 @@ def parity_against_analyzer(cases=None, meta=None):
     finally:
         fp.clear()
         _cfg.PLUGIN_PARTS_ENABLED = _saved_flag
-    return {"n_open": n_open, "n_closed": n_closed, "max_diff": max_diff,
-            "mismatches": mismatches}
+    return {"n_open": n_open, "n_closed": n_closed, "max_diff": max_diff, "mismatches": mismatches}
 
 
 # =========================== 离线自测 ===========================
 def selftest():
     import analyzer
+
     assert fp is not None and catalog is not None
     fp.clear()
     # 1) 插件元数据与 factors_catalog 登记逐字一致（方向/界/状态/层级）
@@ -655,10 +786,16 @@ def selftest():
     assert pl.status == "live" and pl.direction == rec["direction"] == +1
     assert pl.bound == tuple(rec["bound"]) == (-4.5, 4.5) and pl.layer == rec["layer"] == "技术"
     # 2) 门控语义：关闭即 None（与主链"不加入 part"一致）
-    assert daily_momentum_compute({"kline_ok": False, "price": 10.0,
-                                   "ind": {"ret5": 0.1, "ret20": 0.1}}) is None
-    assert daily_momentum_compute({"kline_ok": True, "price": 0.0,
-                                   "ind": {"ret5": 0.1, "ret20": 0.1}}) is None
+    assert (
+        daily_momentum_compute(
+            {"kline_ok": False, "price": 10.0, "ind": {"ret5": 0.1, "ret20": 0.1}}
+        )
+        is None
+    )
+    assert (
+        daily_momentum_compute({"kline_ok": True, "price": 0.0, "ind": {"ret5": 0.1, "ret20": 0.1}})
+        is None
+    )
     assert daily_momentum_compute(None) is None
     # 3) 门控开启：无 ma10 仅两项、有 ma10 三项，手算一致
     ctx2 = {"kline_ok": True, "price": 100.0, "ind": {"ret5": 0.0, "ret20": 0.0}}
@@ -669,10 +806,13 @@ def selftest():
     # ma10=0 视为假值（与 analyzer 的 if ind.get("ma10") 一致），退化为两项
     ctx4 = {"kline_ok": True, "price": 110.0, "ind": {"ret5": 0.01, "ret20": -0.01, "ma10": 0.0}}
     assert float.hex(daily_momentum_compute(ctx4)) == float.hex(
-        math.tanh(0.01 * 160) * 2.5 + math.tanh(-0.01 * 70) * 2.0)
+        math.tanh(0.01 * 160) * 2.5 + math.tanh(-0.01 * 70) * 2.0
+    )
     # 4) 纯函数层 parity：网格+随机逐位相等、门控关闭全 None
     rep = parity_against_formula()
-    assert rep["n_open"] > 300 and rep["n_closed"] >= 3 and not rep["mismatches"], rep["mismatches"][:3]
+    assert rep["n_open"] > 300 and rep["n_closed"] >= 3 and not rep["mismatches"], rep[
+        "mismatches"
+    ][:3]
     assert rep["max_diff"] == 0.0
     # 5) 对**真实 analyzer 主链**的逐位 parity（惰性 import；含门控关闭分支）
     arep = parity_against_analyzer()
@@ -685,8 +825,10 @@ def selftest():
     assert keys == expected and len(keys) == 9, keys
     assert fp.check_registry_vs_catalog() == []
     assert fp.ordered_live_keys() == expected and fp.names(status="live") == expected
-    v, e = fp.evaluate({"kline_ok": True, "price": 100.0,
-                        "ind": {"ret5": 0.01, "ret20": -0.02, "ma10": 101.0}}, PART_KEY)
+    v, e = fp.evaluate(
+        {"kline_ok": True, "price": 100.0, "ind": {"ret5": 0.01, "ret20": -0.02, "ma10": 101.0}},
+        PART_KEY,
+    )
     assert isinstance(v, float) and e is None
     fp.clear()
     assert fp.names() == []
@@ -697,7 +839,7 @@ def selftest():
     fp.clear()
     # 8) 适配器列表可重复构造且彼此独立（无进程级副作用），第四切片后 9 个全齐
     a, b = builtin_part_plugins(), builtin_part_plugins()
-    assert len(a) == len(b) == 9 and all(x is not y for x, y in zip(a, b))
+    assert len(a) == len(b) == 9 and all(x is not y for x, y in zip(a, b, strict=False))
     assert [x.key for x in a] == [y.key for y in b] == expected
     fp.clear()
     # 9) 第三切片 7 part：元数据对齐 catalog + 门控/公式手算
@@ -705,15 +847,21 @@ def selftest():
         p = ctor()
         r = catalog.by_key(key)
         assert p.key == key and p.status == "live"
-        assert p.direction == r["direction"] and p.bound == tuple(r["bound"]) and p.layer == r["layer"]
+        assert (
+            p.direction == r["direction"] and p.bound == tuple(r["bound"]) and p.layer == r["layer"]
+        )
     # 新闻无门控恒透传；原油门控 oil_w>0 且乘法；机构 total>=3 且 tanh
     assert news_compute({"news_score": 0.37}) == 0.37 and news_compute({"news_score": 0.0}) == 0.0
     assert oil_link_compute({"oil_w": 0.0, "oil_score": 1.0}) is None
     assert oil_link_compute({"oil_w": -0.1, "oil_score": 1.0}) is None
-    assert float.hex(oil_link_compute({"oil_w": 0.3, "oil_score": 2.0})) == float.hex(legacy_oil_link(2.0, 0.3))
+    assert float.hex(oil_link_compute({"oil_w": 0.3, "oil_score": 2.0})) == float.hex(
+        legacy_oil_link(2.0, 0.3)
+    )
     assert institution_compute({"inst": _inst_dict(2, 1, 1)}) is None
     inst_open = _inst_dict(5, 4, 1)
-    assert float.hex(institution_compute({"inst": inst_open})) == float.hex(legacy_institution(inst_open))
+    assert float.hex(institution_compute({"inst": inst_open})) == float.hex(
+        legacy_institution(inst_open)
+    )
     # 阈值 0.01 边界：|x|>0.01 才计分（恰 0.01 关门），与 analyzer 完全一致
     assert intraday_momentum_compute({"tick_mom": 0.01}) is None
     assert intraday_momentum_compute({"tick_mom": -0.011}) == -0.011
@@ -728,21 +876,23 @@ def selftest():
     for key, rr in allrep.items():
         assert not rr["mismatches"], (key, rr["mismatches"][:3])
         assert rr["max_diff"] == 0.0, (key, rr["max_diff"])
-        min_open = 40 if key == FOURTH_SLICE_KEY else 100   # 基本面含全缺/小分关门，开门阈值放宽
+        min_open = 40 if key == FOURTH_SLICE_KEY else 100  # 基本面含全缺/小分关门，开门阈值放宽
         assert rr["n_open"] >= min_open, (key, rr["n_open"])
         tot_open += rr["n_open"]
         tot_closed += rr["n_closed"]
-    assert allrep["新闻消息面"]["n_closed"] == 0   # 新闻无门控，用例全部开门
-    assert allrep["原油联动"]["n_closed"] >= 10     # oil_w<=0 关门
-    assert allrep["基本面"]["n_closed"] >= 1       # 四子项全缺/小分关门
+    assert allrep["新闻消息面"]["n_closed"] == 0  # 新闻无门控，用例全部开门
+    assert allrep["原油联动"]["n_closed"] >= 10  # oil_w<=0 关门
+    assert allrep["基本面"]["n_closed"] >= 1  # 四子项全缺/小分关门
     fp.clear()
     # 11) 最后一切片·宿主装配：9 part 同时在场时，assemble_live_parts 重建的 parts 必须与真实主链
     #     **逐键逐位一致**（含原油动态键、PART_KEYS 插入序），从而 sum 顺序相同、综合分逐字节相等
     import contracts as _ct
+
     register_builtin_parts(replace=True)
     import config as _cfg2
+
     _saved2 = getattr(_cfg2, "PLUGIN_PARTS_ENABLED", False)
-    _cfg2.PLUGIN_PARTS_ENABLED = False      # 真值取内联，与 assemble 逐键逐位对照
+    _cfg2.PLUGIN_PARTS_ENABLED = False  # 真值取内联，与 assemble 逐键逐位对照
     asm_ok = 0
     for _ in range(240):
         rr = random.Random(20260904 + asm_ok)
@@ -758,30 +908,73 @@ def selftest():
         tick = rr.uniform(-1.5, 1.5)
         flow_score = rr.uniform(-1.2, 1.2)
         total = rr.choice((0, 2, 5, 10))
-        inst = _inst_dict(total, rr.randint(0, total), total - rr.randint(0, total)) if total else None
+        inst = (
+            _inst_dict(total, rr.randint(0, total), total - rr.randint(0, total)) if total else None
+        )
         nmonth = rr.randint(2, 4)
-        info = {"list": [{"code": "RB%02d%02d" % (26, 9 + i), "yy": 26, "mm": 9 + i,
-                          "latest": 3000 * (1 + rr.uniform(-0.05, 0.05)), "oi": 1000}
-                         for i in range(nmonth)]}
+        info = {
+            "list": [
+                {
+                    "code": "RB%02d%02d" % (26, 9 + i),
+                    "yy": 26,
+                    "mm": 9 + i,
+                    "latest": 3000 * (1 + rr.uniform(-0.05, 0.05)),
+                    "oi": 1000,
+                }
+                for i in range(nmonth)
+            ]
+        }
         term = _ct.term_structure(info)
-        fund_raw = {"inv": [{"date": "d", "stock": rr.uniform(50, 500)} for _ in range(20)] if rr.random() < 0.6 else None,
-                    "rank": (rr.randint(0, 2000), rr.randint(0, 2000), None, None) if rr.random() < 0.6 else None,
-                    "basis": rr.uniform(-0.1, 0.1) if rr.random() < 0.6 else None}
-        ind = {"ret5": ret5, "ret20": ret20,
-               "tech": {"resonance_score": tech_r},
-               "intraday": {"ok": intra_ok, "resonance_score": intra_r}}
+        fund_raw = {
+            "inv": [{"date": "d", "stock": rr.uniform(50, 500)} for _ in range(20)]
+            if rr.random() < 0.6
+            else None,
+            "rank": (rr.randint(0, 2000), rr.randint(0, 2000), None, None)
+            if rr.random() < 0.6
+            else None,
+            "basis": rr.uniform(-0.1, 0.1) if rr.random() < 0.6 else None,
+        }
+        ind = {
+            "ret5": ret5,
+            "ret20": ret20,
+            "tech": {"resonance_score": tech_r},
+            "intraday": {"ok": intra_ok, "resonance_score": intra_r},
+        }
         if ma10 is not None:
             ind["ma10"] = ma10
         assembled = assemble_live_parts(
-            news_score=rr.uniform(-4, 4), oil_w=oil_w, oil_score=oil_score, inst=inst, ind=ind,
-            kline_ok=kline_ok, price=price, tick_mom=tick, flow={"score": flow_score},
-            term=term, fund_raw=fund_raw)
+            news_score=rr.uniform(-4, 4),
+            oil_w=oil_w,
+            oil_score=oil_score,
+            inst=inst,
+            ind=ind,
+            kline_ok=kline_ok,
+            price=price,
+            tick_mom=tick,
+            flow={"score": flow_score},
+            term=term,
+            fund_raw=fund_raw,
+        )
         row = analyzer.analyze_variety(
-            "asm", {"code": "RB0", "sym": "RB", "ex": "SHFE", "cat": "黑色", "oil_w": oil_w},
-            {"latest": price}, ind, kline_ok, assembled.get("新闻消息面", 0.0), [], oil_score,
-            tick, contract=info, inst=inst, flow={"score": flow_score}, fund_raw=fund_raw)
+            "asm",
+            {"code": "RB0", "sym": "RB", "ex": "SHFE", "cat": "黑色", "oil_w": oil_w},
+            {"latest": price},
+            ind,
+            kline_ok,
+            assembled.get("新闻消息面", 0.0),
+            [],
+            oil_score,
+            tick,
+            contract=info,
+            inst=inst,
+            flow={"score": flow_score},
+            fund_raw=fund_raw,
+        )
         main_parts = row["parts"]
-        assert set(assembled.keys()) == set(main_parts.keys()), (assembled.keys(), main_parts.keys())
+        assert set(assembled.keys()) == set(main_parts.keys()), (
+            assembled.keys(),
+            main_parts.keys(),
+        )
         for kk, vv in assembled.items():
             assert _bits(vv) == _bits(main_parts[kk]), (kk, vv, main_parts[kk])
         # 综合分（sum 顺序相同）逐位一致
@@ -789,11 +982,13 @@ def selftest():
         asm_ok += 1
     fp.clear()
     _cfg2.PLUGIN_PARTS_ENABLED = _saved2
-    print("factor_parts selftest ALL PASS（11组：日线元数据/门控/手算/公式parity/真analyzer parity；"
-          "注册9part一致性/异常隔离/无副作用；第三切片7+基本面元数据+门控手算+对真analyzer逐位parity；"
-          "宿主装配9part同时在场逐键逐位一致 asm=%d例；日线 n_open=%d n_closed=%d；"
-          "第三+四切片合计 n_open=%d n_closed=%d）"
-          % (asm_ok, rep["n_open"], rep["n_closed"], tot_open, tot_closed))
+    print(
+        "factor_parts selftest ALL PASS（11组：日线元数据/门控/手算/公式parity/真analyzer parity；"
+        "注册9part一致性/异常隔离/无副作用；第三切片7+基本面元数据+门控手算+对真analyzer逐位parity；"
+        "宿主装配9part同时在场逐键逐位一致 asm=%d例；日线 n_open=%d n_closed=%d；"
+        "第三+四切片合计 n_open=%d n_closed=%d）"
+        % (asm_ok, rep["n_open"], rep["n_closed"], tot_open, tot_closed)
+    )
     return 0
 
 

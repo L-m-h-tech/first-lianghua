@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 backtest_validation.py — 回测样本外验证与防过拟合工具箱（WP-F4 前置 / AFML ch7、11-12）
 
@@ -23,15 +22,16 @@ backtest_validation.py — 回测样本外验证与防过拟合工具箱（WP-F4
   python tools/backtest_validation.py --all-grid --period 30          # 全品种（较慢）
 产出：reports/backtest_validation.txt（utf-8-sig）
 """
+
 import argparse
-import json
 import csv
 import itertools
-from datetime import datetime
+import json
 import math
 import os
 import statistics
 import sys
+from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -54,27 +54,48 @@ def norm_ppf(p):
         if p == 0.0 or p == 1.0:
             raise ValueError("norm_ppf: p 必须在 (0,1) 开区间")
         raise ValueError("norm_ppf: p 越界 %r" % p)
-    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
-         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
-    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
-         6.680131188771972e+01, -1.328068155288572e+01]
-    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
-         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
-    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
-         3.754408661907416e+00]
+    a = [
+        -3.969683028665376e01,
+        2.209460984245205e02,
+        -2.759285104469687e02,
+        1.383577518672690e02,
+        -3.066479806614716e01,
+        2.506628277459239e00,
+    ]
+    b = [
+        -5.447609879822406e01,
+        1.615858368580409e02,
+        -1.556989798598866e02,
+        6.680131188771972e01,
+        -1.328068155288572e01,
+    ]
+    c = [
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e00,
+        -2.549732539343734e00,
+        4.374664141464968e00,
+        2.938163982698783e00,
+    ]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e00, 3.754408661907416e00]
     plow, phigh = 0.02425, 1.0 - 0.02425
     if p < plow:
         q = math.sqrt(-2.0 * math.log(p))
-        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
-               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0
+        )
     if p > phigh:
         q = math.sqrt(-2.0 * math.log(1.0 - p))
-        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
-               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / (
+            (((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0
+        )
     q = p - 0.5
     r = q * q
-    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
-           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+    return (
+        (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5])
+        * q
+        / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+    )
 
 
 def moments(xs):
@@ -88,8 +109,8 @@ def moments(xs):
     m3 = sum((x - mean) ** 3 for x in xs) / n
     m4 = sum((x - mean) ** 4 for x in xs) / n
     std = math.sqrt(m2)
-    g3 = m3 / (m2 ** 1.5) if m2 > 1e-18 else 0.0
-    g4 = m4 / (m2 ** 2) if m2 > 1e-18 else 3.0
+    g3 = m3 / (m2**1.5) if m2 > 1e-18 else 0.0
+    g4 = m4 / (m2**2) if m2 > 1e-18 else 3.0
     return mean, std, g3, g4, n
 
 
@@ -139,9 +160,18 @@ def deflated_sharpe(returns, n_trials, sr_std=None):
     sr0 = expected_max_sharpe(n_trials, sr_std)
     psr_zero = prob_sharpe_ratio(sr, 0.0, t_obs, g3, g4)
     dsr = prob_sharpe_ratio(sr, sr0, t_obs, g3, g4)
-    return {"sr_per_period": sr, "sr0_multiple_trial": sr0, "psr_vs_zero": psr_zero,
-            "dsr": dsr, "t": t_obs, "mean": mean, "std": std, "skew": g3, "kurt": g4,
-            "n_trials": n_trials}
+    return {
+        "sr_per_period": sr,
+        "sr0_multiple_trial": sr0,
+        "psr_vs_zero": psr_zero,
+        "dsr": dsr,
+        "t": t_obs,
+        "mean": mean,
+        "std": std,
+        "skew": g3,
+        "kurt": g4,
+        "n_trials": n_trials,
+    }
 
 
 # ============================================================
@@ -195,9 +225,15 @@ def cscv_pbo(matrix, n_blocks=10, max_combos=4000):
         logits.append(lam)
         detail.append({"is_best": nstar, "oos_rank_omega": omega, "logit": lam})
     pbo = sum(1 for lam in logits if lam <= 0.0) / len(logits)
-    return {"pbo": pbo, "logits": logits, "detail": detail, "combos": len(logits),
-            "n_strats": n, "n_blocks": s,
-            "median_logit": statistics.median(logits) if logits else 0.0}
+    return {
+        "pbo": pbo,
+        "logits": logits,
+        "detail": detail,
+        "combos": len(logits),
+        "n_strats": n,
+        "n_blocks": s,
+        "median_logit": statistics.median(logits) if logits else 0.0,
+    }
 
 
 # ============================================================
@@ -255,24 +291,33 @@ def walk_forward(matrix, train_size, test_size, step=None, purge=0, embargo=0):
     t = len(matrix)
     n = len(matrix[0]) if t else 0
     step = test_size if step is None else step
-    purge = max(0, int(purge)); embargo = max(0, int(embargo))
+    purge = max(0, int(purge))
+    embargo = max(0, int(embargo))
     if train_size - purge < 2:
         return {"segments": [], "n_segments": 0, "purge": purge, "embargo": embargo}
     segs = []
     start = 0
     while start + train_size + embargo + test_size <= t:
         is_rows = list(range(start, start + train_size - purge))
-        oos_rows = list(range(start + train_size + embargo,
-                             start + train_size + embargo + test_size))
+        oos_rows = list(
+            range(start + train_size + embargo, start + train_size + embargo + test_size)
+        )
         is_perf = [per_period_sharpe(_col_series(matrix, j, is_rows)) for j in range(n)]
         oos_perf = [per_period_sharpe(_col_series(matrix, j, oos_rows)) for j in range(n)]
         chosen = max(range(n), key=lambda j: is_perf[j])
         oos_sorted = sorted(oos_perf)
         med = statistics.median(oos_sorted)
-        segs.append({"start": start, "chosen": chosen,
-                     "is_sharpe": is_perf[chosen], "oos_sharpe": oos_perf[chosen],
-                     "oos_best": max(oos_perf), "oos_median": med,
-                     "beat_median": oos_perf[chosen] > med})
+        segs.append(
+            {
+                "start": start,
+                "chosen": chosen,
+                "is_sharpe": is_perf[chosen],
+                "oos_sharpe": oos_perf[chosen],
+                "oos_best": max(oos_perf),
+                "oos_median": med,
+                "beat_median": oos_perf[chosen] > med,
+            }
+        )
         start += step
     if not segs:
         return {"segments": [], "n_segments": 0}
@@ -284,12 +329,18 @@ def walk_forward(matrix, train_size, test_size, step=None, purge=0, embargo=0):
     mean_oos = statistics.fmean(chosen_vals)
     # IS 本身接近 0 时衰减比例无意义（分母趋零会爆百分比），返回 None 由渲染层标注
     decay = ((mean_is - mean_oos) / abs(mean_is)) if abs(mean_is) >= 0.05 else None
-    return {"segments": segs, "n_segments": len(segs),
-            "mean_is_sharpe": mean_is, "mean_oos_sharpe": mean_oos,
-            "mean_oos_best": statistics.fmean(best_vals),
-            "is_oos_decay": decay, "purge": purge, "embargo": embargo,
-            "oos_beat_median_rate": sum(g["beat_median"] for g in segs) / len(segs),
-            "param_switch_rate": switches / max(1, len(segs) - 1)}
+    return {
+        "segments": segs,
+        "n_segments": len(segs),
+        "mean_is_sharpe": mean_is,
+        "mean_oos_sharpe": mean_oos,
+        "mean_oos_best": statistics.fmean(best_vals),
+        "is_oos_decay": decay,
+        "purge": purge,
+        "embargo": embargo,
+        "oos_beat_median_rate": sum(g["beat_median"] for g in segs) / len(segs),
+        "param_switch_rate": switches / max(1, len(segs) - 1),
+    }
 
 
 # ============================================================
@@ -310,8 +361,7 @@ def parameter_plateau(perf_map):
     best = max(keys, key=lambda k: perf_map[k])
     best_v = perf_map[best]
     # 邻域：与最优点曼哈顿距离恰好 1
-    neighbors = [k for k in keys
-                 if sum(abs(a - b) for a, b in zip(k, best)) == 1]
+    neighbors = [k for k in keys if sum(abs(a - b) for a, b in zip(k, best, strict=False)) == 1]
     neigh_vals = [perf_map[k] for k in neighbors]
     neigh_mean = statistics.fmean(neigh_vals) if neigh_vals else None
     denom = abs(best_v) if abs(best_v) > 1e-12 else 1.0
@@ -339,9 +389,16 @@ def parameter_plateau(perf_map):
             verdict = "孤峰（最优点四周骤降，过拟合风险高，勿重仓单点参数）"
         else:
             verdict = "过渡（邻域部分有效，建议取参数区间而非单点）"
-    return {"best_key": best, "best_perf": best_v, "neighbor_mean": neigh_mean,
-            "plateau_ratio": plateau_ratio, "neighbor_positive_rate": neigh_positive,
-            "roughness": roughness, "n_neighbors": len(neighbors), "verdict": verdict}
+    return {
+        "best_key": best,
+        "best_perf": best_v,
+        "neighbor_mean": neigh_mean,
+        "plateau_ratio": plateau_ratio,
+        "neighbor_positive_rate": neigh_positive,
+        "roughness": roughness,
+        "n_neighbors": len(neighbors),
+        "verdict": verdict,
+    }
 
 
 # ============================================================
@@ -351,7 +408,7 @@ def daily_returns_from_equity_csv(path):
     """从 portfolio_equity.csv 的逐 bar equity 按交易日聚合成日收益率序列。"""
     day_equity = {}
     order = []
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    with open(path, encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
             day = row["dt"][:10]
             eq = float(row["equity"])
@@ -375,8 +432,8 @@ def build_param_grid_matrix(sym, period=30, lookback=0, aggregate_from=0):
     返回 (day_list, combo_name_list, matrix, combo_layer_map, perf_by_combo)。
     """
     import config
-    import storage
     import intraday_backtest as ib
+    import storage
     from backtest import load_fee_schedule, ratio_adjusted_bars
 
     db = storage.MonitorDB()
@@ -409,12 +466,26 @@ def build_param_grid_matrix(sym, period=30, lookback=0, aggregate_from=0):
     layer_map = {}
     total_perf = {}
     all_days = set()
-    for (e, s, tval) in combos:
+    for e, s, tval in combos:
         trades, _, _ = ib.simulate(
-            sym_code, bars, prepared, owners, bases, e, s, tval,
-            config.INTRADAY_BT_FLAT_EOD, config.INTRADAY_BT_MAX_BARS,
-            config.INTRADAY_BT_SLIP_RATE, fee_row, True, config.INTRADAY_BT_FEE_RATE,
-            True, move, config.INTRADAY_BT_LIMIT_TICK_EPS)
+            sym_code,
+            bars,
+            prepared,
+            owners,
+            bases,
+            e,
+            s,
+            tval,
+            config.INTRADAY_BT_FLAT_EOD,
+            config.INTRADAY_BT_MAX_BARS,
+            config.INTRADAY_BT_SLIP_RATE,
+            fee_row,
+            True,
+            config.INTRADAY_BT_FEE_RATE,
+            True,
+            move,
+            config.INTRADAY_BT_LIMIT_TICK_EPS,
+        )
         day_comp = {}
         for tr in trades:
             day = tr["exit_dt"][:10]
@@ -431,9 +502,17 @@ def build_param_grid_matrix(sym, period=30, lookback=0, aggregate_from=0):
     matrix = []
     for day in days:
         matrix.append([pc.get(day, 0.0) for pc in per_combo_days])
-    return {"sym": sym_code, "name": name, "days": days, "names": names,
-            "matrix": matrix, "layer_map": layer_map, "total_perf": total_perf,
-            "bars": len(bars), "src": src}
+    return {
+        "sym": sym_code,
+        "name": name,
+        "days": days,
+        "names": names,
+        "matrix": matrix,
+        "layer_map": layer_map,
+        "total_perf": total_perf,
+        "bars": len(bars),
+        "src": src,
+    }
 
 
 # ============================================================
@@ -445,12 +524,17 @@ def _pct(x, d=1):
 
 def render_dsr(title, d):
     out = ["【%s】" % title]
-    out.append("  收益期数 T=%d；逐期 Sharpe=%.3f（非年化）；偏度 %.3f、Pearson峰度 %.3f（正态=3）"
-               % (d["t"], d["sr_per_period"], d["skew"], d["kurt"]))
-    out.append("  多重试验次数 N=%d → 零优势下蒙到的期望最大 Sharpe 阈值 SR0=%.3f"
-               % (d["n_trials"], d["sr0_multiple_trial"]))
-    out.append("  PSR(真实Sharpe>0)=%.3f；DSR(跑赢SR0多重试验阈值)=%.3f"
-               % (d["psr_vs_zero"], d["dsr"]))
+    out.append(
+        "  收益期数 T=%d；逐期 Sharpe=%.3f（非年化）；偏度 %.3f、Pearson峰度 %.3f（正态=3）"
+        % (d["t"], d["sr_per_period"], d["skew"], d["kurt"])
+    )
+    out.append(
+        "  多重试验次数 N=%d → 零优势下蒙到的期望最大 Sharpe 阈值 SR0=%.3f"
+        % (d["n_trials"], d["sr0_multiple_trial"])
+    )
+    out.append(
+        "  PSR(真实Sharpe>0)=%.3f；DSR(跑赢SR0多重试验阈值)=%.3f" % (d["psr_vs_zero"], d["dsr"])
+    )
     if d["dsr"] >= 0.95:
         verdict = "DSR≥0.95：经多重试验与非正态校正后仍显著，结果较可信"
     elif d["dsr"] >= 0.8:
@@ -464,13 +548,19 @@ def render_dsr(title, d):
 def render_grid(g, n_blocks, wf_train, wf_test):
     out = []
     out.append("=" * 96)
-    out.append("品种 %s（%s）参数网格样本外验证；分钟bar %d 根、平仓交易日 %d 天、候选参数组合 %d 个；网格日收益无交易日补0"
-               % (g["sym"], g["name"], g["bars"], len(g["days"]), len(g["names"])))
+    out.append(
+        "品种 %s（%s）参数网格样本外验证；分钟bar %d 根、平仓交易日 %d 天、候选参数组合 %d 个；网格日收益无交易日补0"
+        % (g["sym"], g["name"], g["bars"], len(g["days"]), len(g["names"]))
+    )
     # CSCV
     c = cscv_pbo(g["matrix"], n_blocks=n_blocks)
-    out.append("一、CSCV 过拟合概率 PBO（S=%d 对半分、评估 %d 种对称划分）" % (c["n_blocks"], c["combos"]))
-    out.append("  PBO=%.3f（样本内最优参数在样本外落入下半区的比例）；logit相对秩中位数=%.3f"
-               % (c["pbo"], c["median_logit"]))
+    out.append(
+        "一、CSCV 过拟合概率 PBO（S=%d 对半分、评估 %d 种对称划分）" % (c["n_blocks"], c["combos"])
+    )
+    out.append(
+        "  PBO=%.3f（样本内最优参数在样本外落入下半区的比例）；logit相对秩中位数=%.3f"
+        % (c["pbo"], c["median_logit"])
+    )
     if c["pbo"] < 0.2:
         v = "PBO<0.2：选优过程泛化良好"
     elif c["pbo"] < 0.5:
@@ -482,14 +572,24 @@ def render_grid(g, n_blocks, wf_train, wf_test):
     out.append("  判定：" + v)
     # walk-forward
     wf = walk_forward(g["matrix"], wf_train, wf_test)
-    out.append("二、Walk-forward 滚动选参（IS窗%d天→OOS窗%d天，共%d段）"
-               % (wf_train, wf_test, wf.get("n_segments", 0)))
+    out.append(
+        "二、Walk-forward 滚动选参（IS窗%d天→OOS窗%d天，共%d段）"
+        % (wf_train, wf_test, wf.get("n_segments", 0))
+    )
     if wf.get("n_segments"):
-        decay_txt = "IS≈0衰减不适用" if wf["is_oos_decay"] is None else ("%.1f%%" % (100.0 * wf["is_oos_decay"]))
-        out.append("  IS选中参数Sharpe均值=%.3f，其样本外Sharpe=%.3f；同期事后最优=%.3f；IS→OOS衰减=%s"
-                   % (wf["mean_is_sharpe"], wf["mean_oos_sharpe"], wf["mean_oos_best"], decay_txt))
-        out.append("  OOS跑赢候选中位数比例=%s；相邻段最优参数切换率=%.1f%%（越低越稳定）"
-                   % (_pct(wf["oos_beat_median_rate"]), 100.0 * wf["param_switch_rate"]))
+        decay_txt = (
+            "IS≈0衰减不适用"
+            if wf["is_oos_decay"] is None
+            else ("%.1f%%" % (100.0 * wf["is_oos_decay"]))
+        )
+        out.append(
+            "  IS选中参数Sharpe均值=%.3f，其样本外Sharpe=%.3f；同期事后最优=%.3f；IS→OOS衰减=%s"
+            % (wf["mean_is_sharpe"], wf["mean_oos_sharpe"], wf["mean_oos_best"], decay_txt)
+        )
+        out.append(
+            "  OOS跑赢候选中位数比例=%s；相邻段最优参数切换率=%.1f%%（越低越稳定）"
+            % (_pct(wf["oos_beat_median_rate"]), 100.0 * wf["param_switch_rate"])
+        )
     else:
         out.append("  交易日不足以完成一段完整 IS+OOS，跳过（样本积累后再跑）")
     # 参数高原
@@ -498,21 +598,33 @@ def render_grid(g, n_blocks, wf_train, wf_test):
     bk = pl["best_key"]
     best_name = next(nm for nm in g["names"] if g["layer_map"][nm] == bk)
     out.append("三、参数高原/孤峰（全样本逐笔Sharpe为绩效）")
-    out.append("  最优点=%s 绩效=%.3f；邻域均值=%s、plateau_ratio=%s、邻域正收益占比=%s、粗糙度=%.3f"
-               % (best_name, pl["best_perf"],
-                  "--" if pl["neighbor_mean"] is None else "%.3f" % pl["neighbor_mean"],
-                  "--" if pl["plateau_ratio"] is None else "%.3f" % pl["plateau_ratio"],
-                  _pct(pl["neighbor_positive_rate"]), pl["roughness"]))
+    out.append(
+        "  最优点=%s 绩效=%.3f；邻域均值=%s、plateau_ratio=%s、邻域正收益占比=%s、粗糙度=%.3f"
+        % (
+            best_name,
+            pl["best_perf"],
+            "--" if pl["neighbor_mean"] is None else "%.3f" % pl["neighbor_mean"],
+            "--" if pl["plateau_ratio"] is None else "%.3f" % pl["plateau_ratio"],
+            _pct(pl["neighbor_positive_rate"]),
+            pl["roughness"],
+        )
+    )
     out.append("  判定：" + pl["verdict"])
     return out, c, wf, pl, pl["best_perf"]
 
 
 def build_report(args):
-    sidecar = {"generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-               "dsr": None, "grid": None, "summaries": []}
+    sidecar = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "dsr": None,
+        "grid": None,
+        "summaries": [],
+    }
     lines = []
     lines.append("回测样本外验证与防过拟合报告（tools/backtest_validation.py）")
-    lines.append("方法：Deflated Sharpe（多重试验/非正态校正）、CSCV-PBO、PurgedKFold、Walk-forward、参数高原")
+    lines.append(
+        "方法：Deflated Sharpe（多重试验/非正态校正）、CSCV-PBO、PurgedKFold、Walk-forward、参数高原"
+    )
     lines.append("口径：纯标准库离线计算，只评估不改动任何生产参数；Sharpe 均为同频率非年化值")
     lines.append("")
 
@@ -521,18 +633,26 @@ def build_report(args):
         days, rets = daily_returns_from_equity_csv(args.dsr_equity)
         if len(rets) >= 5:
             d = deflated_sharpe(rets, args.trials)
-            lines += render_dsr("组合账户日收益 DSR（来源 %s，%d 个交易日）"
-                                % (os.path.basename(args.dsr_equity), len(days)), d)
+            lines += render_dsr(
+                "组合账户日收益 DSR（来源 %s，%d 个交易日）"
+                % (os.path.basename(args.dsr_equity), len(days)),
+                d,
+            )
             if d["dsr"] >= 0.95:
                 dsr_verdict = "经多重试验校正后仍显著"
             elif d["dsr"] >= 0.8:
                 dsr_verdict = "边际，需增样本/减试验复核"
             else:
                 dsr_verdict = "无法排除多重试验偶然性"
-            sidecar["dsr"] = {"n_days": len(days), "sr_obs": d["sr_per_period"],
-                              "sr0": d["sr0_multiple_trial"], "psr_zero": d["psr_vs_zero"],
-                              "dsr": d["dsr"], "n_trials": d["n_trials"],
-                              "verdict": dsr_verdict}
+            sidecar["dsr"] = {
+                "n_days": len(days),
+                "sr_obs": d["sr_per_period"],
+                "sr0": d["sr0_multiple_trial"],
+                "psr_zero": d["psr_vs_zero"],
+                "dsr": d["dsr"],
+                "n_trials": d["n_trials"],
+                "verdict": dsr_verdict,
+            }
             lines.append("")
         else:
             lines.append("权益序列交易日不足（%d），DSR 跳过" % len(rets))
@@ -541,9 +661,9 @@ def build_report(args):
     # 参数网格
     codes = []
     if args.all_grid:
-        import config
-        import storage
         import intraday_backtest as ib
+        import storage
+
         db = storage.MonitorDB()
         try:
             codes = [it[0] for it in ib.resolve_items("", limit=args.limit or 0)]
@@ -557,19 +677,34 @@ def build_report(args):
             g = build_param_grid_matrix(sym, period=args.period)
             if len(g["days"]) < max(args.wf_train + args.wf_test, args.n_blocks) + 1:
                 lines.append("=" * 96)
-                lines.append("品种 %s：平仓交易日仅 %d 天，不足以做 CSCV/WF，跳过（随分钟库积累再评）"
-                             % (sym, len(g["days"])))
+                lines.append(
+                    "品种 %s：平仓交易日仅 %d 天，不足以做 CSCV/WF，跳过（随分钟库积累再评）"
+                    % (sym, len(g["days"]))
+                )
                 continue
             gl, c, wf, pl, best_perf = render_grid(g, args.n_blocks, args.wf_train, args.wf_test)
             lines += gl
-            summaries.append((sym, c["pbo"],
-                              wf.get("mean_oos_sharpe"), wf.get("oos_beat_median_rate"),
-                              pl["plateau_ratio"], pl["verdict"], best_perf))
-            sidecar["summaries"].append({"sym": sym, "pbo": c["pbo"],
-                                         "oos_sharpe": wf.get("mean_oos_sharpe"),
-                                         "oos_beat_median": wf.get("oos_beat_median_rate"),
-                                         "plateau_ratio": pl["plateau_ratio"],
-                                         "best_perf": best_perf})
+            summaries.append(
+                (
+                    sym,
+                    c["pbo"],
+                    wf.get("mean_oos_sharpe"),
+                    wf.get("oos_beat_median_rate"),
+                    pl["plateau_ratio"],
+                    pl["verdict"],
+                    best_perf,
+                )
+            )
+            sidecar["summaries"].append(
+                {
+                    "sym": sym,
+                    "pbo": c["pbo"],
+                    "oos_sharpe": wf.get("mean_oos_sharpe"),
+                    "oos_beat_median": wf.get("oos_beat_median_rate"),
+                    "plateau_ratio": pl["plateau_ratio"],
+                    "best_perf": best_perf,
+                }
+            )
         except Exception as exc:  # 单品种失败不拖垮整份报告
             lines.append("=" * 96)
             lines.append("品种 %s 评估失败：%s" % (sym, exc))
@@ -580,23 +715,32 @@ def build_report(args):
         n_loss = sum(1 for x in summaries if x[6] <= 0.0)
         n_oos_pos = sum(1 for x in summaries if (x[2] or 0.0) > 0.0)
         lines.append("全市场结论（共%d个品种；分钟窗口约6个月、样本偏短，结论随积累更新）：" % n)
-        lines.append("  · PBO<0.2（选优泛化良好）%d个；全网格全样本Sharpe为负 %d个；Walk-forward样本外Sharpe为正 %d个"
-                     % (n_good_pbo, n_loss, n_oos_pos))
-        lines.append("  · 多数品种全网格微亏/IS→OOS明显衰减，说明当前样本长度尚不足以支撑'挑最优参数/上ML'，应继续积累而非重仓单点参数。")
-        lines.append("汇总（PBO 越低越好；OOS beat 中位数比例越高越好；plateau 越接近1越稳健，全网格亏损时不评估）")
+        lines.append(
+            "  · PBO<0.2（选优泛化良好）%d个；全网格全样本Sharpe为负 %d个；Walk-forward样本外Sharpe为正 %d个"
+            % (n_good_pbo, n_loss, n_oos_pos)
+        )
+        lines.append(
+            "  · 多数品种全网格微亏/IS→OOS明显衰减，说明当前样本长度尚不足以支撑'挑最优参数/上ML'，应继续积累而非重仓单点参数。"
+        )
+        lines.append(
+            "汇总（PBO 越低越好；OOS beat 中位数比例越高越好；plateau 越接近1越稳健，全网格亏损时不评估）"
+        )
         lines.append("  品种    PBO     OOS_Sharpe  OOS跑赢中位率  plateau   判定")
         for sym, pbo, oos, beat, pr, verdict, best_perf in summaries:
             short = "全网格亏损" if best_perf <= 0.0 else verdict.split("（")[0]
             pr_txt = "--" if (best_perf <= 0.0 or pr is None) else "%.3f" % pr
-            lines.append("  %-6s  %.3f   %-10s  %-12s  %-8s  %s"
-                         % (sym, pbo,
-                            "--" if oos is None else "%.3f" % oos,
-                            _pct(beat), pr_txt, short))
-        sidecar["grid"] = {"n": n, "pbo_good": n_good_pbo, "all_loss": n_loss,
-                           "oos_pos": n_oos_pos}
+            lines.append(
+                "  %-6s  %.3f   %-10s  %-12s  %-8s  %s"
+                % (sym, pbo, "--" if oos is None else "%.3f" % oos, _pct(beat), pr_txt, short)
+            )
+        sidecar["grid"] = {"n": n, "pbo_good": n_good_pbo, "all_loss": n_loss, "oos_pos": n_oos_pos}
     lines.append("")
-    lines.append("说明：PBO/DSR 是对'选优动作'的统计校正，不是收益预测；样本越长、候选越少结论越可靠。")
-    lines.append("PurgedKFold 为 WP-F4 训练 ml_samples 时的强制切分器（见 --selftest 断言），禁止随机K折。")
+    lines.append(
+        "说明：PBO/DSR 是对'选优动作'的统计校正，不是收益预测；样本越长、候选越少结论越可靠。"
+    )
+    lines.append(
+        "PurgedKFold 为 WP-F4 训练 ml_samples 时的强制切分器（见 --selftest 断言），禁止随机K折。"
+    )
     return "\n".join(lines) + "\n", sidecar
 
 
@@ -605,6 +749,7 @@ def build_report(args):
 # ============================================================
 def _selftest():
     import random
+
     rng = random.Random(20260902)
 
     # 1) 正态函数互逆与已知分位点
@@ -619,12 +764,14 @@ def _selftest():
 
     # 2) PSR：零均值大样本≈0.5；强正均值→接近1
     zero_seq = [rng.gauss(0, 1) for _ in range(3000)]
-    psr_z = prob_sharpe_ratio(per_period_sharpe(zero_seq), 0.0, 3000,
-                              moments(zero_seq)[2], moments(zero_seq)[3])
+    psr_z = prob_sharpe_ratio(
+        per_period_sharpe(zero_seq), 0.0, 3000, moments(zero_seq)[2], moments(zero_seq)[3]
+    )
     assert 0.3 < psr_z < 0.7, psr_z
     good = [rng.gauss(0.08, 1.0) for _ in range(3000)]
-    psr_g = prob_sharpe_ratio(per_period_sharpe(good), 0.0, 3000,
-                              moments(good)[2], moments(good)[3])
+    psr_g = prob_sharpe_ratio(
+        per_period_sharpe(good), 0.0, 3000, moments(good)[2], moments(good)[3]
+    )
     assert psr_g > 0.99, psr_g
 
     # 3) DSR：试验次数越多，SR0 阈值越高、DSR 越低（多重试验惩罚单调）
@@ -679,21 +826,21 @@ def _selftest():
     assert wf_iso["purge"] == 5 and wf_iso["embargo"] == 3
     assert wf_iso["n_segments"] <= wf["n_segments"]
     assert all(seg["chosen"] == 2 for seg in wf_iso["segments"])
-    assert walk_forward(wf_mat, 6, 20, purge=5)["n_segments"] == 0   # IS-purge<2 安全返空
+    assert walk_forward(wf_mat, 6, 20, purge=5)["n_segments"] == 0  # IS-purge<2 安全返空
 
     # 7) 参数高原 vs 孤峰：构造规整 3x3，中心孤峰
-    grid_peak = {(x, y): (1.0 if (x, y) == (1, 1) else 0.05)
-                 for x in range(3) for y in range(3)}
+    grid_peak = {(x, y): (1.0 if (x, y) == (1, 1) else 0.05) for x in range(3) for y in range(3)}
     pl_peak = parameter_plateau(grid_peak)
     assert pl_peak["best_key"] == (1, 1) and pl_peak["plateau_ratio"] < 0.2
-    grid_flat = {(x, y): (1.0 if (x, y) == (1, 1) else 0.95)
-                 for x in range(3) for y in range(3)}
+    grid_flat = {(x, y): (1.0 if (x, y) == (1, 1) else 0.95) for x in range(3) for y in range(3)}
     pl_flat = parameter_plateau(grid_flat)
     assert pl_flat["plateau_ratio"] > 0.9 and pl_flat["roughness"] < 0.2
 
-    print("backtest_validation selftest ALL PASS"
-          "（正态CDF/PPF、矩、PSR零/强、DSR多重试验单调、CSCV噪声≈0.5/真alpha≈0、"
-          "PurgedKFold purge+embargo、Walk-forward持续占优、高原vs孤峰）")
+    print(
+        "backtest_validation selftest ALL PASS"
+        "（正态CDF/PPF、矩、PSR零/强、DSR多重试验单调、CSCV噪声≈0.5/真alpha≈0、"
+        "PurgedKFold purge+embargo、Walk-forward持续占优、高原vs孤峰）"
+    )
 
 
 def main(argv=None):
@@ -701,7 +848,9 @@ def main(argv=None):
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--dsr-equity", default=os.path.join("reports", "portfolio_equity.csv"))
     p.add_argument("--no-dsr", action="store_true")
-    p.add_argument("--trials", type=int, default=18, help="多重试验次数（参数网格×选择次数），默认18")
+    p.add_argument(
+        "--trials", type=int, default=18, help="多重试验次数（参数网格×选择次数），默认18"
+    )
     p.add_argument("--grid", default="", help="逗号分隔品种做参数网格 CSCV/WF/高原，如 RB,HC")
     p.add_argument("--all-grid", action="store_true")
     p.add_argument("--period", type=int, default=30, choices=(1, 5, 15, 30, 60))

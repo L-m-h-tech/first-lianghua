@@ -1,20 +1,20 @@
-# -*- coding: utf-8 -*-
 """【需求④⑧⑨⑩ + P0-1】报告生成与落盘（按时段分流，**新轮次的块始终写在文件最前面**）：
-  日盘 09:00-11:30/13:30-15:00；夜盘 21:00 起按品种分档收市（23:00 / 次日01:00 / 次日02:30），
-  全局只要还有品种在交易即按"交易时段"分流：
-    - latest_report.txt : 滚动窗口，只保留最近 KEEP_ROUNDS(5) 轮交易时段报告（最新在最前）
-    - signals.csv       : 滚动窗口，最近5轮交易时段信号流水（最新轮在最前）
-    - history_report.txt: 交易时段当日归档，新块插在最前；新交易日启动时清掉上一交易日块
-  全部品种收市后（非交易时段）：
-    - offhours_report.txt : 滚动保留最近5轮非交易时段报告（最新在最前）
-    - offhours_history.txt: 非交易时段当日归档（夜盘跨零点块同属一个交易日，不被误清）
-  每交易日：
-    - daily_review.txt  : 复盘报告（全部夜盘结束即次日02:30后生成；无夜盘日15:00后），
-                          新交易日在最前，**永不删除**
-    - 实时报告.html      : 多页签实时看板，探测 report_status.js，有新报告（含紧急轮动）才自动刷新
-  新交易日首次运行时，按"交易日归属"（凌晨夜盘归属前一交易日）清除更早的轮动块。
-  写入鲁棒性：文件被 Excel/编辑器占用时自动短暂重试，且每个文件独立写入、互不影响。
+日盘 09:00-11:30/13:30-15:00；夜盘 21:00 起按品种分档收市（23:00 / 次日01:00 / 次日02:30），
+全局只要还有品种在交易即按"交易时段"分流：
+  - latest_report.txt : 滚动窗口，只保留最近 KEEP_ROUNDS(5) 轮交易时段报告（最新在最前）
+  - signals.csv       : 滚动窗口，最近5轮交易时段信号流水（最新轮在最前）
+  - history_report.txt: 交易时段当日归档，新块插在最前；新交易日启动时清掉上一交易日块
+全部品种收市后（非交易时段）：
+  - offhours_report.txt : 滚动保留最近5轮非交易时段报告（最新在最前）
+  - offhours_history.txt: 非交易时段当日归档（夜盘跨零点块同属一个交易日，不被误清）
+每交易日：
+  - daily_review.txt  : 复盘报告（全部夜盘结束即次日02:30后生成；无夜盘日15:00后），
+                        新交易日在最前，**永不删除**
+  - 实时报告.html      : 多页签实时看板，探测 report_status.js，有新报告（含紧急轮动）才自动刷新
+新交易日首次运行时，按"交易日归属"（凌晨夜盘归属前一交易日）清除更早的轮动块。
+写入鲁棒性：文件被 Excel/编辑器占用时自动短暂重试，且每个文件独立写入、互不影响。
 """
+
 import csv
 import html
 import io
@@ -25,11 +25,11 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 
+import charts
 import config
 import cross_section
 import data_health
-import charts
-from utils import (LOG, is_trading_time, now_str, pad, sanitize, trade_owner_date)
+from utils import LOG, is_trading_time, now_str, pad, sanitize, trade_owner_date
 
 DISCLAIMER = (
     "免责声明: 本报告由公开数据(新浪财经/金十数据)与规则引擎自动生成，仅供学习研究参考，"
@@ -38,7 +38,7 @@ DISCLAIMER = (
 
 CSV_HEADER = ["时间", "轮次", "类型", "品种", "价格", "涨跌%", "综合分", "信号", "建议"]
 
-_HIST_CACHE = {}      # 归档文件内容缓存（新块在最前），避免每轮重读大文件
+_HIST_CACHE = {}  # 归档文件内容缓存（新块在最前），避免每轮重读大文件
 _rollover_date = None
 _seen_news = set()
 
@@ -72,8 +72,9 @@ def _read_file(path, encoding="utf-8-sig"):
         return ""
 
 
-def _safe_write(path, content, encoding="utf-8-sig", newline=None, retries=3,
-                retry_wait=0.8, update_cache=True):
+def _safe_write(
+    path, content, encoding="utf-8-sig", newline=None, retries=3, retry_wait=0.8, update_cache=True
+):
     """安全写入：文件被 Excel/编辑器占用(PermissionError)时短暂重试；
     最终仍失败只告警、不抛异常（返回 False），保证单个文件被占用不影响其他报告。
     仅在写入成功后更新 _HIST_CACHE，避免缓存与磁盘不一致。"""
@@ -88,8 +89,10 @@ def _safe_write(path, content, encoding="utf-8-sig", newline=None, retries=3,
             if attempt < retries - 1:
                 time.sleep(retry_wait)
                 continue
-            LOG.warning("文件被占用（可能正在 Excel/编辑器中打开），本轮跳过写入，下轮自动重试: %s",
-                        os.path.basename(path))
+            LOG.warning(
+                "文件被占用（可能正在 Excel/编辑器中打开），本轮跳过写入，下轮自动重试: %s",
+                os.path.basename(path),
+            )
             return False
         except Exception as e:
             LOG.warning("写入 %s 失败: %s", path, e)
@@ -135,8 +138,12 @@ def daily_rollover():
         else:
             _HIST_CACHE[config.SIGNALS_CSV] = new
     # 四个分块文件（latest_report / history / offhours 两件套）
-    for path in (config.REPORT_FILE, config.HISTORY_FILE,
-                 config.OFFHOURS_REPORT_FILE, config.OFFHOURS_HISTORY_FILE):
+    for path in (
+        config.REPORT_FILE,
+        config.HISTORY_FILE,
+        config.OFFHOURS_REPORT_FILE,
+        config.OFFHOURS_HISTORY_FILE,
+    ):
         content = _read_file(path)
         if not content:
             _HIST_CACHE[path] = ""
@@ -147,7 +154,7 @@ def daily_rollover():
             end = ms[idx + 1].start() if idx + 1 < len(ms) else len(content)
             bo = _block_owner(m)
             if bo is None or bo >= owner:
-                kept.append(content[m.start():end])
+                kept.append(content[m.start() : end])
         new = "".join(kept)
         if new != content:
             if _write_file(path, new):
@@ -156,16 +163,18 @@ def daily_rollover():
             _HIST_CACHE[path] = new
     _rollover_date = owner_s
     if cleaned:
-        LOG.info("新交易日(%s)：已清除以下文件中上一交易日的轮动报告: %s",
-                 owner_s, ", ".join(cleaned))
+        LOG.info(
+            "新交易日(%s)：已清除以下文件中上一交易日的轮动报告: %s", owner_s, ", ".join(cleaned)
+        )
     return cleaned
 
 
 def append_daily_news(news):
     """当日新闻缓存到 cache/news_YYYYMMDD.jsonl（供每日复盘报告使用）"""
     try:
-        path = os.path.join(config.NEWS_CACHE_DIR,
-                            f"news_{datetime.now().strftime('%Y%m%d')}.jsonl")
+        path = os.path.join(
+            config.NEWS_CACHE_DIR, f"news_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        )
         lines = []
         for n in news:
             key = (n.get("content") or "")[:50]
@@ -173,10 +182,16 @@ def append_daily_news(news):
                 continue
             _seen_news.add(key)
             t = n.get("time")
-            lines.append(json.dumps({
-                "time": t.strftime("%Y-%m-%d %H:%M:%S") if t else "",
-                "source": n.get("source"), "content": n.get("content")},
-                ensure_ascii=False))
+            lines.append(
+                json.dumps(
+                    {
+                        "time": t.strftime("%Y-%m-%d %H:%M:%S") if t else "",
+                        "source": n.get("source"),
+                        "content": n.get("content"),
+                    },
+                    ensure_ascii=False,
+                )
+            )
         if lines:
             with open(path, "a", encoding="utf-8") as fp:
                 fp.write("\n".join(lines) + "\n")
@@ -186,7 +201,10 @@ def append_daily_news(news):
 
 _DASHBOARD_TABS = [
     ("latest_report.txt", "交易时段·最近5轮"),
-    ("__charts__", "图表看板"),  # 第23轮：图表页同页内嵌渲染（片段来自 charts.dashboard_embed_parts），不再 iframe 套独立页
+    (
+        "__charts__",
+        "图表看板",
+    ),  # 第23轮：图表页同页内嵌渲染（片段来自 charts.dashboard_embed_parts），不再 iframe 套独立页
     ("signals.csv", "信号流水CSV"),
     ("signal_tracking.txt", "信号胜率追踪"),
     ("backtest_report.txt", "最小日线回测"),
@@ -195,8 +213,14 @@ _DASHBOARD_TABS = [
     ("intraday_backtest_trades.csv", "日内回测交易CSV"),
     ("portfolio_report.txt", "组合账户回测"),
     ("portfolio_trades.csv", "组合交易CSV"),
-    ("paper_account.txt", "纸面·基准"),  # 第28轮 G1（二）：PaperBroker 影子账户快照；第102轮：基准账户
-    ("device_status.txt", "数据采集装置(界面操作)"),  # 第N轮：装置 save_report 实时写入（量化报告集成遗留项）
+    (
+        "paper_account.txt",
+        "纸面·基准",
+    ),  # 第28轮 G1（二）：PaperBroker 影子账户快照；第102轮：基准账户
+    (
+        "device_status.txt",
+        "数据采集装置(界面操作)",
+    ),  # 第N轮：装置 save_report 实时写入（量化报告集成遗留项）
     ("__device__", "装置健康详情"),  # 协同：读取 report_device.json 结构化展示源健康/软件/告警
     ("__paper_cmp__", "纸面账户对比"),  # 第102轮：15账户对比（读 paper_compare.json）
     ("history_report.txt", "交易时段·当日归档"),
@@ -204,7 +228,10 @@ _DASHBOARD_TABS = [
     ("offhours_history.txt", "非交易时段·当日归档"),
     ("daily_review.txt", "每日复盘(永久)"),
     ("__newdata__", "新数据因子"),  # 第97轮：openvlab隐波/匿名仓单等新数据源因子研究（静态注入）
-    ("__research__", "研究报告(全部)"),  # 第87轮：内嵌聚合全部 reports/*.txt 研究/监控报告（不走 iframe）
+    (
+        "__research__",
+        "研究报告(全部)",
+    ),  # 第87轮：内嵌聚合全部 reports/*.txt 研究/监控报告（不走 iframe）
 ]
 # 报告写出比轮动刻度晚的缓冲秒数（分析耗时），看板在"刻度+缓冲"后刷新
 _DASHBOARD_WRITE_DELAY_SEC = 20
@@ -422,36 +449,61 @@ def _dashboard_html():
 </script>
 </body>
 </html>"""
-    html = _dashboard_tmpl % ("\n  ".join(tabs), first, first, sessions_js, early_len,
-                              early_step, normal_step, off_step, _DASHBOARD_WRITE_DELAY_SEC,
-                              getattr(config, "PAPER_TICK_INTERVAL", 60))
+    html = _dashboard_tmpl % (
+        "\n  ".join(tabs),
+        first,
+        first,
+        sessions_js,
+        early_len,
+        early_step,
+        normal_step,
+        off_step,
+        _DASHBOARD_WRITE_DELAY_SEC,
+        getattr(config, "PAPER_TICK_INTERVAL", 60),
+    )
     _cp_style, _cp_dom, _cp_js = charts.dashboard_embed_parts()
-    return (html.replace("/*__CP_STYLE__*/", _cp_style)
-                .replace("/*__CP_DOM__*/", _cp_dom)
-                .replace("/*__CP_JS__*/", _cp_js)
-                .replace("/*__RP_DOM__*/", _research_reports_html())
-                .replace("/*__ND_DOM__*/", _newdata_panel_html())
-                .replace("/*__DV_DOM__*/", _device_panel_html())
-                .replace("/*__CMP_DOM__*/", _paper_compare_html()))
+    return (
+        html.replace("/*__CP_STYLE__*/", _cp_style)
+        .replace("/*__CP_DOM__*/", _cp_dom)
+        .replace("/*__CP_JS__*/", _cp_js)
+        .replace("/*__RP_DOM__*/", _research_reports_html())
+        .replace("/*__ND_DOM__*/", _newdata_panel_html())
+        .replace("/*__DV_DOM__*/", _device_panel_html())
+        .replace("/*__CMP_DOM__*/", _paper_compare_html())
+    )
 
 
 # =========================== 第87轮：研究报告聚合页签（全部 reports/*.txt 融入实时看板） ===========================
 _REPORT_TAB_EXCLUDED = {name for name, _label in _DASHBOARD_TABS if not name.startswith("__")}
 _REPORT_CATEGORY = {
-    "carry_eval": "G23 carry/期限结构", "tsmom_eval": "G7 时序动量",
-    "xsmom_eval": "G7 截面动量", "xsmom_long": "G7 长窗复核",
-    "expr_research": "G25 表达式因子", "expr_miner": "G25 自动挖掘",
-    "orthogonal_blend_oos": "G25 正交合成OOS", "regime_cond_lab": "G25/G29 regime条件化",
-    "factor_eval": "G2 因子评估", "factor_health": "G29 因子体检",
-    "factor_regime": "G29 regime分层", "attribution": "G28 归因",
-    "tradable_mask": "G22 可交易性掩码", "mask_compare_summary": "G22 掩码汇总",
-    "microstructure_lab": "G24 微结构", "spec_pressure_lab": "G24 套保/投机压力",
-    "spread_lab": "G24 跨期价差", "portfolio_lab": "G26 组合实验台",
-    "portfolio_risk_lab": "G5 组合风险", "circuit_review": "G5 熔断校准",
-    "wf_cost_lab": "G27 成本敏感性", "trade_journal": "G30 交易复盘",
-    "research_review": "G30 研究复盘", "shadow_track": "G7 影子信号",
-    "llm_review": "G13 LLM复核", "experiment_ledger_view": "G27 实验台账",
-    "research_panel_manifest": "G21 面板清单", "backtest_validation": "G4 回测严谨性",
+    "carry_eval": "G23 carry/期限结构",
+    "tsmom_eval": "G7 时序动量",
+    "xsmom_eval": "G7 截面动量",
+    "xsmom_long": "G7 长窗复核",
+    "expr_research": "G25 表达式因子",
+    "expr_miner": "G25 自动挖掘",
+    "orthogonal_blend_oos": "G25 正交合成OOS",
+    "regime_cond_lab": "G25/G29 regime条件化",
+    "factor_eval": "G2 因子评估",
+    "factor_health": "G29 因子体检",
+    "factor_regime": "G29 regime分层",
+    "attribution": "G28 归因",
+    "tradable_mask": "G22 可交易性掩码",
+    "mask_compare_summary": "G22 掩码汇总",
+    "microstructure_lab": "G24 微结构",
+    "spec_pressure_lab": "G24 套保/投机压力",
+    "spread_lab": "G24 跨期价差",
+    "portfolio_lab": "G26 组合实验台",
+    "portfolio_risk_lab": "G5 组合风险",
+    "circuit_review": "G5 熔断校准",
+    "wf_cost_lab": "G27 成本敏感性",
+    "trade_journal": "G30 交易复盘",
+    "research_review": "G30 研究复盘",
+    "shadow_track": "G7 影子信号",
+    "llm_review": "G13 LLM复核",
+    "experiment_ledger_view": "G27 实验台账",
+    "research_panel_manifest": "G21 面板清单",
+    "backtest_validation": "G4 回测严谨性",
 }
 
 
@@ -469,12 +521,18 @@ def _newdata_panel_html():
     for ln in lines:
         s_esc = ln.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if ln.startswith("===="):
-            parts.append(f'<div style="font-weight:bold;font-size:16px;margin-top:24px;border-bottom:1px solid #444;padding-bottom:6px;">{s_esc}</div>')
+            parts.append(
+                f'<div style="font-weight:bold;font-size:16px;margin-top:24px;border-bottom:1px solid #444;padding-bottom:6px;">{s_esc}</div>'
+            )
         elif ln.startswith("【"):
             title = s_esc.strip("【】").split("】")[0] if "】" in s_esc else s_esc
-            parts.append(f'<div style="font-weight:bold;font-size:15px;margin-top:18px;color:#8cf;">{s_esc}</div>')
+            parts.append(
+                f'<div style="font-weight:bold;font-size:15px;margin-top:18px;color:#8cf;">{s_esc}</div>'
+            )
         elif ln.startswith("  ") or ln.startswith(" "):
-            parts.append(f'<div style="font-family:monospace;font-size:13px;color:#b8b8b8;">{s_esc}</div>')
+            parts.append(
+                f'<div style="font-family:monospace;font-size:13px;color:#b8b8b8;">{s_esc}</div>'
+            )
         elif ln.startswith("-") and len(ln) < 10:
             parts.append('<hr style="border:none;border-top:1px solid #444;margin:12px 0 0;">')
         else:
@@ -490,17 +548,26 @@ def _device_panel_html():
     最近告警。文件缺失（装置未启动）时显示提示，不影响看板。
     """
     # 装置 data 目录：E:\LHsystem\界面操作收集装置\data\（BASE_DIR 上一级的上一个项目目录）
-    dev_json = os.path.join(os.path.dirname(os.path.dirname(config.BASE_DIR)),
-                            "界面操作收集装置", "data", "report_device.json")
-    parts = ['<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">数据采集装置（界面操作）健康详情</div>']
+    dev_json = os.path.join(
+        os.path.dirname(os.path.dirname(config.BASE_DIR)),
+        "界面操作收集装置",
+        "data",
+        "report_device.json",
+    )
+    parts = [
+        '<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">数据采集装置（界面操作）健康详情</div>'
+    ]
     try:
         import json as _json
+
         with open(dev_json, encoding="utf-8") as f:
             rep = _json.load(f)
     except OSError:
-        parts.append('<p style="margin:12px 0;color:#b8b8b8;">装置未启动或报告未生成——'
-                     '先运行 <code>start_all.bat</code>（或装置 <code>run.py --daemon</code>）后刷新。'
-                     '装置启动后自动写 reports/device_status.txt 与此 JSON。</p>')
+        parts.append(
+            '<p style="margin:12px 0;color:#b8b8b8;">装置未启动或报告未生成——'
+            "先运行 <code>start_all.bat</code>（或装置 <code>run.py --daemon</code>）后刷新。"
+            "装置启动后自动写 reports/device_status.txt 与此 JSON。</p>"
+        )
         return "\n".join(parts)
     except Exception as e:
         parts.append(f'<p style="margin:12px 0;color:#b8b8b8;">装置报告解析失败: {e}</p>')
@@ -511,34 +578,54 @@ def _device_panel_html():
     parts.append(f'<p style="margin:8px 0;">最近更新: {upd} ｜ 采集轮数: {cols}</p>')
 
     # 软件在线
-    parts.append('<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">软件在线</div>')
+    parts.append(
+        '<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">软件在线</div>'
+    )
     sw = rep.get("software") or {}
     if not sw:
         parts.append('<p style="margin:4px 0;color:#b8b8b8;">无软件状态（未探测）</p>')
     for k, v in sw.items():
         online = bool(v.get("online"))
-        badge = '<span style="color:#37c27a;">在线</span>' if online else '<span style="color:#e05b5b;">离线</span>'
+        badge = (
+            '<span style="color:#37c27a;">在线</span>'
+            if online
+            else '<span style="color:#e05b5b;">离线</span>'
+        )
         detail = str(v.get("detail") or "")
-        parts.append(f'<p style="margin:4px 0;">{badge}  {k}  <span style="color:#b8b8b8;">{detail}</span></p>')
+        parts.append(
+            f'<p style="margin:4px 0;">{badge}  {k}  <span style="color:#b8b8b8;">{detail}</span></p>'
+        )
 
     # 数据源
-    parts.append('<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">数据源健康</div>')
+    parts.append(
+        '<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">数据源健康</div>'
+    )
     srcs = rep.get("sources") or {}
     if not srcs:
         parts.append('<p style="margin:4px 0;color:#b8b8b8;">暂无数据源上报</p>')
     for k, v in srcs.items():
         ok = bool(v.get("ok"))
         hits = int(v.get("hits", 0))
-        badge = '<span style="color:#37c27a;">OK</span>' if ok else '<span style="color:#e05b5b;">FAIL</span>'
-        parts.append(f'<p style="margin:4px 0;font-family:monospace;font-size:13px;">{badge}  {k}  (hits={hits})</p>')
+        badge = (
+            '<span style="color:#37c27a;">OK</span>'
+            if ok
+            else '<span style="color:#e05b5b;">FAIL</span>'
+        )
+        parts.append(
+            f'<p style="margin:4px 0;font-family:monospace;font-size:13px;">{badge}  {k}  (hits={hits})</p>'
+        )
 
     # 行情/期权概览
-    parts.append('<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">采集概览</div>')
+    parts.append(
+        '<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#8cf;">采集概览</div>'
+    )
     q_total = int(rep.get("quotes_total") or 0)
     parts.append(f'<p style="margin:4px 0;">行情快照: {q_total} 条</p>')
     by_src = rep.get("quotes_by_source") or {}
     if by_src:
-        parts.append(f'<p style="margin:4px 0;color:#b8b8b8;">按源: {"，".join(f"{k}={v}" for k, v in by_src.items())}</p>')
+        parts.append(
+            f'<p style="margin:4px 0;color:#b8b8b8;">按源: {"，".join(f"{k}={v}" for k, v in by_src.items())}</p>'
+        )
     opts = rep.get("options") or []
     parts.append(f'<p style="margin:4px 0;">期权链: {len(opts)} 条</p>')
     cov = rep.get("coverage") or {}
@@ -555,20 +642,26 @@ def _device_panel_html():
     # 告警
     alerts = rep.get("alerts") or []
     if alerts:
-        parts.append('<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#f0a35e;">最近告警</div>')
+        parts.append(
+            '<div style="font-weight:bold;font-size:14px;margin-top:16px;color:#f0a35e;">最近告警</div>'
+        )
         for a in alerts[-8:]:
             ts = str(a.get("ts") or "")
             code = str(a.get("code") or "")
             reason = str(a.get("reason") or "")
-            parts.append(f'<p style="margin:4px 0;font-family:monospace;font-size:13px;">[{ts}] {code}: {reason}</p>')
+            parts.append(
+                f'<p style="margin:4px 0;font-family:monospace;font-size:13px;">[{ts}] {code}: {reason}</p>'
+            )
     # 第110轮：看板合一——内嵌装置 dashboard（http://127.0.0.1:{port}/dashboard.html）。
     # 装置 --serve 常驻时直接内嵌其完整显示页；未启动则保留上方结构化摘要（兼容）。
     try:
-        dev_cfg = os.path.join(os.path.dirname(os.path.dirname(config.BASE_DIR)),
-                               "界面操作收集装置", "config.json")
+        dev_cfg = os.path.join(
+            os.path.dirname(os.path.dirname(config.BASE_DIR)), "界面操作收集装置", "config.json"
+        )
         port = 8790
         if os.path.exists(dev_cfg):
             import json as _json2
+
             with open(dev_cfg, encoding="utf-8") as f:
                 port = int((_json2.load(f).get("http") or {}).get("serve_port") or 8790)
         dev_dash = "http://127.0.0.1:%d/dashboard.html" % port
@@ -577,8 +670,9 @@ def _device_panel_html():
             '<iframe src="%s" style="width:100%%;height:520px;border:1px solid #333;border-radius:6px;'
             'background:#0e0f13;"></iframe>'
             '<p style="margin:6px 0;color:#9a9a9a;font-size:12px;">内嵌装置显示页（%s）。'
-            '若此框空白：装置 <code>--serve</code> 未启动（先跑 <code>start_all.bat</code>），上方为结构化摘要。</p>'
-            % (dev_dash, dev_dash))
+            "若此框空白：装置 <code>--serve</code> 未启动（先跑 <code>start_all.bat</code>），上方为结构化摘要。</p>"
+            % (dev_dash, dev_dash)
+        )
     except Exception:
         pass
     return "\n".join(parts)
@@ -595,18 +689,33 @@ def _paper_compare_html():
     cmp_path = os.path.join(config.BASE_DIR, "reports", "paper_compare.json")
     try:
         import json as _json
+
         with open(cmp_path, encoding="utf-8") as f:
             rows = _json.load(f)
     except Exception:
-        return ('<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">'
-                '纸面账户对比</div><p style="color:#f88;">paper_compare.json 未生成（程序需完成至少一轮分析）</p>')
+        return (
+            '<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">'
+            '纸面账户对比</div><p style="color:#f88;">paper_compare.json 未生成（程序需完成至少一轮分析）</p>'
+        )
 
     def _esc(s):
-        return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        return (
+            str(s or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
 
     # ---- 档位卡统计 ----
     tier_order = [100_000, 10_000, 5_000, 3_000, 1_000]
-    tier_label = {100_000: "10万档", 10_000: "1万档", 5_000: "5000档", 3_000: "3000档", 1_000: "1000档"}
+    tier_label = {
+        100_000: "10万档",
+        10_000: "1万档",
+        5_000: "5000档",
+        3_000: "3000档",
+        1_000: "1000档",
+    }
     cards = []
     for eq0k in tier_order:
         grp = [r for r in rows if abs((r.get("equity0") or 0) - eq0k) < 1.0]
@@ -626,14 +735,17 @@ def _paper_compare_html():
             f'<div class="tc-name">{tier_label.get(eq0k, str(eq0k))}</div>'
             f'<div class="tc-avg {_cls}">档均 {avg:+.2%}</div>'
             f'<div class="tc-sub">账户 {len(grp)} 个 · 中位回撤 {mid_mdd:.1%}</div>'
-            f'<div class="tc-sub">最佳 {_esc(best.get("name",""))} <span class="{_cls_best}">{best.get("ret") or 0:+.2%}</span>'
-            f' · 最差 {_esc(worst.get("name",""))} <span class="{_cls_worst}">{worst.get("ret") or 0:+.2%}</span></div>'
-            f'</div>')
+            f'<div class="tc-sub">最佳 {_esc(best.get("name", ""))} <span class="{_cls_best}">{best.get("ret") or 0:+.2%}</span>'
+            f' · 最差 {_esc(worst.get("name", ""))} <span class="{_cls_worst}">{worst.get("ret") or 0:+.2%}</span></div>'
+            f"</div>"
+        )
+
     # ---- 主表 ----
     def _fcard(label, value, cls=""):
-        return ('<div class="f-card"><div class="f-lb">%s</div>'
-                '<div class="f-val%s">%s</div></div>'
-                % (label, (" " + cls) if cls else "", value))
+        return (
+            '<div class="f-card"><div class="f-lb">%s</div>'
+            '<div class="f-val%s">%s</div></div>' % (label, (" " + cls) if cls else "", value)
+        )
 
     def _fmt_perf(key, v):
         """绩效指标格式化：小数比例类显示为百分比，比率/次数直接显示。"""
@@ -653,11 +765,18 @@ def _paper_compare_html():
         _st = r.get("status") or {}
         if not _st or not any(_st.values()):
             return ""
-        _items = (("pending", "#f0a35e", "在途"), ("filled", "#43c589", "已成交"),
-                  ("rejected", "#ef6b6b", "拒单"), ("cancelled", "#9a9a9a", "撤单"))
+        _items = (
+            ("pending", "#f0a35e", "在途"),
+            ("filled", "#43c589", "已成交"),
+            ("rejected", "#ef6b6b", "拒单"),
+            ("cancelled", "#9a9a9a", "撤单"),
+        )
         _html = "".join(
-            '<span class="status-badge" style="color:%s;" title="%s">%s %d</span>' % (c, t, t, int(_st.get(k) or 0))
-            for k, c, t in _items if int(_st.get(k) or 0) > 0)
+            '<span class="status-badge" style="color:%s;" title="%s">%s %d</span>'
+            % (c, t, t, int(_st.get(k) or 0))
+            for k, c, t in _items
+            if int(_st.get(k) or 0) > 0
+        )
         return '<div class="st-badges">%s</div>' % _html if _html else ""
 
     def _detail_html(r):
@@ -668,25 +787,46 @@ def _paper_compare_html():
         out = []
         # 第111轮：账户资金概览（4 格卡；旧 JSON 无字段时整块隐藏）
         if any(r.get(k) is not None for k in ("static", "float_pnl", "margin_used", "available")):
-            out.append('<div class="dd-sec">账户资金概览</div><div class="perf-grid">'
-                       + _fcard("静态权益", _yuan(r.get("static") or 0))
-                       + _fcard("浮动盈亏", _yuan(r.get("float_pnl") or 0),
-                                "pos" if (r.get("float_pnl") or 0) >= 0 else "neg")
-                       + _fcard("保证金占用", _yuan(r.get("margin_used") or 0))
-                       + _fcard("可用资金", _yuan(r.get("available") or 0))
-                       + '</div>')
+            out.append(
+                '<div class="dd-sec">账户资金概览</div><div class="perf-grid">'
+                + _fcard("静态权益", _yuan(r.get("static") or 0))
+                + _fcard(
+                    "浮动盈亏",
+                    _yuan(r.get("float_pnl") or 0),
+                    "pos" if (r.get("float_pnl") or 0) >= 0 else "neg",
+                )
+                + _fcard("保证金占用", _yuan(r.get("margin_used") or 0))
+                + _fcard("可用资金", _yuan(r.get("available") or 0))
+                + "</div>"
+            )
         # 第111轮：绩效指标网格（缺失项自动跳过；最大回撤主表已有列，这里不重复）
-        _perf_keys = (("ann_ret", "年化"), ("sharpe", "夏普"), ("win_rate", "胜率"),
-                      ("pl_ratio", "盈亏比"), ("profit_factor", "利润因子"), ("n_trades", "交易数"),
-                      ("avg_win", "平均盈"), ("avg_risk", "平均风险"))
-        _perf_cells = [_fcard(_lb, _fmt_perf(_k, r.get(_k)))
-                       for _k, _lb in _perf_keys if r.get(_k) is not None]
+        _perf_keys = (
+            ("ann_ret", "年化"),
+            ("sharpe", "夏普"),
+            ("win_rate", "胜率"),
+            ("pl_ratio", "盈亏比"),
+            ("profit_factor", "利润因子"),
+            ("n_trades", "交易数"),
+            ("avg_win", "平均盈"),
+            ("avg_risk", "平均风险"),
+        )
+        _perf_cells = [
+            _fcard(_lb, _fmt_perf(_k, r.get(_k))) for _k, _lb in _perf_keys if r.get(_k) is not None
+        ]
         if _perf_cells:
-            out.append('<div class="dd-sec">绩效指标</div><div class="perf-grid">%s</div>'
-                       % "".join(_perf_cells))
+            out.append(
+                '<div class="dd-sec">绩效指标</div><div class="perf-grid">%s</div>'
+                % "".join(_perf_cells)
+            )
         # 第111轮：成交汇总（名义/滑点/开平/强平/跳过，全部为空时隐藏）
-        _fill_keys = (("notional", "名义总额"), ("slip_yuan", "滑点"), ("n_opens", "开仓"),
-                      ("n_closes", "平仓"), ("n_liquidations", "强平"), ("n_skipped", "跳过"))
+        _fill_keys = (
+            ("notional", "名义总额"),
+            ("slip_yuan", "滑点"),
+            ("n_opens", "开仓"),
+            ("n_closes", "平仓"),
+            ("n_liquidations", "强平"),
+            ("n_skipped", "跳过"),
+        )
         _fill_cells = []
         for _k, _lb in _fill_keys:
             _v = r.get(_k)
@@ -700,194 +840,280 @@ def _paper_compare_html():
                 _cls = ""
             _fill_cells.append(_fcard(_lb, _txt, _cls))
         if _fill_cells:
-            out.append('<div class="dd-sec">成交汇总</div><div class="perf-grid">%s</div>'
-                       % "".join(_fill_cells))
+            out.append(
+                '<div class="dd-sec">成交汇总</div><div class="perf-grid">%s</div>'
+                % "".join(_fill_cells)
+            )
         if pos:
-            out.append('<div class="dd-sec">持仓明细（%d）</div><table class="dd-table">'
-                       '<tr><th>品种</th><th>合约</th><th>方向</th><th>手数</th><th>开仓价</th>'
-                       '<th>最新价</th><th>浮动盈亏</th><th>占用保证金</th></tr>'
-                       % len(pos))
+            out.append(
+                '<div class="dd-sec">持仓明细（%d）</div><table class="dd-table">'
+                "<tr><th>品种</th><th>合约</th><th>方向</th><th>手数</th><th>开仓价</th>"
+                "<th>最新价</th><th>浮动盈亏</th><th>占用保证金</th></tr>" % len(pos)
+            )
             for p in pos:
-                out.append('<tr><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td class="num">%s</td>'
-                           '<td class="num">%s</td><td class="num %s">%s</td><td class="num">%s</td></tr>'
-                           % (_esc(p.get("sym")), _esc(p.get("contract")), _esc(p.get("dir")),
-                              int(p.get("lots") or 0), _fmt(p.get("entry"), 2), _fmt(p.get("last"), 3),
-                              "pos" if (p.get("float") or 0) >= 0 else "neg", _fmt(p.get("float"), 0),
-                              _fmt(p.get("margin"), 0)))
+                out.append(
+                    '<tr><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td class="num">%s</td>'
+                    '<td class="num">%s</td><td class="num %s">%s</td><td class="num">%s</td></tr>'
+                    % (
+                        _esc(p.get("sym")),
+                        _esc(p.get("contract")),
+                        _esc(p.get("dir")),
+                        int(p.get("lots") or 0),
+                        _fmt(p.get("entry"), 2),
+                        _fmt(p.get("last"), 3),
+                        "pos" if (p.get("float") or 0) >= 0 else "neg",
+                        _fmt(p.get("float"), 0),
+                        _fmt(p.get("margin"), 0),
+                    )
+                )
             out.append("</table>")
         if tr:
-            out.append('<div class="dd-sec">成交流水（最近%d笔）</div><table class="dd-table">'
-                       '<tr><th>时间</th><th>品种</th><th>合约</th><th>方向</th><th>手数</th><th>开平</th>'
-                       '<th>成交价</th><th>手续费</th><th>净盈亏</th><th>原因</th></tr>' % len(tr))
+            out.append(
+                '<div class="dd-sec">成交流水（最近%d笔）</div><table class="dd-table">'
+                "<tr><th>时间</th><th>品种</th><th>合约</th><th>方向</th><th>手数</th><th>开平</th>"
+                "<th>成交价</th><th>手续费</th><th>净盈亏</th><th>原因</th></tr>" % len(tr)
+            )
             for t in tr:
-                out.append('<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>'
-                           '<td class="num">%s</td><td class="num">%s</td><td class="num %s">%s</td><td>%s</td></tr>'
-                           % (_esc(t.get("ts"))[:19], _esc(t.get("sym")), _esc(t.get("contract")),
-                              _esc(t.get("dir")), int(t.get("lots") or 0), _esc(t.get("leg")),
-                              _fmt(t.get("price"), 2), _fmt(t.get("fee"), 2),
-                              "pos" if (t.get("realized") or 0) >= 0 else "neg", _fmt(t.get("realized"), 0),
-                              _esc(t.get("reason"))))
+                out.append(
+                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>"
+                    '<td class="num">%s</td><td class="num">%s</td><td class="num %s">%s</td><td>%s</td></tr>'
+                    % (
+                        _esc(t.get("ts"))[:19],
+                        _esc(t.get("sym")),
+                        _esc(t.get("contract")),
+                        _esc(t.get("dir")),
+                        int(t.get("lots") or 0),
+                        _esc(t.get("leg")),
+                        _fmt(t.get("price"), 2),
+                        _fmt(t.get("fee"), 2),
+                        "pos" if (t.get("realized") or 0) >= 0 else "neg",
+                        _fmt(t.get("realized"), 0),
+                        _esc(t.get("reason")),
+                    )
+                )
             out.append("</table>")
         if od:
-            out.append('<div class="dd-sec">在途挂单（最近%d条）</div><table class="dd-table">'
-                       '<tr><th>时间</th><th>品种</th><th>动作</th><th>状态</th><th>手数</th><th>原因</th></tr>'
-                       % len(od))
+            out.append(
+                '<div class="dd-sec">在途挂单（最近%d条）</div><table class="dd-table">'
+                "<tr><th>时间</th><th>品种</th><th>动作</th><th>状态</th><th>手数</th><th>原因</th></tr>"
+                % len(od)
+            )
             for o in od:
-                out.append('<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td></tr>'
-                           % (_esc(o.get("ts"))[:19], _esc(o.get("sym")), _esc(o.get("action")),
-                              _esc(o.get("status")), int(o.get("lots") or 0), _esc(o.get("reason"))))
+                out.append(
+                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td></tr>"
+                    % (
+                        _esc(o.get("ts"))[:19],
+                        _esc(o.get("sym")),
+                        _esc(o.get("action")),
+                        _esc(o.get("status")),
+                        int(o.get("lots") or 0),
+                        _esc(o.get("reason")),
+                    )
+                )
             out.append("</table>")
         if not out:
-            return ('<details class="dd"><summary>展开明细（持仓 0 · 成交 0 · 挂单 0）</summary>'
-                    '<div class="dd-sec" style="color:#9a9a9a;">该账户暂无持仓/成交/挂单记录'
-                    '（重置后新账或休眠）</div></details>')
-        return '<details class="dd"><summary>展开明细（持仓 %d · 成交 %d · 挂单 %d）</summary>%s</details>' % (
-            len(pos), len(tr), len(od), "".join(out))
+            return (
+                '<details class="dd"><summary>展开明细（持仓 0 · 成交 0 · 挂单 0）</summary>'
+                '<div class="dd-sec" style="color:#9a9a9a;">该账户暂无持仓/成交/挂单记录'
+                "（重置后新账或休眠）</div></details>"
+            )
+        return (
+            '<details class="dd"><summary>展开明细（持仓 %d · 成交 %d · 挂单 %d）</summary>%s</details>'
+            % (len(pos), len(tr), len(od), "".join(out))
+        )
 
     def _risk_bar(v):
         v = float(v or 0.0)
         pct = max(0.0, min(100.0, v * 100.0))
         color = "#43c589" if v < 0.5 else ("#f9ca24" if v < 0.7 else "#ef6b6b")
-        return ('<div class="risk-wrap" title="风险度 %.1f%%">'
-                '<div class="risk-bar" style="width:%.1f%%;background:%s;"></div></div>'
-                % (v * 100, pct, color))
+        return (
+            '<div class="risk-wrap" title="风险度 %.1f%%">'
+            '<div class="risk-bar" style="width:%.1f%%;background:%s;"></div></div>'
+            % (v * 100, pct, color)
+        )
 
-    parts = ['<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">'
-             '纸面账户对比（%d 个影子账户 · 5档资金 × 3风格+赌徒）</div>' % len(rows)]
-    parts.append('<style>'
-                 '.tier-cards{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;}'
-                 '.tier-card{background:#1f2127;border:1px solid #333;border-radius:6px;padding:10px 14px;min-width:150px;}'
-                 '.tc-name{font-weight:bold;color:#7ecbff;font-size:14px;}'
-                 '.tc-avg{font-size:16px;font-weight:bold;margin:4px 0;}'
-                 '.tc-sub{color:#9a9a9a;font-size:11px;}'
-                 '.cmp-table{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px;}'
-                 '.cmp-table th{background:#2a2a2a;padding:6px 8px;text-align:left;border-bottom:2px solid #444;white-space:nowrap;position:sticky;top:0;}'
-                 '.cmp-table td{padding:5px 8px;border-bottom:1px solid #2c2c2c;white-space:nowrap;}'
-                 '.cmp-table tr.baseline td{background:#14262b;}'
-                 '.cmp-table tr:hover{background:#252525;}'
-                 '.pos{color:#ef6b6b;}.neg{color:#43c589;}'
-                 '.opt-badge{background:#1e3a5f;color:#7ecbff;padding:1px 4px;border-radius:3px;font-size:11px;}'
-                 '.b-badge{background:#0e639c;color:#fff;padding:0 4px;border-radius:3px;font-size:11px;}'
-                 '.g-badge{background:#e17055;color:#fff;padding:0 4px;border-radius:3px;font-size:11px;}'
-                 '.cmp-table tr.gambler td{background:#241812;}'
-                 '.risk-wrap{width:90px;height:10px;background:#333;border-radius:5px;overflow:hidden;display:inline-block;vertical-align:middle;}'
-                 '.risk-bar{height:100%;}'
-                 '.dd{margin:2px 0;}'
-                 '.dd summary{cursor:pointer;color:#7ecbff;font-size:12px;padding:3px 0;}'
-                 '.dd-table{width:100%;font-size:12px;border-collapse:collapse;margin:4px 0 8px;}'
-                 '.dd-table th{background:#23252b;padding:4px 8px;text-align:left;border-bottom:1px solid #444;white-space:nowrap;}'
-                 '.dd-table td{padding:3px 8px;border-bottom:1px solid #2c2c2c;white-space:nowrap;}'
-                 '.dd-sec{color:#9a9a9a;font-size:12px;margin:6px 0 2px;}'
-                 '.num{text-align:right;}'
-                 'a.acct{color:#7ecbff;text-decoration:none;}a.acct:hover{text-decoration:underline;}'
-                 '.cmp-table th.th-num{text-align:right;}'                # 数字列表头与 .num 数据右对齐
-                 '.cmp-table td.wrap{white-space:normal;}'                # 文本长列（可交易性/详情）允许换行
-                 '.cmp-scroll{overflow-x:auto;}'                          # 主表横向滚动兜底
-                 '.st-badges{display:flex;gap:3px;margin-top:3px;flex-wrap:wrap;}'
-                 '.status-badge{font-size:11px;padding:0 4px;border-radius:3px;background:#23252b;border:1px solid #333;white-space:nowrap;}'
-                 '.perf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:6px;margin:6px 0 10px;}'
-                 '.f-card{background:#1f2127;border:1px solid #333;border-radius:5px;padding:5px 8px;}'
-                 '.f-lb{color:#9a9a9a;font-size:11px;}'
-                 '.f-val{font-size:13px;font-weight:bold;color:#e8e8e8;}'
-                 '.f-val.pos{color:#ef6b6b;}.f-val.neg{color:#43c589;}'
-                 '.tier-agg td{background:#181a1f;padding:4px 10px;}'     # 档位聚合行（暗底区分）
-                 '</style>')
+    parts = [
+        '<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">'
+        "纸面账户对比（%d 个影子账户 · 5档资金 × 3风格+赌徒）</div>" % len(rows)
+    ]
+    parts.append(
+        "<style>"
+        ".tier-cards{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;}"
+        ".tier-card{background:#1f2127;border:1px solid #333;border-radius:6px;padding:10px 14px;min-width:150px;}"
+        ".tc-name{font-weight:bold;color:#7ecbff;font-size:14px;}"
+        ".tc-avg{font-size:16px;font-weight:bold;margin:4px 0;}"
+        ".tc-sub{color:#9a9a9a;font-size:11px;}"
+        ".cmp-table{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px;}"
+        ".cmp-table th{background:#2a2a2a;padding:6px 8px;text-align:left;border-bottom:2px solid #444;white-space:nowrap;position:sticky;top:0;}"
+        ".cmp-table td{padding:5px 8px;border-bottom:1px solid #2c2c2c;white-space:nowrap;}"
+        ".cmp-table tr.baseline td{background:#14262b;}"
+        ".cmp-table tr:hover{background:#252525;}"
+        ".pos{color:#ef6b6b;}.neg{color:#43c589;}"
+        ".opt-badge{background:#1e3a5f;color:#7ecbff;padding:1px 4px;border-radius:3px;font-size:11px;}"
+        ".b-badge{background:#0e639c;color:#fff;padding:0 4px;border-radius:3px;font-size:11px;}"
+        ".g-badge{background:#e17055;color:#fff;padding:0 4px;border-radius:3px;font-size:11px;}"
+        ".cmp-table tr.gambler td{background:#241812;}"
+        ".risk-wrap{width:90px;height:10px;background:#333;border-radius:5px;overflow:hidden;display:inline-block;vertical-align:middle;}"
+        ".risk-bar{height:100%;}"
+        ".dd{margin:2px 0;}"
+        ".dd summary{cursor:pointer;color:#7ecbff;font-size:12px;padding:3px 0;}"
+        ".dd-table{width:100%;font-size:12px;border-collapse:collapse;margin:4px 0 8px;}"
+        ".dd-table th{background:#23252b;padding:4px 8px;text-align:left;border-bottom:1px solid #444;white-space:nowrap;}"
+        ".dd-table td{padding:3px 8px;border-bottom:1px solid #2c2c2c;white-space:nowrap;}"
+        ".dd-sec{color:#9a9a9a;font-size:12px;margin:6px 0 2px;}"
+        ".num{text-align:right;}"
+        "a.acct{color:#7ecbff;text-decoration:none;}a.acct:hover{text-decoration:underline;}"
+        ".cmp-table th.th-num{text-align:right;}"  # 数字列表头与 .num 数据右对齐
+        ".cmp-table td.wrap{white-space:normal;}"  # 文本长列（可交易性/详情）允许换行
+        ".cmp-scroll{overflow-x:auto;}"  # 主表横向滚动兜底
+        ".st-badges{display:flex;gap:3px;margin-top:3px;flex-wrap:wrap;}"
+        ".status-badge{font-size:11px;padding:0 4px;border-radius:3px;background:#23252b;border:1px solid #333;white-space:nowrap;}"
+        ".perf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:6px;margin:6px 0 10px;}"
+        ".f-card{background:#1f2127;border:1px solid #333;border-radius:5px;padding:5px 8px;}"
+        ".f-lb{color:#9a9a9a;font-size:11px;}"
+        ".f-val{font-size:13px;font-weight:bold;color:#e8e8e8;}"
+        ".f-val.pos{color:#ef6b6b;}.f-val.neg{color:#43c589;}"
+        ".tier-agg td{background:#181a1f;padding:4px 10px;}"  # 档位聚合行（暗底区分）
+        "</style>"
+    )
     if cards:
         parts.append('<div class="tier-cards">%s</div>' % "".join(cards))
     # 主表：按档分组，档内固定 激进→基准→保守→赌徒（基准高亮），带 <details> 明细；数字列表头右对齐
-    parts.append('<div class="cmp-scroll"><table class="cmp-table">'
-                 '<tr><th>账户</th><th class="th-num">权益</th><th class="th-num">收益率</th>'
-                 '<th class="th-num">最大回撤</th><th class="th-num">风险度</th>'
-                 '<th class="th-num">期/权持仓</th><th class="th-num">已实现</th>'
-                 '<th class="th-num">手续费</th><th>可交易性</th><th>详情</th></tr>')
+    parts.append(
+        '<div class="cmp-scroll"><table class="cmp-table">'
+        '<tr><th>账户</th><th class="th-num">权益</th><th class="th-num">收益率</th>'
+        '<th class="th-num">最大回撤</th><th class="th-num">风险度</th>'
+        '<th class="th-num">期/权持仓</th><th class="th-num">已实现</th>'
+        '<th class="th-num">手续费</th><th>可交易性</th><th>详情</th></tr>'
+    )
     style_order = {"激进": 0, "基准": 1, "保守": 2, "赌徒": 3}
     for eq0k in tier_order:
         grp = [r for r in rows if abs((r.get("equity0") or 0) - eq0k) < 1.0]
         if not grp:
             continue
         grp.sort(key=lambda r: style_order.get(r.get("style"), 9))
-        parts.append(f'<tr class="tier-row" style="background:#1f1f1f;font-weight:bold;color:#7ecbff;">'
-                     f'<td colspan="10">{tier_label.get(eq0k, str(eq0k))}（初始 {eq0k:,.0f} 元）</td></tr>')
+        parts.append(
+            f'<tr class="tier-row" style="background:#1f1f1f;font-weight:bold;color:#7ecbff;">'
+            f'<td colspan="10">{tier_label.get(eq0k, str(eq0k))}（初始 {eq0k:,.0f} 元）</td></tr>'
+        )
         # 第111轮续：档位聚合查看——该档全部账户的成交/挂单明细合并（各账户各保留 50 条，按时间合并排序）
         _agg_trades, _agg_orders = [], []
         for _r in grp:
             _d = _r.get("detail") or {}
-            for _t in (_d.get("trades") or []):
+            for _t in _d.get("trades") or []:
                 _agg_trades.append(dict(_t, _acct=_r.get("name", "")))
-            for _o in (_d.get("orders") or []):
+            for _o in _d.get("orders") or []:
                 _agg_orders.append(dict(_o, _acct=_r.get("name", "")))
         _agg_trades.sort(key=lambda t: t.get("ts") or "")
         _agg_orders.sort(key=lambda o: o.get("ts") or "")
         _agg_html = ""
         if _agg_trades:
-            _agg_html += ('<div class="dd-sec">成交明细（该档 %d 笔，各账户最多 50 笔）</div>'
-                          '<table class="dd-table"><tr><th>账户</th><th>时间</th><th>品种</th><th>合约</th>'
-                          '<th>方向</th><th>手数</th><th>开平</th><th>成交价</th><th>手续费</th>'
-                          '<th>净盈亏</th><th>原因</th></tr>' % len(_agg_trades))
+            _agg_html += (
+                '<div class="dd-sec">成交明细（该档 %d 笔，各账户最多 50 笔）</div>'
+                '<table class="dd-table"><tr><th>账户</th><th>时间</th><th>品种</th><th>合约</th>'
+                "<th>方向</th><th>手数</th><th>开平</th><th>成交价</th><th>手续费</th>"
+                "<th>净盈亏</th><th>原因</th></tr>" % len(_agg_trades)
+            )
             for _t in _agg_trades:
-                _agg_html += ('<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>'
-                              '<td class="num">%s</td><td class="num">%s</td><td class="num %s">%s</td><td>%s</td></tr>'
-                              % (_esc(_t.get("_acct")), _esc(_t.get("ts"))[:19], _esc(_t.get("sym")),
-                                 _esc(_t.get("contract")), _esc(_t.get("dir")), int(_t.get("lots") or 0),
-                                 _esc(_t.get("leg")), _fmt(_t.get("price"), 2), _fmt(_t.get("fee"), 2),
-                                 "pos" if (_t.get("realized") or 0) >= 0 else "neg", _fmt(_t.get("realized"), 0),
-                                 _esc(_t.get("reason"))))
+                _agg_html += (
+                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>"
+                    '<td class="num">%s</td><td class="num">%s</td><td class="num %s">%s</td><td>%s</td></tr>'
+                    % (
+                        _esc(_t.get("_acct")),
+                        _esc(_t.get("ts"))[:19],
+                        _esc(_t.get("sym")),
+                        _esc(_t.get("contract")),
+                        _esc(_t.get("dir")),
+                        int(_t.get("lots") or 0),
+                        _esc(_t.get("leg")),
+                        _fmt(_t.get("price"), 2),
+                        _fmt(_t.get("fee"), 2),
+                        "pos" if (_t.get("realized") or 0) >= 0 else "neg",
+                        _fmt(_t.get("realized"), 0),
+                        _esc(_t.get("reason")),
+                    )
+                )
             _agg_html += "</table>"
         if _agg_orders:
-            _agg_html += ('<div class="dd-sec">挂单明细（该档 %d 条，各账户最多 50 条）</div>'
-                          '<table class="dd-table"><tr><th>账户</th><th>时间</th><th>品种</th><th>动作</th>'
-                          '<th>状态</th><th>手数</th><th>原因</th></tr>' % len(_agg_orders))
+            _agg_html += (
+                '<div class="dd-sec">挂单明细（该档 %d 条，各账户最多 50 条）</div>'
+                '<table class="dd-table"><tr><th>账户</th><th>时间</th><th>品种</th><th>动作</th>'
+                "<th>状态</th><th>手数</th><th>原因</th></tr>" % len(_agg_orders)
+            )
             for _o in _agg_orders:
-                _agg_html += ('<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td></tr>'
-                              % (_esc(_o.get("_acct")), _esc(_o.get("ts"))[:19], _esc(_o.get("sym")),
-                                 _esc(_o.get("action")), _esc(_o.get("status")), int(_o.get("lots") or 0),
-                                 _esc(_o.get("reason"))))
+                _agg_html += (
+                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td></tr>"
+                    % (
+                        _esc(_o.get("_acct")),
+                        _esc(_o.get("ts"))[:19],
+                        _esc(_o.get("sym")),
+                        _esc(_o.get("action")),
+                        _esc(_o.get("status")),
+                        int(_o.get("lots") or 0),
+                        _esc(_o.get("reason")),
+                    )
+                )
             _agg_html += "</table>"
         if _agg_html:
             parts.append(
                 f'<tr class="tier-agg"><td colspan="10">'
                 f'<details class="dd"><summary>查看该档成交/挂单聚合（成交 {len(_agg_trades)} 笔 · 挂单 {len(_agg_orders)} 条）</summary>'
-                f'{_agg_html}</details></td></tr>')
+                f"{_agg_html}</details></td></tr>"
+            )
         for r in grp:
             ret = r.get("ret") or 0
             _cls = "pos" if ret >= 0 else "neg"
             style = r.get("style", "")
-            baseline = (style == "基准")
-            gambler = (style == "赌徒")
+            baseline = style == "基准"
+            gambler = style == "赌徒"
             _row_cls = ' class="gambler"' if gambler else (' class="baseline"' if baseline else "")
-            bd = (' <span class="g-badge">赌徒</span>' if gambler
-                  else ' <span class="b-badge">基准</span>' if baseline else "")
+            bd = (
+                ' <span class="g-badge">赌徒</span>'
+                if gambler
+                else ' <span class="b-badge">基准</span>'
+                if baseline
+                else ""
+            )
             opt_flag = ' <span class="opt-badge">期权</span>' if r.get("n_opt_pos", 0) > 0 else ""
-            name_html = ('<a class="acct" href="paper_detail_%s.html" title="打开该账户详情页">%s</a>%s%s'
-                         % (r.get("name", "").replace(" ", "_").replace("/", "_"),
-                            _esc(r.get("name")), bd, opt_flag))
+            name_html = (
+                '<a class="acct" href="paper_detail_%s.html" title="打开该账户详情页">%s</a>%s%s'
+                % (
+                    r.get("name", "").replace(" ", "_").replace("/", "_"),
+                    _esc(r.get("name")),
+                    bd,
+                    opt_flag,
+                )
+            )
             dd = _detail_html(r)
             # 第110轮：可交易性说明（能开1手的最便宜品种及一手保证金；纯期权档/资金不足标 None）
             _aff = r.get("affordable_sym")
             if _aff:
                 _aff_txt = _esc(_aff)
                 if r.get("affordable_margin"):
-                    _aff_txt += '(%s/手)' % _fmt(r.get("affordable_margin"), 0)
-                aff_html = ('<span style="color:#43c589;" title="该档 per_symbol 预算下能开 1 手的最便宜品种">'
-                            '%s</span>' % _aff_txt)
+                    _aff_txt += "(%s/手)" % _fmt(r.get("affordable_margin"), 0)
+                aff_html = (
+                    '<span style="color:#43c589;" title="该档 per_symbol 预算下能开 1 手的最便宜品种">'
+                    "%s</span>" % _aff_txt
+                )
             elif r.get("priority") == "option_only" or r.get("futures_max") == 0:
                 aff_html = '<span style="color:#9a9a9a;">纯期权</span>'
             else:
                 aff_html = '<span style="color:#ef6b6b;" title="该档 per_symbol 预算不足以开任何一键">无品种 ✗</span>'
             parts.append(
-                f'<tr{_row_cls}>'
+                f"<tr{_row_cls}>"
                 f'<td class="wrap">{name_html}{_st_badges(r)}</td>'
                 f'<td class="num">{r.get("equity") or 0:,.1f}</td>'
                 f'<td class="num {_cls}">{ret:+.2%}</td>'
-                f'<td class="num">{abs((r.get("max_drawdown") or 0)) * 100:.2f}%</td>'
-                f'<td>{_risk_bar(r.get("risk_degree"))}</td>'
+                f'<td class="num">{abs(r.get("max_drawdown") or 0) * 100:.2f}%</td>'
+                f"<td>{_risk_bar(r.get('risk_degree'))}</td>"
                 f'<td class="num">{r.get("n_fut_pos") or 0} / {r.get("n_opt_pos") or 0}</td>'
                 f'<td class="num">{r.get("realized") or 0:,.0f}</td>'
                 f'<td class="num">{r.get("fees") or 0:,.0f}</td>'
                 f'<td class="wrap">{aff_html}</td>'
-                f'<td>{dd}</td>'
-                f'</tr>')
-    parts.append('</table></div>')   # 关闭 cmp-scroll 滚动容器
+                f"<td>{dd}</td>"
+                f"</tr>"
+            )
+    parts.append("</table></div>")  # 关闭 cmp-scroll 滚动容器
     # 底部汇总（等权均值/最佳/最差按涨跌着色；新增全账户合计）
     if rows:
         all_ret = [(r.get("ret") or 0) for r in rows]
@@ -900,19 +1126,33 @@ def _paper_compare_html():
             '<p style="color:#9a9a9a;font-size:12px;margin-top:10px;">'
             '等权均值 <span class="%s">%+.2f%%</span> · 最佳 <span class="%s">%s(%+.2f%%)</span>'
             ' · 最差 <span class="%s">%s(%+.2f%%)</span> · '
-            '全账户合计：手续费 %s 元 / 已实现 %s 元 · '
-            '点账户名进入详情页；第104轮起期权与期货统一资金池（权益合并）</p>'
-            % ("pos" if _avg >= 0 else "neg", _avg,
-               "pos" if (best.get("ret") or 0) >= 0 else "neg", _esc(best.get("name")), best.get("ret") or 0,
-               "pos" if (worst.get("ret") or 0) >= 0 else "neg", _esc(worst.get("name")), worst.get("ret") or 0,
-               _fmt(_tot_fees, 0), _fmt(_tot_real, 0)))
+            "全账户合计：手续费 %s 元 / 已实现 %s 元 · "
+            "点账户名进入详情页；第104轮起期权与期货统一资金池（权益合并）</p>"
+            % (
+                "pos" if _avg >= 0 else "neg",
+                _avg,
+                "pos" if (best.get("ret") or 0) >= 0 else "neg",
+                _esc(best.get("name")),
+                best.get("ret") or 0,
+                "pos" if (worst.get("ret") or 0) >= 0 else "neg",
+                _esc(worst.get("name")),
+                worst.get("ret") or 0,
+                _fmt(_tot_fees, 0),
+                _fmt(_tot_real, 0),
+            )
+        )
     return "\n".join(parts)
 
 
 def _tier_accent(eq0k):
     """档位强调色（非涨跌语义的中性色，与 charts._TIER_COLORS 同家族）。"""
-    return {100_000: "#ff7675", 10_000: "#74b9ff", 5_000: "#55efc4",
-            3_000: "#a29bfe", 1_000: "#fd79a8"}.get(eq0k, "#7ecbff")
+    return {
+        100_000: "#ff7675",
+        10_000: "#74b9ff",
+        5_000: "#55efc4",
+        3_000: "#a29bfe",
+        1_000: "#fd79a8",
+    }.get(eq0k, "#7ecbff")
 
 
 def _research_reports_html(max_rows=14, max_bytes=2200):
@@ -928,7 +1168,7 @@ def _research_reports_html(max_rows=14, max_bytes=2200):
                 continue
             path = os.path.join(reports_dir, fn)
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     head = f.read(max_bytes)
             except OSError:
                 continue
@@ -952,9 +1192,10 @@ def _research_reports_html(max_rows=14, max_bytes=2200):
                 '<span class="rp-cat">%s</span><span class="rp-time">%s</span></div>'
                 '<pre class="rp-pre">%s</pre>'
                 '<div class="rp-foot"><a href="%s" target="_blank" rel="noopener">查看全文（新标签）</a></div>'
-                '</div>' % (esc(fn), esc(cat), esc(mt), esc(body), esc(fn)))
+                "</div>" % (esc(fn), esc(cat), esc(mt), esc(body), esc(fn))
+            )
     grid = "\n".join(cards)
-    return ("""<style>
+    return """<style>
   #research-panel { padding: 12px; }
   .rp-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(430px,1fr)); gap: 12px; }
   .rp-card { background:#202229; border:1px solid #33363d; border-radius:6px; padding:10px 12px; }
@@ -972,14 +1213,13 @@ def _research_reports_html(max_rows=14, max_bytes=2200):
 %s
 </div>
 <p style="color:#8a8f98;font-size:12px;margin-top:10px">共 %d 份研究报告（自动聚合 reports/*.txt，排除实时看板既有页签；点击卡片内链接可在新标签查看全文）</p>
-""" % (grid, len(cards)))
+""" % (grid, len(cards))
 
 
 def write_dashboard():
     """生成/刷新实时看板（静态外壳，内容由浏览器按页签自动从同目录文件读取）；
     同时幂等写出 P1-3 图表看板静态页并同步本地 ECharts 资源（失败只告警不影响主看板）。"""
-    ok = _safe_write(config.REALTIME_HTML, _dashboard_html(),
-                     encoding="utf-8", update_cache=False)
+    ok = _safe_write(config.REALTIME_HTML, _dashboard_html(), encoding="utf-8", update_cache=False)
     try:
         charts.ensure_charts_page()
     except Exception as e:
@@ -995,12 +1235,33 @@ def csv_rows(cycle, now, fut_rows, opt_rows):
     """把本轮期货/期权结果转成信号流水行"""
     rows = []
     for r in fut_rows:
-        rows.append([now, cycle, "期货", r["name"], r["price"],
-                     round(r["chg"] * 100, 2), round(r["score"], 1),
-                     r["label"], r["advice"]])
+        rows.append(
+            [
+                now,
+                cycle,
+                "期货",
+                r["name"],
+                r["price"],
+                round(r["chg"] * 100, 2),
+                round(r["score"], 1),
+                r["label"],
+                r["advice"],
+            ]
+        )
     for o in opt_rows:
-        rows.append([now, cycle, "期权", o["name"], "", "",
-                     round(o["score"], 1), o["direction"], o["verdict"]])
+        rows.append(
+            [
+                now,
+                cycle,
+                "期权",
+                o["name"],
+                "",
+                "",
+                round(o["score"], 1),
+                o["direction"],
+                o["verdict"],
+            ]
+        )
     return rows
 
 
@@ -1019,9 +1280,11 @@ def signal_tracking_text(state):
     """生成信号胜率追踪文本：统计近7天已到期信号，并列出最近评估结果。"""
     db = getattr(state, "db", None)
     sep = "-" * 96
-    L = ["=" * 96,
-         f" 信号效果追踪（更新于 {now_str()}；统计最近 {config.SIGNAL_TRACK_STAT_DAYS} 天已到期信号）",
-         "=" * 96]
+    L = [
+        "=" * 96,
+        f" 信号效果追踪（更新于 {now_str()}；统计最近 {config.SIGNAL_TRACK_STAT_DAYS} 天已到期信号）",
+        "=" * 96,
+    ]
     if db is None:
         L.append(" 数据库尚未初始化。")
         return "\n".join(L)
@@ -1054,22 +1317,39 @@ def signal_tracking_text(state):
             sn = sum(int(r.get("evaluated") or 0) for r in shorts)
             sw = sum(int(r["wins"] or 0) for r in shorts)
             sample_txt = f"样本{n}" + (f"(过期{expired_n})" if expired_n else "")
-            L.append(" " + pad(_horizon_label(horizon), 14) +
-                     pad(sample_txt, 14) + pad(f"胜率{wins/eval_n*100:.1f}%" if eval_n else "胜率-", 12) +
-                     pad(f"平均方向收益{avg_ret*100:+.2f}%", 18) +
-                     (f"多头{lw}/{ln}" if ln else "多头0/0") + "   " +
-                     (f"空头{sw}/{sn}" if sn else "空头0/0"))
+            L.append(
+                " "
+                + pad(_horizon_label(horizon), 14)
+                + pad(sample_txt, 14)
+                + pad(f"胜率{wins / eval_n * 100:.1f}%" if eval_n else "胜率-", 12)
+                + pad(f"平均方向收益{avg_ret * 100:+.2f}%", 18)
+                + (f"多头{lw}/{ln}" if ln else "多头0/0")
+                + "   "
+                + (f"空头{sw}/{sn}" if sn else "空头0/0")
+            )
             for r in sorted(rows, key=lambda x: (x["score_band"], x["direction"])):
                 rn = int(r.get("evaluated") or 0)
                 wr = (int(r["wins"] or 0) / rn * 100) if rn else 0.0
-                L.append("    · " + pad(f"{r['score_band']}/{r['direction']}", 16) +
-                         pad(f"样本{rn}", 9) + pad(f"胜率{wr:.1f}%", 11) +
-                         f"平均{float(r['avg_ret'] or 0)*100:+.2f}%")
+                L.append(
+                    "    · "
+                    + pad(f"{r['score_band']}/{r['direction']}", 16)
+                    + pad(f"样本{rn}", 9)
+                    + pad(f"胜率{wr:.1f}%", 11)
+                    + f"平均{float(r['avg_ret'] or 0) * 100:+.2f}%"
+                )
         L.append("")
         L.append(" 二、最近评估的信号")
-        L.append(" " + pad("品种", 12) + pad("周期", 12) + pad("方向", 8) +
-                 pad("分档", 8) + pad("入场", 10) + pad("评估价", 10) +
-                 pad("方向收益", 10) + "结果")
+        L.append(
+            " "
+            + pad("品种", 12)
+            + pad("周期", 12)
+            + pad("方向", 8)
+            + pad("分档", 8)
+            + pad("入场", 10)
+            + pad("评估价", 10)
+            + pad("方向收益", 10)
+            + "结果"
+        )
         status_cn = {"hit": "正确", "miss": "错误", "flat": "打平", "expired": "过期"}
         try:
             recent_rows = db.recent_outcomes(15)
@@ -1077,44 +1357,76 @@ def signal_tracking_text(state):
             LOG.debug("读取最近信号结果失败: %s", e)
             recent_rows = []
         for r in recent_rows:
-            L.append(" " + pad(r["variety"], 12) + pad(_horizon_label(r["horizon_min"]), 12) +
-                     pad(r["direction"], 8) + pad(r["score_band"], 8) +
-                     pad(f"{float(r['entry_price']):g}", 10) +
-                     pad(f"{float(r['exit_price'] or 0):g}", 10) +
-                     pad(f"{float(r['ret'] or 0)*100:+.2f}%", 10) +
-                     status_cn.get(r["status"], r["status"]))
+            L.append(
+                " "
+                + pad(r["variety"], 12)
+                + pad(_horizon_label(r["horizon_min"]), 12)
+                + pad(r["direction"], 8)
+                + pad(r["score_band"], 8)
+                + pad(f"{float(r['entry_price']):g}", 10)
+                + pad(f"{float(r['exit_price'] or 0):g}", 10)
+                + pad(f"{float(r['ret'] or 0) * 100:+.2f}%", 10)
+                + status_cn.get(r["status"], r["status"])
+            )
         # 三、WP-F2 A3 历史同类信号胜率校准（影子模式：只展示，不改变综合分/信号/建议）
         cal = getattr(state, "calibrator", None)
         bt = cal.band_table() if cal is not None else []
         L.append("")
-        L.append(" 三、历史同类信号胜率校准（%s周期；贝叶斯平滑；方向×分档；n<%d样本积累中不给乘子）"
-                 % (_horizon_label(config.CALIBRATOR_HORIZON), config.CALIBRATOR_MIN_N))
+        L.append(
+            " 三、历史同类信号胜率校准（%s周期；贝叶斯平滑；方向×分档；n<%d样本积累中不给乘子）"
+            % (_horizon_label(config.CALIBRATOR_HORIZON), config.CALIBRATOR_MIN_N)
+        )
         if not bt:
             L.append(" 校准器未启用或暂无历史样本（信号样本会随运行持续积累）。")
         else:
-            L.append(" " + pad("方向", 8) + pad("分档", 8) + pad("样本", 8) +
-                     pad("平滑胜率", 10) + pad("平均方向收益", 14) + "sizing乘子（portfolio --calibrate 才生效）")
+            L.append(
+                " "
+                + pad("方向", 8)
+                + pad("分档", 8)
+                + pad("样本", 8)
+                + pad("平滑胜率", 10)
+                + pad("平均方向收益", 14)
+                + "sizing乘子（portfolio --calibrate 才生效）"
+            )
             for c in bt:
                 mult_txt = ("%.2f" % c["mult"]) if c["enough"] else "积累中"
-                L.append(" " + pad(c["dir_text"], 8) + pad(c["band"], 8) +
-                         pad(str(c["n"]), 8) + pad(f"{c['winrate']*100:.1f}%", 10) +
-                         pad(f"{c['avg_ret']*100:+.2f}%", 14) + mult_txt)
-            L.append(" 更细的「方向×分档×主导因子」校准见各品种明细卡「校准」行；实时侧仅展示，不改变当前建议。")
-    L.extend([sep, f" 当前待评估信号 {pending_n} 条；结构化数据库：{config.MONITOR_DB}",
-              " 说明：该统计用于检验规则有效性，不代表未来收益，不构成投资建议。"])
+                L.append(
+                    " "
+                    + pad(c["dir_text"], 8)
+                    + pad(c["band"], 8)
+                    + pad(str(c["n"]), 8)
+                    + pad(f"{c['winrate'] * 100:.1f}%", 10)
+                    + pad(f"{c['avg_ret'] * 100:+.2f}%", 14)
+                    + mult_txt
+                )
+            L.append(
+                " 更细的「方向×分档×主导因子」校准见各品种明细卡「校准」行；实时侧仅展示，不改变当前建议。"
+            )
+    L.extend(
+        [
+            sep,
+            f" 当前待评估信号 {pending_n} 条；结构化数据库：{config.MONITOR_DB}",
+            " 说明：该统计用于检验规则有效性，不代表未来收益，不构成投资建议。",
+        ]
+    )
     return "\n".join(L)
 
 
 def write_signal_tracking(state):
     """每轮写入信号胜率追踪文本，供实时看板页签查看。"""
     try:
-        _safe_write(config.SIGNAL_TRACKING_FILE, signal_tracking_text(state),
-                    encoding="utf-8-sig", update_cache=False)
+        _safe_write(
+            config.SIGNAL_TRACKING_FILE,
+            signal_tracking_text(state),
+            encoding="utf-8-sig",
+            update_cache=False,
+        )
     except Exception as e:
         LOG.debug("信号胜率追踪报告写入失败: %s", e)
 
 
 # ---------------- G1（二）纸面账户：paper_account.txt + 正文紧凑块（独立成段，不改主链口径） ----------------
+
 
 def _wan(v, d=2):
     try:
@@ -1125,7 +1437,7 @@ def _wan(v, d=2):
 
 def _yuan(v, d=0):
     try:
-        return format(float(v), ",.%df" % d)   # 千分位金额
+        return format(float(v), ",.%df" % d)  # 千分位金额
     except (TypeError, ValueError):
         return "-"
 
@@ -1155,7 +1467,10 @@ def _paper_excursion_tail(mm):
     if not mm or mm.get("n", 0) <= 0:
         return ""
     return "   持仓过程 平均MFE %s / 平均MAE %s（%d笔）" % (
-        _pct(mm.get("avg_mfe")), _pct(mm.get("avg_mae")), mm.get("n", 0))
+        _pct(mm.get("avg_mfe")),
+        _pct(mm.get("avg_mae")),
+        mm.get("n", 0),
+    )
 
 
 def _paper_monthly_lines(perf):
@@ -1176,8 +1491,13 @@ def _paper_monthly_lines(perf):
     return out
 
 
-_PAPER_ACTION_CN = {"open": "开仓", "close": "离场平仓", "reverse_close": "反手平仓",
-                    "reverse_open": "反手开仓", "liquidate": "风控强平"}
+_PAPER_ACTION_CN = {
+    "open": "开仓",
+    "close": "离场平仓",
+    "reverse_close": "反手平仓",
+    "reverse_open": "反手开仓",
+    "liquidate": "风控强平",
+}
 _PAPER_SIDE_CN = {"buy": "买入", "sell": "卖出"}
 
 
@@ -1195,9 +1515,11 @@ def paper_block(state):
             a = pb.account_summary()
         except Exception:
             continue
-        s = (getattr(state, "last_papers", {}) or {}).get(
-            getattr(pb, "name", "") or name) or \
-            (getattr(state, "last_paper", None) or {} if not getattr(state, "last_papers", {}) else {})
+        s = (getattr(state, "last_papers", {}) or {}).get(getattr(pb, "name", "") or name) or (
+            getattr(state, "last_paper", None) or {}
+            if not getattr(state, "last_papers", {})
+            else {}
+        )
         snap = s.get("snapshot") or {}
         ret = (a["equity"] / a["equity0"] - 1.0) if a["equity0"] else 0.0
         st = a["status"]
@@ -1208,19 +1530,44 @@ def paper_block(state):
             opt_line = "｜期权持仓%d 已实现%s" % (opt_n, _yuan(opt.get("realized", 0.0)))
         lines += [
             "【纸面·%s】(成交档=%s entry=%s 参与=%s；严格按综合分信号自动虚拟撮合，含真实手续费+滑点)"
-            % (name, a["fill_mode"], getattr(pb, "entry_score", 0),
-               getattr(pb, "priority", "futures_first")),
-            " 动态权益%s(%+.2f%%) 静态%s 浮动%s元 已实现%s元 累计手续费%s元%s" % (
-                _wan(a["equity"]), ret * 100.0, _wan(a["static"]),
-                _yuan(snap.get("float_pnl", 0.0)), _yuan(a["realized"]), _yuan(a["fees_paid"]),
-                opt_line),
-            " 保证金占用%s 可用%s 风险度%s｜持仓%d 在途挂单%d 累计平仓%d(强平%d)｜本轮委托%d/成交%d" % (
-                _wan(a["margin_used"]), _wan(a["available"]), _pct(a["risk_degree"], 1),
-                a["n_positions"], a["n_pending"], a["n_closed"], a["n_liquidations"],
-                s.get("n_orders", 0), s.get("n_trades", 0)),
+            % (
+                name,
+                a["fill_mode"],
+                getattr(pb, "entry_score", 0),
+                getattr(pb, "priority", "futures_first"),
+            ),
+            " 动态权益%s(%+.2f%%) 静态%s 浮动%s元 已实现%s元 累计手续费%s元%s"
+            % (
+                _wan(a["equity"]),
+                ret * 100.0,
+                _wan(a["static"]),
+                _yuan(snap.get("float_pnl", 0.0)),
+                _yuan(a["realized"]),
+                _yuan(a["fees_paid"]),
+                opt_line,
+            ),
+            " 保证金占用%s 可用%s 风险度%s｜持仓%d 在途挂单%d 累计平仓%d(强平%d)｜本轮委托%d/成交%d"
+            % (
+                _wan(a["margin_used"]),
+                _wan(a["available"]),
+                _pct(a["risk_degree"], 1),
+                a["n_positions"],
+                a["n_pending"],
+                a["n_closed"],
+                a["n_liquidations"],
+                s.get("n_orders", 0),
+                s.get("n_trades", 0),
+            ),
             " 委托状态：已成交%d 在途排队%d 锁板/无价阻塞%d 确定拒单%d 已撤%d｜约束排队尝试(内部日志)%d（完整账户见 paper_account_%s.txt）"
-            % (st["filled"], st["pending"], st["blocked"], st["rejected"], st["cancelled"],
-               a["n_skipped"], name.replace(" ", "_")),
+            % (
+                st["filled"],
+                st["pending"],
+                st["blocked"],
+                st["rejected"],
+                st["cancelled"],
+                a["n_skipped"],
+                name.replace(" ", "_"),
+            ),
             "",
         ]
     return lines
@@ -1249,84 +1596,149 @@ def paper_account_text(state, broker=None):
     ret = (a["equity"] / a["equity0"] - 1.0) if a["equity0"] else 0.0
     _acct_name = getattr(pb, "name", "") or ""
     _tag = " · %s" % _acct_name if _acct_name else ""
-    L = [sep,
-         " 纸面交易账户（影子模拟 · 非实盘 · 不花真钱 · 不构成投资建议）%s   更新: %s" % (_tag, ts),
-         " 成交档: %s（next=信号下一轮首个新价成交、严格晚于信号）；初始资金 %s 元" % (
-             a["fill_mode"], _yuan(a["equity0"])),
-         " 参与模式: %s | entry_score: %s | opt_premium_ratio: %.0f%%" % (
-             getattr(pb, "priority", "-"),
-             getattr(pb, "entry_score", 0),
-             getattr(pb, "opt_premium_ratio", 0) * 100),
-         sep, "",
-         "【账户概览】",
-         " 动态权益: %s 元（%+.2f%%）   静态权益: %s 元   浮动盈亏: %s 元" % (
-             _yuan(a["equity"]), ret * 100.0, _yuan(a["static"]), _yuan(snap.get("float_pnl", 0.0))),
-         " 已实现净盈亏: %s 元   累计手续费: %s 元" % (_yuan(a["realized"]), _yuan(a["fees_paid"])),
-         " 保证金占用: %s 元   可用资金: %s 元   风险度(占用/动态权益): %s" % (
-             _yuan(a["margin_used"]), _yuan(a["available"]), _pct(a["risk_degree"], 2)),
-         " 当前持仓 %d 个   在途挂单 %d 个   累计平仓 %d 笔（其中风控强平 %d）   约束排队尝试 %d 次" % (
-             a["n_positions"], a["n_pending"], a["n_closed"], a["n_liquidations"], a["n_skipped"]),
-         ""]
+    L = [
+        sep,
+        " 纸面交易账户（影子模拟 · 非实盘 · 不花真钱 · 不构成投资建议）%s   更新: %s" % (_tag, ts),
+        " 成交档: %s（next=信号下一轮首个新价成交、严格晚于信号）；初始资金 %s 元"
+        % (a["fill_mode"], _yuan(a["equity0"])),
+        " 参与模式: %s | entry_score: %s | opt_premium_ratio: %.0f%%"
+        % (
+            getattr(pb, "priority", "-"),
+            getattr(pb, "entry_score", 0),
+            getattr(pb, "opt_premium_ratio", 0) * 100,
+        ),
+        sep,
+        "",
+        "【账户概览】",
+        " 动态权益: %s 元（%+.2f%%）   静态权益: %s 元   浮动盈亏: %s 元"
+        % (_yuan(a["equity"]), ret * 100.0, _yuan(a["static"]), _yuan(snap.get("float_pnl", 0.0))),
+        " 已实现净盈亏: %s 元   累计手续费: %s 元" % (_yuan(a["realized"]), _yuan(a["fees_paid"])),
+        " 保证金占用: %s 元   可用资金: %s 元   风险度(占用/动态权益): %s"
+        % (_yuan(a["margin_used"]), _yuan(a["available"]), _pct(a["risk_degree"], 2)),
+        " 当前持仓 %d 个   在途挂单 %d 个   累计平仓 %d 笔（其中风控强平 %d）   约束排队尝试 %d 次"
+        % (a["n_positions"], a["n_pending"], a["n_closed"], a["n_liquidations"], a["n_skipped"]),
+        "",
+    ]
     # 第104轮统一资金池：期权持仓/已实现作为统一账户内的明细展示
     opt = a.get("opt") or {}
     if opt.get("n_positions", 0) > 0:
-        L += ["【期权持仓明细】（第104轮起与期货统一资金池）",
-              " 期权持仓: %d 个   期权已实现: %s 元   手续费: %s 元" % (
-                  opt.get("n_positions", 0),
-                  _yuan(opt.get("realized", 0.0)), _yuan(opt.get("fees_paid", 0.0))),
-              ""]
+        L += [
+            "【期权持仓明细】（第104轮起与期货统一资金池）",
+            " 期权持仓: %d 个   期权已实现: %s 元   手续费: %s 元"
+            % (
+                opt.get("n_positions", 0),
+                _yuan(opt.get("realized", 0.0)),
+                _yuan(opt.get("fees_paid", 0.0)),
+            ),
+            "",
+        ]
     if perf:
-        L += ["【组合绩效】（按自然日聚合、日度口径年化，样本随影子运行持续积累）",
-              " 累计收益率 %s   年化(简式) %s   夏普 %.2f   索提诺 %.2f   最大回撤 %s" % (
-                  _pct(perf["total_ret"]), _pct(perf["ann_ret"]), perf["sharpe"],
-                  perf["sortino"], _pct(perf["max_dd"])),
-              " 胜率 %s（%d笔）   平均盈 %s元 / 平均亏 %s元   盈亏比 %s   覆盖自然日 %d 天   峰值风险度 %s" % (
-                  _pct(perf["win_rate"], 1), perf["n_trades"], _yuan(perf["avg_win"]),
-                  _yuan(perf["avg_loss"]),
-                  ("%.2f" % perf["pl_ratio"]) if perf["pl_ratio"] is not None else "-",
-                  perf["days"], _pct(perf["max_risk"], 1)),
-              " 风险调整(G3)：Calmar %s  Omega %s  Ulcer %s  VaR95(日) %s  CVaR95(日) %s  盈亏因子PF %s" % (
-                  _num(perf.get("calmar")), _num(perf.get("omega")), _num(perf.get("ulcer")),
-                  _pct(perf.get("var95")) if perf.get("var95") is not None else "-",
-                  _pct(perf.get("cvar95")) if perf.get("cvar95") is not None else "-",
-                  _num(perf.get("profit_factor"))),
-              " 交易连续性：最大连胜 %d 笔 / 最大连亏 %d 笔%s" % (
-                  perf.get("max_win_streak", 0) or 0, perf.get("max_loss_streak", 0) or 0,
-                  _paper_excursion_tail(perf.get("mae_mfe")))]
+        L += [
+            "【组合绩效】（按自然日聚合、日度口径年化，样本随影子运行持续积累）",
+            " 累计收益率 %s   年化(简式) %s   夏普 %.2f   索提诺 %.2f   最大回撤 %s"
+            % (
+                _pct(perf["total_ret"]),
+                _pct(perf["ann_ret"]),
+                perf["sharpe"],
+                perf["sortino"],
+                _pct(perf["max_dd"]),
+            ),
+            " 胜率 %s（%d笔）   平均盈 %s元 / 平均亏 %s元   盈亏比 %s   覆盖自然日 %d 天   峰值风险度 %s"
+            % (
+                _pct(perf["win_rate"], 1),
+                perf["n_trades"],
+                _yuan(perf["avg_win"]),
+                _yuan(perf["avg_loss"]),
+                ("%.2f" % perf["pl_ratio"]) if perf["pl_ratio"] is not None else "-",
+                perf["days"],
+                _pct(perf["max_risk"], 1),
+            ),
+            " 风险调整(G3)：Calmar %s  Omega %s  Ulcer %s  VaR95(日) %s  CVaR95(日) %s  盈亏因子PF %s"
+            % (
+                _num(perf.get("calmar")),
+                _num(perf.get("omega")),
+                _num(perf.get("ulcer")),
+                _pct(perf.get("var95")) if perf.get("var95") is not None else "-",
+                _pct(perf.get("cvar95")) if perf.get("cvar95") is not None else "-",
+                _num(perf.get("profit_factor")),
+            ),
+            " 交易连续性：最大连胜 %d 笔 / 最大连亏 %d 笔%s"
+            % (
+                perf.get("max_win_streak", 0) or 0,
+                perf.get("max_loss_streak", 0) or 0,
+                _paper_excursion_tail(perf.get("mae_mfe")),
+            ),
+        ]
         L += _paper_monthly_lines(perf)
         L.append("")
     st = a["status"]
-    L += ["【委托状态统计】（在途排队≠确定拒单：临时资金/持仓上限/锁板缓解后，排队单仍可成交）",
-          " 已成交 %d   在途排队 %d   锁板/无价阻塞(blocked) %d   确定拒单(rejected) %d   已撤销 %d" % (
-              st["filled"], st["pending"], st["blocked"], st["rejected"], st["cancelled"]),
-          ""]
+    L += [
+        "【委托状态统计】（在途排队≠确定拒单：临时资金/持仓上限/锁板缓解后，排队单仍可成交）",
+        " 已成交 %d   在途排队 %d   锁板/无价阻塞(blocked) %d   确定拒单(rejected) %d   已撤销 %d"
+        % (st["filled"], st["pending"], st["blocked"], st["rejected"], st["cancelled"]),
+        "",
+    ]
     pos_rows = pb.positions_view()
     L.append("【当前持仓】%s" % ("（空仓）" if not pos_rows else ""))
     if pos_rows:
-        L.append(" " + pad("品种", 9) + pad("合约", 12) + pad("名称", 10) + pad("方向", 4)
-                 + pad("手数", 5) + pad("开仓时间", 16) + pad("开仓价", 11) + pad("最新价", 11)
-                 + pad("浮动盈亏", 12) + pad("占用保证金", 13) + "开仓结算交易日")
+        L.append(
+            " "
+            + pad("品种", 9)
+            + pad("合约", 12)
+            + pad("名称", 10)
+            + pad("方向", 4)
+            + pad("手数", 5)
+            + pad("开仓时间", 16)
+            + pad("开仓价", 11)
+            + pad("最新价", 11)
+            + pad("浮动盈亏", 12)
+            + pad("占用保证金", 13)
+            + "开仓结算交易日"
+        )
         for p in pos_rows:
-            L.append(" " + pad(p["sym"], 9) + pad(p.get("contract_code") or "—", 12)
-                     + pad(p["name"], 10) + pad(p["dir"], 4)
-                     + pad(str(p["lots"]), 5) + pad(p["entry_dt"][:16], 16)
-                     + pad("%.2f" % p["entry_price"], 11) + pad("%.2f" % p["last"], 11)
-                     + pad(format(p["float_yuan"], "+,.0f"), 12) + pad(_yuan(p["margin"]), 13)
-                     + p["entry_owner"])
+            L.append(
+                " "
+                + pad(p["sym"], 9)
+                + pad(p.get("contract_code") or "—", 12)
+                + pad(p["name"], 10)
+                + pad(p["dir"], 4)
+                + pad(str(p["lots"]), 5)
+                + pad(p["entry_dt"][:16], 16)
+                + pad("%.2f" % p["entry_price"], 11)
+                + pad("%.2f" % p["last"], 11)
+                + pad(format(p["float_yuan"], "+,.0f"), 12)
+                + pad(_yuan(p["margin"]), 13)
+                + p["entry_owner"]
+            )
     L.append("")
     pend = pb.pending_view()
     L.append("【在途挂单】%s" % ("（无）" if not pend else ""))
     if pend:
-        L.append(" " + pad("品种", 9) + pad("合约", 12) + pad("动作", 10) + pad("买卖", 5)
-                 + pad("挂单时间", 20) + pad("信号价", 11) + pad("综合分", 7) + "排队原因")
+        L.append(
+            " "
+            + pad("品种", 9)
+            + pad("合约", 12)
+            + pad("动作", 10)
+            + pad("买卖", 5)
+            + pad("挂单时间", 20)
+            + pad("信号价", 11)
+            + pad("综合分", 7)
+            + "排队原因"
+        )
         for o in pend:
             sig_price = "%.2f" % o["signal_price"] if o["signal_price"] else "-"
             score_txt = "%+.1f" % o["score"] if o["score"] is not None else "-"
-            L.append(" " + pad(o["sym"], 9) + pad(o.get("contract_code") or "—", 12)
-                     + pad(_PAPER_ACTION_CN.get(o["action"], o["action"]), 10)
-                     + pad(_PAPER_SIDE_CN.get(o["side"], o["side"]), 5) + pad(o["ts"], 20)
-                     + pad(sig_price, 11) + pad(score_txt, 7)
-                     + (o["reason"] or "等待下一轮首个新价成交"))
+            L.append(
+                " "
+                + pad(o["sym"], 9)
+                + pad(o.get("contract_code") or "—", 12)
+                + pad(_PAPER_ACTION_CN.get(o["action"], o["action"]), 10)
+                + pad(_PAPER_SIDE_CN.get(o["side"], o["side"]), 5)
+                + pad(o["ts"], 20)
+                + pad(sig_price, 11)
+                + pad(score_txt, 7)
+                + (o["reason"] or "等待下一轮首个新价成交")
+            )
     L.append("")
     recent = []
     if pb.db is not None:
@@ -1334,25 +1746,48 @@ def paper_account_text(state, broker=None):
             recent = pb.db.paper_trades_recent(20)
         except Exception:
             recent = []
-    L.append("【最近成交（最多20笔；全量见 SQLite paper_trades 表）】%s"
-             % ("（暂无成交）" if not recent else ""))
+    L.append(
+        "【最近成交（最多20笔；全量见 SQLite paper_trades 表）】%s"
+        % ("（暂无成交）" if not recent else "")
+    )
     if recent:
-        L.append(" " + pad("时间", 20) + pad("品种", 9) + pad("合约", 12) + pad("方向", 4)
-                 + pad("手数", 5) + pad("开平", 5) + pad("成交价", 11) + pad("手续费", 9)
-                 + pad("净盈亏", 11) + pad("强平", 4) + "原因")
+        L.append(
+            " "
+            + pad("时间", 20)
+            + pad("品种", 9)
+            + pad("合约", 12)
+            + pad("方向", 4)
+            + pad("手数", 5)
+            + pad("开平", 5)
+            + pad("成交价", 11)
+            + pad("手续费", 9)
+            + pad("净盈亏", 11)
+            + pad("强平", 4)
+            + "原因"
+        )
         for t in recent:
-            L.append(" " + pad(str(t["ts"])[:19], 20) + pad(t["sym"], 9)
-                     + pad(t.get("contract_code") or "—", 12)
-                     + pad(t.get("dir_text", ""), 4) + pad(str(t["lots"]), 5)
-                     + pad(t.get("leg", ""), 5) + pad("%.2f" % (t["price"] or 0), 11)
-                     + pad("%.1f" % (t.get("fee_yuan") or 0), 9)
-                     + pad(format(t.get("realized_yuan") or 0, "+,.0f"), 11)
-                     + pad("是" if t.get("forced") else "", 4) + (t.get("reason") or ""))
-    L += ["", thin,
-          " 说明：影子账户严格按 analyzer 综合分三阈值迟滞自动虚拟撮合；成交价内含滑点，手续费取 data/futures_fees.csv"
-          "（平今/平昨按交易所结算交易日实时判定，判不了保守按平昨），保证金取 data/futures_margins.csv。"
-          "连续影子≥4周后与 signal_outcomes 对照，成本后为负必须诚实呈现并回退；先 paper，永远不自动接实盘（门槛见融合总纲 G20）。",
-          sep]
+            L.append(
+                " "
+                + pad(str(t["ts"])[:19], 20)
+                + pad(t["sym"], 9)
+                + pad(t.get("contract_code") or "—", 12)
+                + pad(t.get("dir_text", ""), 4)
+                + pad(str(t["lots"]), 5)
+                + pad(t.get("leg", ""), 5)
+                + pad("%.2f" % (t["price"] or 0), 11)
+                + pad("%.1f" % (t.get("fee_yuan") or 0), 9)
+                + pad(format(t.get("realized_yuan") or 0, "+,.0f"), 11)
+                + pad("是" if t.get("forced") else "", 4)
+                + (t.get("reason") or "")
+            )
+    L += [
+        "",
+        thin,
+        " 说明：影子账户严格按 analyzer 综合分三阈值迟滞自动虚拟撮合；成交价内含滑点，手续费取 data/futures_fees.csv"
+        "（平今/平昨按交易所结算交易日实时判定，判不了保守按平昨），保证金取 data/futures_margins.csv。"
+        "连续影子≥4周后与 signal_outcomes 对照，成本后为负必须诚实呈现并回退；先 paper，永远不自动接实盘（门槛见融合总纲 G20）。",
+        sep,
+    ]
     return "\n".join(L)
 
 
@@ -1363,10 +1798,12 @@ def _paper_tier_baselines_text(state):
         return ""
     tier_order = [100_000, 10_000, 5_000, 3_000, 1_000]
     tier_label = {100_000: "10万", 10_000: "1万", 5_000: "5000", 3_000: "3000", 1_000: "1000"}
-    L = ["=" * 104,
-         " 纸面·各金额档基准账户（第105轮起；每档展示基准风格账户，完整明细见各账户文件）  更新: %s"
-         % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         "-" * 104]
+    L = [
+        "=" * 104,
+        " 纸面·各金额档基准账户（第105轮起；每档展示基准风格账户，完整明细见各账户文件）  更新: %s"
+        % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "-" * 104,
+    ]
     for eq0k in tier_order:
         grp = []
         for _name, _broker in papers.items():
@@ -1374,8 +1811,9 @@ def _paper_tier_baselines_text(state):
                 a = _broker.account_summary()
                 if abs((a.get("equity0") or 0) - eq0k) >= 1.0:
                     continue
-                style = _paper_style_of(_name, a.get("fill_mode", "next"),
-                                        getattr(_broker, "entry_score", 0))
+                style = _paper_style_of(
+                    _name, a.get("fill_mode", "next"), getattr(_broker, "entry_score", 0)
+                )
                 grp.append((style, _name, _broker, a))
             except Exception:
                 continue
@@ -1388,20 +1826,37 @@ def _paper_tier_baselines_text(state):
             eq0 = a.get("equity0") or 0
             ret = (eq / eq0 - 1.0) if eq0 else 0.0
             opt = a.get("opt") or {}
-            _tag = {"基准": "【基准】", "激进": "【激进】", "保守": "【保守】",
-                    "赌徒": "【赌徒】"}.get(style, "【%s】" % style)
+            _tag = {
+                "基准": "【基准】",
+                "激进": "【激进】",
+                "保守": "【保守】",
+                "赌徒": "【赌徒】",
+            }.get(style, "【%s】" % style)
             # 第110轮：可交易性标注（该档能开1手的最便宜品种；纯期权档/不足标 None）
             _aff_sym, _aff_margin = _paper_affordable(_broker, eq0)
             _aff_txt = ""
             if _aff_sym:
                 _aff_txt = " 可交易: %s(%.0f元/手)" % (_aff_sym, _aff_margin)
-            elif getattr(_broker, "priority", "") == "option_only" or \
-                    getattr(_broker, "futures_max", None) == 0:
+            elif (
+                getattr(_broker, "priority", "") == "option_only"
+                or getattr(_broker, "futures_max", None) == 0
+            ):
                 _aff_txt = " 纯期权(期货不可用)"
-            L.append("  %-12s %s 权益%s(%+.2f%%) 风险%.1f%% 持仓%d(权%d) 已实现%s 手续费%s%s"
-                     % (_name, _tag, _yuan(eq), ret * 100.0, (a.get("risk_degree") or 0) * 100.0,
-                        a.get("n_positions", 0), opt.get("n_positions", 0),
-                        _yuan(a.get("realized", 0.0)), _yuan(a.get("fees_paid", 0.0)), _aff_txt))
+            L.append(
+                "  %-12s %s 权益%s(%+.2f%%) 风险%.1f%% 持仓%d(权%d) 已实现%s 手续费%s%s"
+                % (
+                    _name,
+                    _tag,
+                    _yuan(eq),
+                    ret * 100.0,
+                    (a.get("risk_degree") or 0) * 100.0,
+                    a.get("n_positions", 0),
+                    opt.get("n_positions", 0),
+                    _yuan(a.get("realized", 0.0)),
+                    _yuan(a.get("fees_paid", 0.0)),
+                    _aff_txt,
+                )
+            )
     L.append("-" * 104)
     L.append("")
     return "\n".join(L)
@@ -1425,8 +1880,13 @@ def _paper_tick_note():
 
 def _paper_tier_of(equity0):
     """资金档标签（10万/1万/5000/3000/1000）。"""
-    for _k, _label in ((100_000, "10万"), (10_000, "1万"), (5_000, "5000"),
-                       (3_000, "3000"), (1_000, "1000")):
+    for _k, _label in (
+        (100_000, "10万"),
+        (10_000, "1万"),
+        (5_000, "5000"),
+        (3_000, "3000"),
+        (1_000, "1000"),
+    ):
         if abs(float(equity0 or 0) - _k) < 1.0:
             return _label
     return "%.0f" % float(equity0 or 0)
@@ -1453,13 +1913,16 @@ def _paper_affordable(broker, equity0):
         pf = getattr(broker, "pf", None)
         if pf is None:
             return None, None
-        if getattr(broker, "priority", None) == "option_only" or \
-                getattr(broker, "futures_max", None) == 0:
+        if (
+            getattr(broker, "priority", None) == "option_only"
+            or getattr(broker, "futures_max", None) == 0
+        ):
             return None, None
         per_symbol = float(getattr(pf, "per_symbol", 0) or 0)
         if per_symbol <= 0:
             return None, None
         from portfolio import load_margin_schedule
+
         _margins = load_margin_schedule() or {}
         if not _margins:
             return None, None
@@ -1491,38 +1954,61 @@ def _paper_detail_snapshot(broker):
     out = {"positions": [], "trades": [], "orders": []}
     try:
         for p in broker.positions_view():
-            out["positions"].append({
-                "sym": p.get("sym", ""), "contract": p.get("contract_code", ""),
-                "name": p.get("name", ""), "dir": p.get("dir", ""),
-                "lots": p.get("lots", 0), "entry_dt": p.get("entry_dt", ""),
-                "entry": p.get("entry_price", 0.0), "last": p.get("last", 0.0),
-                "float": p.get("float_yuan", 0.0), "margin": p.get("margin", 0.0),
-                "score": p.get("score")})
+            out["positions"].append(
+                {
+                    "sym": p.get("sym", ""),
+                    "contract": p.get("contract_code", ""),
+                    "name": p.get("name", ""),
+                    "dir": p.get("dir", ""),
+                    "lots": p.get("lots", 0),
+                    "entry_dt": p.get("entry_dt", ""),
+                    "entry": p.get("entry_price", 0.0),
+                    "last": p.get("last", 0.0),
+                    "float": p.get("float_yuan", 0.0),
+                    "margin": p.get("margin", 0.0),
+                    "score": p.get("score"),
+                }
+            )
     except Exception:
         pass
     try:
         db = getattr(broker, "db", None)
         if db is not None and hasattr(db, "paper_trades_recent"):
             for t in db.paper_trades_recent(50):
-                out["trades"].append({
-                    "ts": t.get("ts", ""), "sym": t.get("sym", ""),
-                    "contract": t.get("contract_code", ""),
-                    "dir": t.get("dir_text", ""), "lots": t.get("lots", 0),
-                    "leg": t.get("leg", ""), "price": t.get("price", 0.0),
-                    "fee": t.get("fee_yuan", 0.0), "realized": t.get("realized_yuan", 0.0),
-                    "forced": t.get("forced", 0), "reason": t.get("reason", "")})
+                out["trades"].append(
+                    {
+                        "ts": t.get("ts", ""),
+                        "sym": t.get("sym", ""),
+                        "contract": t.get("contract_code", ""),
+                        "dir": t.get("dir_text", ""),
+                        "lots": t.get("lots", 0),
+                        "leg": t.get("leg", ""),
+                        "price": t.get("price", 0.0),
+                        "fee": t.get("fee_yuan", 0.0),
+                        "realized": t.get("realized_yuan", 0.0),
+                        "forced": t.get("forced", 0),
+                        "reason": t.get("reason", ""),
+                    }
+                )
     except Exception:
         pass
     try:
         db = getattr(broker, "db", None)
         if db is not None and hasattr(db, "paper_orders_recent"):
             for o in db.paper_orders_recent(50):
-                out["orders"].append({
-                    "ts": o.get("ts", ""), "sym": o.get("sym", ""),
-                    "action": o.get("action", ""), "side": o.get("side", ""),
-                    "lots": o.get("lots", 0), "status": o.get("status", ""),
-                    "signal_price": o.get("signal_price"), "score": o.get("score"),
-                    "reason": o.get("reason", "")})
+                out["orders"].append(
+                    {
+                        "ts": o.get("ts", ""),
+                        "sym": o.get("sym", ""),
+                        "action": o.get("action", ""),
+                        "side": o.get("side", ""),
+                        "lots": o.get("lots", 0),
+                        "status": o.get("status", ""),
+                        "signal_price": o.get("signal_price"),
+                        "score": o.get("score"),
+                        "reason": o.get("reason", ""),
+                    }
+                )
     except Exception:
         pass
     return out
@@ -1531,6 +2017,7 @@ def _paper_detail_snapshot(broker):
 def _paper_equity_series_json(broker, max_points=600):
     """第105轮：账户权益曲线（归一化到首个快照=1.0 + 原始权益/回撤/风险度），供详情页 ECharts。"""
     import json as _json
+
     db = getattr(broker, "db", None)
     rows = []
     if db is not None and hasattr(db, "paper_equity_series"):
@@ -1549,8 +2036,9 @@ def _paper_equity_series_json(broker, max_points=600):
         dd.append(max(0.0, _num_or_none(r.get("drawdown")) or 0.0))
     base = eq[0] if eq else 1.0
     norm = [v / base if base else 1.0 for v in eq]
-    return _json.dumps({"dt": dts, "eq": eq, "norm": norm, "risk": risk, "dd": dd},
-                       ensure_ascii=False)
+    return _json.dumps(
+        {"dt": dts, "eq": eq, "norm": norm, "risk": risk, "dd": dd}, ensure_ascii=False
+    )
 
 
 def _num_or_none(v):
@@ -1568,7 +2056,7 @@ def _paper_detail_html(state, broker, name, a=None):
     内容：账户信息条 + 归一化净值/回撤/风险度三图 + 持仓/成交/挂单三表。
     数据全部来自 broker 现成 API；ECharts 缺失时回退表格（与看板同策略）。
     """
-    import json as _json
+
     a = a if a is not None else broker.account_summary()
     eq0 = a.get("equity0") or 0
     eq = a.get("equity") or 0
@@ -1583,26 +2071,58 @@ def _paper_detail_html(state, broker, name, a=None):
 
     rows_pos = ""
     for p in detail["positions"]:
-        rows_pos += ("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td>"
-                     "<td>%s</td><td>%s</td><td>%s</td><td class='num'>%s</td><td class='num'>%s</td></tr>"
-                     % (_esc(p["sym"]), _esc(p["contract"]), _esc(p["name"]), _esc(p["dir"]),
-                        int(p["lots"] or 0), _esc(p["entry_dt"]), _fmt(p["entry"], 2),
-                        _fmt(p["last"], 3), _fmt(p["float"], 0), _fmt(p["margin"], 0)))
+        rows_pos += (
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td>"
+            "<td>%s</td><td>%s</td><td>%s</td><td class='num'>%s</td><td class='num'>%s</td></tr>"
+            % (
+                _esc(p["sym"]),
+                _esc(p["contract"]),
+                _esc(p["name"]),
+                _esc(p["dir"]),
+                int(p["lots"] or 0),
+                _esc(p["entry_dt"]),
+                _fmt(p["entry"], 2),
+                _fmt(p["last"], 3),
+                _fmt(p["float"], 0),
+                _fmt(p["margin"], 0),
+            )
+        )
     rows_tr = ""
     for t in detail["trades"]:
-        rows_tr += ("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>"
-                    "<td class='num'>%s</td><td class='num'>%s</td><td class='num'>%s</td><td>%s</td>%s</tr>"
-                    % (_esc(t["ts"])[:19], _esc(t["sym"]), _esc(t["contract"]), _esc(t["dir"]),
-                       int(t["lots"] or 0), _esc(t["leg"]), _fmt(t["price"], 2),
-                       _fmt(t["fee"], 2), _fmt(t["realized"], 0),
-                       "是" if t.get("forced") else "", _esc(t["reason"] or "")))
+        rows_tr += (
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>"
+            "<td class='num'>%s</td><td class='num'>%s</td><td class='num'>%s</td><td>%s</td>%s</tr>"
+            % (
+                _esc(t["ts"])[:19],
+                _esc(t["sym"]),
+                _esc(t["contract"]),
+                _esc(t["dir"]),
+                int(t["lots"] or 0),
+                _esc(t["leg"]),
+                _fmt(t["price"], 2),
+                _fmt(t["fee"], 2),
+                _fmt(t["realized"], 0),
+                "是" if t.get("forced") else "",
+                _esc(t["reason"] or ""),
+            )
+        )
     rows_od = ""
     for o in detail["orders"]:
-        rows_od += ("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>"
-                    "<td class='num'>%s</td><td class='num'>%s</td><td>%s</td></tr>"
-                    % (_esc(o["ts"])[:19], _esc(o["sym"]), _esc(o["action"]), _esc(o["side"]),
-                       int(o["lots"] or 0), _esc(o["status"]),
-                       _fmt(o.get("signal_price"), 2), _fmt(o.get("score"), 2), _esc(o["reason"] or "")))
+        rows_od += (
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%s</td>"
+            "<td class='num'>%s</td><td class='num'>%s</td><td>%s</td></tr>"
+            % (
+                _esc(o["ts"])[:19],
+                _esc(o["sym"]),
+                _esc(o["action"]),
+                _esc(o["side"]),
+                int(o["lots"] or 0),
+                _esc(o["status"]),
+                _fmt(o.get("signal_price"), 2),
+                _fmt(o.get("score"), 2),
+                _esc(o["reason"] or ""),
+            )
+        )
 
     _now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     html = """<!DOCTYPE html>
@@ -1673,20 +2193,29 @@ if(S.dt.length){
 }
 </script>
 </body></html>""" % (
-        _esc(name), _esc(name), _esc(name.replace(" ", "_").replace("/", "_")),
+        _esc(name),
+        _esc(name),
+        _esc(name.replace(" ", "_").replace("/", "_")),
         _now,
-        _esc(a.get("fill_mode", "next")), _esc(getattr(broker, "entry_score", 0)),
+        _esc(a.get("fill_mode", "next")),
+        _esc(getattr(broker, "entry_score", 0)),
         _esc(getattr(broker, "priority", "futures_first")),
-        _fmt(eq0, 0), _fmt(eq, 2), "pos" if ret >= 0 else "neg", ret * 100.0,
+        _fmt(eq0, 0),
+        _fmt(eq, 2),
+        "pos" if ret >= 0 else "neg",
+        ret * 100.0,
         "pos" if (perf.get("max_dd") or 0) <= 0 else "neg",
         ("%.2f%%" % (perf["max_dd"] * 100)) if perf.get("max_dd") is not None else "--",
         ("%.1f%%" % ((a.get("risk_degree") or 0.0) * 100)),
-        int(a.get("n_positions", 0)), int(opt.get("n_positions", 0)),
+        int(a.get("n_positions", 0)),
+        int(opt.get("n_positions", 0)),
         "%s / %s" % (_fmt(a.get("realized", 0.0), 0), _fmt(a.get("fees_paid", 0.0), 0)),
-        len(detail["positions"]), rows_pos or '<tr><td class="empty">（空仓）</td></tr>',
+        len(detail["positions"]),
+        rows_pos or '<tr><td class="empty">（空仓）</td></tr>',
         rows_tr or '<tr><td class="empty">（暂无成交）</td></tr>',
         rows_od or '<tr><td class="empty">（无在途挂单）</td></tr>',
-        series)
+        series,
+    )
     return html
 
 
@@ -1704,8 +2233,9 @@ def write_paper_account(state):
     """每轮刷新 reports/paper_account.txt（基准）+ 各账户独立文件（文件被占用只跳过，绝不影响主报告链路）。
     第102轮：多账户扩展，遍历 state.papers 写各自独立文件，基准始终写 paper_account.txt；
     同时写出 paper_compare.json 供看板「纸面账户对比」页签渲染。"""
-    db_dir = getattr(config, "PAPER_ACCOUNT_DB_DIR",
-                     os.path.join(config.BASE_DIR, "data", "paper_accounts"))
+    db_dir = getattr(
+        config, "PAPER_ACCOUNT_DB_DIR", os.path.join(config.BASE_DIR, "data", "paper_accounts")
+    )
     try:
         os.makedirs(db_dir, exist_ok=True)
     except Exception:
@@ -1716,9 +2246,12 @@ def write_paper_account(state):
         _tier_txt = _paper_tier_baselines_text(state)
         text = paper_account_text(state)
         if text:
-            _safe_write(config.PAPER_ACCOUNT_TXT,
-                        (_note + _tier_txt + "\n" if _tier_txt else _note) + text,
-                        encoding="utf-8-sig", update_cache=False)
+            _safe_write(
+                config.PAPER_ACCOUNT_TXT,
+                (_note + _tier_txt + "\n" if _tier_txt else _note) + text,
+                encoding="utf-8-sig",
+                update_cache=False,
+            )
     except Exception as e:
         LOG.debug("纸面账户报告写入失败: %s", e)
     # 多账户：每个 broker 写 paper_account_{name}.txt + paper_detail_{name}.html + 聚合对比 json
@@ -1739,8 +2272,11 @@ def write_paper_account(state):
             if getattr(config, "PAPER_DETAIL_ENABLED", True):
                 try:
                     _html = _paper_detail_html(state, broker, name, a)
-                    _dfp = os.path.join(config.BASE_DIR, "reports",
-                                        f"paper_detail_{name.replace(' ', '_').replace('/', '_')}.html")
+                    _dfp = os.path.join(
+                        config.BASE_DIR,
+                        "reports",
+                        f"paper_detail_{name.replace(' ', '_').replace('/', '_')}.html",
+                    )
                     _safe_write(_dfp, _html, encoding="utf-8", update_cache=False)
                 except Exception as _e:
                     LOG.debug("纸面详情页 %s 生成失败: %s", name, _e)
@@ -1754,65 +2290,73 @@ def write_paper_account(state):
                 _fills = broker.fill_report()
             except Exception:
                 pass
-            cmp_rows.append({
-                "name": name,
-                "tier": _paper_tier_of(eq0),
-                "style": _paper_style_of(name, a.get("fill_mode", "next"),
-                                         getattr(broker, "entry_score", 0)),
-                "equity0": eq0, "equity": eq,
-                "ret": (eq / eq0 - 1.0) if eq0 else 0.0,
-                "max_drawdown": perf.get("max_dd") if perf.get("max_dd") is not None else 0.0,
-                "n_fut_pos": a.get("n_positions", 0),
-                "n_opt_pos": opt.get("n_positions", 0),
-                "n_closed": a.get("n_closed", 0),
-                "n_pending": a.get("n_pending", 0),
-                "realized": a.get("realized", 0.0),
-                "fees": a.get("fees_paid", 0.0),
-                "fill_mode": a.get("fill_mode", "next"),
-                "priority": getattr(broker, "priority", "futures_first"),
-                "entry_score": getattr(broker, "entry_score", 0),
-                "risk_degree": a.get("risk_degree", 0.0),
-                "detail": _detail,
-                "affordable_sym": _aff_sym,
-                "affordable_margin": _aff_margin,
-                # 第111轮：资金四维
-                "static": a.get("static"),
-                "float_pnl": a.get("float_pnl"),
-                "margin_used": a.get("margin_used"),
-                "available": a.get("available"),
-                # 第111轮：绩效指标（performance 子集，缺失降级 None）
-                "ann_ret": perf.get("ann_ret"),
-                "sharpe": perf.get("sharpe"),
-                "sortino": perf.get("sortino"),
-                "win_rate": perf.get("win_rate"),
-                "profit_factor": perf.get("profit_factor"),
-                "n_trades": perf.get("n_trades"),
-                "total_pnl": perf.get("total_pnl"),
-                "avg_win": perf.get("avg_win"),
-                "avg_loss": perf.get("avg_loss"),
-                "pl_ratio": perf.get("pl_ratio"),
-                "avg_risk": perf.get("avg_risk"),
-                # 第111轮：执纪/风控与委托状态计数
-                "n_liquidations": a.get("n_liquidations", 0),
-                "n_skipped": a.get("n_skipped", 0),
-                "status": a.get("status") or {},
-                "opt_realized": opt.get("realized"),
-                "opt_fees": opt.get("fees_paid"),
-                "opt_equity": a.get("opt_equity"),
-                # 第111轮：成交汇总
-                "notional": (_fills or {}).get("notional"),
-                "slip_yuan": (_fills or {}).get("slip_yuan"),
-                "n_opens": (_fills or {}).get("n_open"),
-                "n_closes": (_fills or {}).get("n_close"),
-            })
+            cmp_rows.append(
+                {
+                    "name": name,
+                    "tier": _paper_tier_of(eq0),
+                    "style": _paper_style_of(
+                        name, a.get("fill_mode", "next"), getattr(broker, "entry_score", 0)
+                    ),
+                    "equity0": eq0,
+                    "equity": eq,
+                    "ret": (eq / eq0 - 1.0) if eq0 else 0.0,
+                    "max_drawdown": perf.get("max_dd") if perf.get("max_dd") is not None else 0.0,
+                    "n_fut_pos": a.get("n_positions", 0),
+                    "n_opt_pos": opt.get("n_positions", 0),
+                    "n_closed": a.get("n_closed", 0),
+                    "n_pending": a.get("n_pending", 0),
+                    "realized": a.get("realized", 0.0),
+                    "fees": a.get("fees_paid", 0.0),
+                    "fill_mode": a.get("fill_mode", "next"),
+                    "priority": getattr(broker, "priority", "futures_first"),
+                    "entry_score": getattr(broker, "entry_score", 0),
+                    "risk_degree": a.get("risk_degree", 0.0),
+                    "detail": _detail,
+                    "affordable_sym": _aff_sym,
+                    "affordable_margin": _aff_margin,
+                    # 第111轮：资金四维
+                    "static": a.get("static"),
+                    "float_pnl": a.get("float_pnl"),
+                    "margin_used": a.get("margin_used"),
+                    "available": a.get("available"),
+                    # 第111轮：绩效指标（performance 子集，缺失降级 None）
+                    "ann_ret": perf.get("ann_ret"),
+                    "sharpe": perf.get("sharpe"),
+                    "sortino": perf.get("sortino"),
+                    "win_rate": perf.get("win_rate"),
+                    "profit_factor": perf.get("profit_factor"),
+                    "n_trades": perf.get("n_trades"),
+                    "total_pnl": perf.get("total_pnl"),
+                    "avg_win": perf.get("avg_win"),
+                    "avg_loss": perf.get("avg_loss"),
+                    "pl_ratio": perf.get("pl_ratio"),
+                    "avg_risk": perf.get("avg_risk"),
+                    # 第111轮：执纪/风控与委托状态计数
+                    "n_liquidations": a.get("n_liquidations", 0),
+                    "n_skipped": a.get("n_skipped", 0),
+                    "status": a.get("status") or {},
+                    "opt_realized": opt.get("realized"),
+                    "opt_fees": opt.get("fees_paid"),
+                    "opt_equity": a.get("opt_equity"),
+                    # 第111轮：成交汇总
+                    "notional": (_fills or {}).get("notional"),
+                    "slip_yuan": (_fills or {}).get("slip_yuan"),
+                    "n_opens": (_fills or {}).get("n_open"),
+                    "n_closes": (_fills or {}).get("n_close"),
+                }
+            )
         except Exception as e:
             LOG.debug("纸面账户 %s 报告写入失败: %s", name, e)
     if cmp_rows:
         try:
             import json as _json
-            _safe_write(os.path.join(config.BASE_DIR, "reports", "paper_compare.json"),
-                        _json.dumps(cmp_rows, ensure_ascii=False, indent=1),
-                        encoding="utf-8", update_cache=False)
+
+            _safe_write(
+                os.path.join(config.BASE_DIR, "reports", "paper_compare.json"),
+                _json.dumps(cmp_rows, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+                update_cache=False,
+            )
         except Exception:
             pass
     # 第123轮：同步生成独立对比页（完整HTML骨架，供看板"纸面账户对比"页签
@@ -1821,13 +2365,16 @@ def write_paper_account(state):
     # 此处只包一层独立页面骨架。
     try:
         cp_dom = _paper_compare_html()
-        _safe_write(os.path.join(config.BASE_DIR, "reports", "paper_compare.html"),
-                    "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-                    "<title>纸面账户对比</title></head>"
-                    "<body style=\"background:#17181c;color:#e8e8e8;margin:0;padding:14px;"
-                    "font-family:'Microsoft YaHei',Consolas,sans-serif;font-size:13px;line-height:1.6;\">"
-                    "%s</body></html>" % cp_dom,
-                    encoding="utf-8", update_cache=False)
+        _safe_write(
+            os.path.join(config.BASE_DIR, "reports", "paper_compare.html"),
+            '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            "<title>纸面账户对比</title></head>"
+            '<body style="background:#17181c;color:#e8e8e8;margin:0;padding:14px;'
+            "font-family:'Microsoft YaHei',Consolas,sans-serif;font-size:13px;line-height:1.6;\">"
+            "%s</body></html>" % cp_dom,
+            encoding="utf-8",
+            update_cache=False,
+        )
     except Exception as e:
         LOG.debug("纸面对比页独立生成失败(不影响主链路): %s", e)
 
@@ -1837,7 +2384,7 @@ class ReportStore:
     非交易时段(9:00-11:30/13:30-15:00/21:00-23:00之外)的轮次单独滚动保留5轮"""
 
     def __init__(self):
-        self.reports = deque(maxlen=config.KEEP_ROUNDS)      # (轮次, 时间, 报告全文)
+        self.reports = deque(maxlen=config.KEEP_ROUNDS)  # (轮次, 时间, 报告全文)
         self.signal_rows = deque(maxlen=config.KEEP_ROUNDS)  # (轮次, 时间, 本轮行)
         self.off_reports = deque(maxlen=config.KEEP_ROUNDS)  # 非交易时段轮 (轮次, 时间, 报告, 行)
 
@@ -1855,17 +2402,22 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
     thin = "-" * 108
     L = []
     L.append(sep)
-    L.append(f" 期货全品种监控分析报告   {now_str()}   第{state.cycle}轮   "
-             f"数据源: 新浪财经7x24/金十数据   范围: {state.wl_source}")
+    L.append(
+        f" 期货全品种监控分析报告   {now_str()}   第{state.cycle}轮   "
+        f"数据源: 新浪财经7x24/金十数据   范围: {state.wl_source}"
+    )
     L.append(sep)
     L.append(sanitize(state.oil.snapshot_line(verbose=True)))
-    L.append(f" 分析范围: {getattr(state, 'universe_note', '')}"
-             f"（购买建议中的合约月份由成交量+持仓量自动探测）")
+    L.append(
+        f" 分析范围: {getattr(state, 'universe_note', '')}"
+        f"（购买建议中的合约月份由成交量+持仓量自动探测）"
+    )
     trading, sess_desc = is_trading_time()
-    L.append(f" 交易时段: {sess_desc}"
-             + ("" if trading else " —— 非交易时段，重点品种明细已附加【预测走向】(规则预测仅供参考)"))
-    L.append(f" 轮动节奏: {getattr(state, 'rotation_desc', '—')}"
-             f"（本轮轮动写入时间: {now_str()}）")
+    L.append(
+        f" 交易时段: {sess_desc}"
+        + ("" if trading else " —— 非交易时段，重点品种明细已附加【预测走向】(规则预测仅供参考)")
+    )
+    L.append(f" 轮动节奏: {getattr(state, 'rotation_desc', '—')}（本轮轮动写入时间: {now_str()}）")
     emerg = getattr(state, "emergency_note", "")
     if emerg:
         L.append(f" ★紧急触发: {emerg}")
@@ -1873,18 +2425,35 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
 
     # ---------- 期货分析总表 ----------
     L.append("【期货分析】(综合分范围-10~+10; |分|<2观望, 2~4轻仓, 4~6.5分批建仓, ≥6.5强信号)")
-    L.append(" " + pad("品种", 12) + pad("主力合约", 9) + pad("板块", 10) + pad("最新价", 10)
-             + pad("较昨结", 9) + pad("综合分", 8) + pad("信号", 8) + "操作建议")
+    L.append(
+        " "
+        + pad("品种", 12)
+        + pad("主力合约", 9)
+        + pad("板块", 10)
+        + pad("最新价", 10)
+        + pad("较昨结", 9)
+        + pad("综合分", 8)
+        + pad("信号", 8)
+        + "操作建议"
+    )
+
     def _gate_mark(r):
         _lv = (r.get("risk") or {}).get("level")
         return "⛔" if _lv == "veto" else ("⚠" if _lv == "warn" else "")
 
     for r in fut_rows:
-        L.append(" " + pad(r["name"], 12) + pad(r.get("contract_code") or "探测中", 9)
-                 + pad(r["cat"], 10)
-                 + pad("%.1f" % r["price"] if r["price"] else "-", 10)
-                 + pad("%.2f%%" % (r["chg"] * 100), 9)
-                 + pad("%+.1f" % r["score"], 8) + pad(r["label"], 8) + _gate_mark(r) + r["advice"])
+        L.append(
+            " "
+            + pad(r["name"], 12)
+            + pad(r.get("contract_code") or "探测中", 9)
+            + pad(r["cat"], 10)
+            + pad("%.1f" % r["price"] if r["price"] else "-", 10)
+            + pad("%.2f%%" % (r["chg"] * 100), 9)
+            + pad("%+.1f" % r["score"], 8)
+            + pad(r["label"], 8)
+            + _gate_mark(r)
+            + r["advice"]
+        )
     L.append("")
 
     # ---------- 基本面速览（第13轮 WP-C：库存/仓单+龙虎榜+期限carry+基差） ----------
@@ -1892,8 +2461,11 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
     if fund_rows:
         ranked = sorted(fund_rows, key=lambda x: -x["fundamental"]["score"])
         bull = [r for r in ranked if r["fundamental"]["score"] > 0.15][:5]
-        bear = [r for r in sorted(fund_rows, key=lambda x: x["fundamental"]["score"])
-                if r["fundamental"]["score"] < -0.15][:5]
+        bear = [
+            r
+            for r in sorted(fund_rows, key=lambda x: x["fundamental"]["score"])
+            if r["fundamental"]["score"] < -0.15
+        ][:5]
 
         def _fbrief(r):
             fp = r["fundamental"]
@@ -1907,12 +2479,16 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
                 tags.append("carry%+.0f%%" % (sub["期限carry"]["annual_carry"] * 100))
             return "%s(%+.2f %s)" % (r["name"], fp["score"], "/".join(tags) or "—")
 
-        L.append("【基本面速览】(库存仓单分位+周环比·龙虎榜前20席净多·期限carry·基差; "
-                 "满分±%.1f, 缺项按可得权重自动归一)" % config.FUND_MAX_SCORE)
+        L.append(
+            "【基本面速览】(库存仓单分位+周环比·龙虎榜前20席净多·期限carry·基差; "
+            "满分±%.1f, 缺项按可得权重自动归一)" % config.FUND_MAX_SCORE
+        )
         L.append(" 偏多: " + ("、".join(_fbrief(r) for r in bull) or "无显著偏多品种"))
         L.append(" 偏空: " + ("、".join(_fbrief(r) for r in bear) or "无显著偏空品种"))
-        L.append(" 口径: 库存=东财注册仓单近约3个月滚动分位(样本≥%d); 龙虎榜=前20席会员合计; "
-                 "carry=近远月年化; 基差源(生意社)遇反爬自动缺失不编造" % config.FUND_INV_MIN_SAMPLES)
+        L.append(
+            " 口径: 库存=东财注册仓单近约3个月滚动分位(样本≥%d); 龙虎榜=前20席会员合计; "
+            "carry=近远月年化; 基差源(生意社)遇反爬自动缺失不编造" % config.FUND_INV_MIN_SAMPLES
+        )
         L.append("")
 
     # ---------- G6 数据源健康（缺数/陈旧/跳变/熔断，只监控不改分） ----------
@@ -1932,32 +2508,53 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
 
     # ---------- 重点品种明细 ----------
     focus = [r for r in fut_rows if abs(r["score"]) >= config.SCORE_NEUTRAL]
-    L.append("【重点品种操作明细】" + ("(共%d个非中性信号)" % len(focus) if focus else "(当前全部观望)"))
+    L.append(
+        "【重点品种操作明细】" + ("(共%d个非中性信号)" % len(focus) if focus else "(当前全部观望)")
+    )
     for r in sorted(focus, key=lambda x: -abs(x["score"])):
         L.extend(_render_detail(r))
     L.append("")
 
     # ---------- 期权严格分析 ----------
-    L.append("【期权严格分析】(仅列出有场内期权的品种; IV优先OpenVlab真实平值，缺失时用HV估计，实盘以盘面为准)")
+    L.append(
+        "【期权严格分析】(仅列出有场内期权的品种; IV优先OpenVlab真实平值，缺失时用HV估计，实盘以盘面为准)"
+    )
     if opt_rows:
-        L.append(" " + pad("品种", 12) + pad("标的分", 8) + pad("IV", 8)
-                 + pad("IV分位", 9) + pad("建议合约", 26) + pad("权利金(估)", 11)
-                 + pad("Delta", 8) + pad("Theta/日", 10) + "结论")
+        L.append(
+            " "
+            + pad("品种", 12)
+            + pad("标的分", 8)
+            + pad("IV", 8)
+            + pad("IV分位", 9)
+            + pad("建议合约", 26)
+            + pad("权利金(估)", 11)
+            + pad("Delta", 8)
+            + pad("Theta/日", 10)
+            + "结论"
+        )
         for o in opt_rows:
             if o.get("yy"):
                 contract = f"{o['month_label']}月{o['kname']}{o['direction']}K≈{o['K']:g}"
             else:
                 contract = f"{o['kname']}{o['direction']}K≈{o['K']:g}"
             iv_pct = o.get("iv_pct")
-            iv_pct_txt = "--" if iv_pct is None else f"{iv_pct*100:.0f}%"
-            L.append(" " + pad(o["name"], 12) + pad("%+.1f" % o["score"], 8)
-                     + pad("%.0f%%" % (o["iv"] * 100), 8)
-                     + pad(iv_pct_txt, 9) + pad(contract, 26)
-                     + pad("%.1f" % o["prem"], 11) + pad("%.2f" % o["delta"], 8)
-                     + pad("%.2f" % o["theta_day"], 10)
-                     + _opt_short_verdict(o["verdict"]))
+            iv_pct_txt = "--" if iv_pct is None else f"{iv_pct * 100:.0f}%"
+            L.append(
+                " "
+                + pad(o["name"], 12)
+                + pad("%+.1f" % o["score"], 8)
+                + pad("%.0f%%" % (o["iv"] * 100), 8)
+                + pad(iv_pct_txt, 9)
+                + pad(contract, 26)
+                + pad("%.1f" % o["prem"], 11)
+                + pad("%.2f" % o["delta"], 8)
+                + pad("%.2f" % o["theta_day"], 10)
+                + _opt_short_verdict(o["verdict"])
+            )
         for o in opt_rows:
-            L.append(f"  ● {o['name']} 期权检查({len([c for c in o['checks'] if c[1]])}/{len(o['checks'])}项通过):")
+            L.append(
+                f"  ● {o['name']} 期权检查({len([c for c in o['checks'] if c[1]])}/{len(o['checks'])}项通过):"
+            )
             for item, ok, note in o["checks"]:
                 mark = "√" if ok else "×"
                 L.append(f"      [{mark}] {item}: {note}")
@@ -1978,30 +2575,54 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
     L.append("")
 
     # ---------- 期权策略推荐 ----------
-    L.append("【期权策略推荐】(价差/蝶式/比率/备兑/保护性认沽; 严格检查全过才建议执行; 权利金为Black-76估计值)")
+    L.append(
+        "【期权策略推荐】(价差/蝶式/比率/备兑/保护性认沽; 严格检查全过才建议执行; 权利金为Black-76估计值)"
+    )
     if strat_rows:
-        L.append(" " + pad("品种", 12) + pad("策略", 18) + pad("月份", 10)
-                 + pad("净支/收", 9) + pad("最大盈", 10) + pad("最大亏", 10) + "结论")
+        L.append(
+            " "
+            + pad("品种", 12)
+            + pad("策略", 18)
+            + pad("月份", 10)
+            + pad("净支/收", 9)
+            + pad("最大盈", 10)
+            + pad("最大亏", 10)
+            + "结论"
+        )
         for s in strat_rows:
             net = s.get("net", 0)
             mp = s.get("max_profit")
             ml = s.get("max_loss")
-            mp_txt = "无上限" if mp is None else (f"{mp:.0f}点" if isinstance(mp, (int, float)) else "-")
-            ml_txt = "无上限" if ml is None else (f"{ml:.0f}点" if isinstance(ml, (int, float)) else "-")
-            L.append(" " + pad(s.get("variety", ""), 12) + pad(s["name"], 18)
-                     + pad(s.get("month_label", ""), 10)
-                     + pad(f"{net:+.0f}点", 9) + pad(mp_txt, 10) + pad(ml_txt, 10)
-                     + _opt_short_verdict(s["verdict"]))
+            mp_txt = (
+                "无上限" if mp is None else (f"{mp:.0f}点" if isinstance(mp, (int, float)) else "-")
+            )
+            ml_txt = (
+                "无上限" if ml is None else (f"{ml:.0f}点" if isinstance(ml, (int, float)) else "-")
+            )
+            L.append(
+                " "
+                + pad(s.get("variety", ""), 12)
+                + pad(s["name"], 18)
+                + pad(s.get("month_label", ""), 10)
+                + pad(f"{net:+.0f}点", 9)
+                + pad(mp_txt, 10)
+                + pad(ml_txt, 10)
+                + _opt_short_verdict(s["verdict"])
+            )
         for s in strat_rows:
             mark = "√" if s["all_pass"] else "×"
-            _ml = s.get('month_label', '')
+            _ml = s.get("month_label", "")
             _mpar = _ml if "/" in _ml else f"{_ml}月份"
-            L.append(f"  ● [{mark}] {s.get('variety','')} {s['name']}（{_mpar}）")
+            L.append(f"  ● [{mark}] {s.get('variety', '')} {s['name']}（{_mpar}）")
             if s.get("legs_text"):
                 L.append(f"      腿: {s['legs_text']}")
-            L.append(f"      组合Greeks: Δ{s.get('delta',0):+.2f} / Γ{s.get('gamma',0):+.4f} / Vega{s.get('vega',0):+.1f} / Θ{s.get('theta_day',0):+.1f}点每日")
+            L.append(
+                f"      组合Greeks: Δ{s.get('delta', 0):+.2f} / Γ{s.get('gamma', 0):+.4f} / Vega{s.get('vega', 0):+.1f} / Θ{s.get('theta_day', 0):+.1f}点每日"
+            )
             if s.get("margin_points", 0) > 0:
-                L.append(f"      保证金估算: 约{s.get('margin_points',0):.1f}点（点值口径，未乘合约乘数；实盘以交易所/期货公司为准）")
+                L.append(
+                    f"      保证金估算: 约{s.get('margin_points', 0):.1f}点（点值口径，未乘合约乘数；实盘以交易所/期货公司为准）"
+                )
             for item, ok, note in s["checks"]:
                 m = "√" if ok else "×"
                 L.append(f"      [{m}] {item}: {note}")
@@ -2023,7 +2644,7 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
         for s, n in news_top:
             t = n.get("time").strftime("%m-%d %H:%M")
             flag = "存疑·" if n.get("doubtful") else ""
-            L.append(f"  {s:+.1f} [{flag}{n.get('source')} {t}] {n.get('content','')[:88]}")
+            L.append(f"  {s:+.1f} [{flag}{n.get('source')} {t}] {n.get('content', '')[:88]}")
     else:
         L.append("  (暂未捕捉到匹配关键词的消息)")
     # 第14轮 WP-D0：分钟K自采库覆盖（让用户看到自有分钟库积累进度；库为空时不显示）
@@ -2032,10 +2653,14 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
     except Exception:
         mb_cov = {}
     if mb_cov:
-        mb_txt = "；".join(f"{p}分钟 {v['bars']}根/{v['contracts']}合约"
-                           f"({(v['first'] or '')[5:]}~{(v['last'] or '')[5:]})"
-                           for p, v in sorted(mb_cov.items()))
-        L.append(f"【分钟K自采库】{mb_txt}；新浪主连全周期(含1m)为主+通达信/东财具体合约兜底，常驻自采，供日内/平今回测长期积累")
+        mb_txt = "；".join(
+            f"{p}分钟 {v['bars']}根/{v['contracts']}合约"
+            f"({(v['first'] or '')[5:]}~{(v['last'] or '')[5:]})"
+            for p, v in sorted(mb_cov.items())
+        )
+        L.append(
+            f"【分钟K自采库】{mb_txt}；新浪主连全周期(含1m)为主+通达信/东财具体合约兜底，常驻自采，供日内/平今回测长期积累"
+        )
         L.append("")
     L.append(thin)
     L.append(" " + DISCLAIMER)
@@ -2045,6 +2670,7 @@ def render(state, fut_rows, opt_rows, strat_rows, news_top):
 
 def _render_detail(r):
     from analyzer import detail_lines
+
     return detail_lines(r)
 
 
@@ -2078,8 +2704,10 @@ def save(state, text, fut_rows, opt_rows):
             w.writerows(rs)
         _safe_write(config.SIGNALS_CSV, buf.getvalue(), encoding="utf-8-sig", newline="")
         # 3) history_report.txt：新块置顶归档（次日启动时清除昨日块）
-        block = (f"\n{'=' * 24} 交易时段 第{state.cycle}轮 | {time_str} | {desc}{emark} "
-                 f"{'=' * 24}\n{text}\n---- 本轮信号流水 ----\n")
+        block = (
+            f"\n{'=' * 24} 交易时段 第{state.cycle}轮 | {time_str} | {desc}{emark} "
+            f"{'=' * 24}\n{text}\n---- 本轮信号流水 ----\n"
+        )
         for r in rows:
             block += ",".join(str(x) for x in r) + "\n"
         prepend_archive(config.HISTORY_FILE, block)
@@ -2092,8 +2720,10 @@ def save(state, text, fut_rows, opt_rows):
             parts.append(txt)
             parts.append("\n\n")
         _safe_write(config.OFFHOURS_REPORT_FILE, "".join(parts))
-        block = (f"\n{'=' * 20} 非交易时段 第{state.cycle}轮 | {time_str} | {desc}{emark} "
-                 f"{'=' * 20}\n{text}\n---- 本轮信号流水 ----\n")
+        block = (
+            f"\n{'=' * 20} 非交易时段 第{state.cycle}轮 | {time_str} | {desc}{emark} "
+            f"{'=' * 20}\n{text}\n---- 本轮信号流水 ----\n"
+        )
         for r in rows:
             block += ",".join(str(x) for x in r) + "\n"
         prepend_archive(config.OFFHOURS_HISTORY_FILE, block)
@@ -2129,19 +2759,22 @@ def build_daily_review(state, owner=None):
     """归属交易日 owner 的全部交易结束后调用：汇总该交易日两个归档中的轮动块
     （夜盘跨自然日零点，凌晨块归属前一交易日）+ 当日新闻 → 复盘报告文本"""
     import factors
+
     if owner is None:
         owner = trade_owner_date()
     owner_s = owner.strftime("%Y-%m-%d")
     rounds = []
-    for path, tag in ((config.HISTORY_FILE, "交易时段"),
-                      (config.OFFHOURS_HISTORY_FILE, "非交易时段")):
+    for path, tag in (
+        (config.HISTORY_FILE, "交易时段"),
+        (config.OFFHOURS_HISTORY_FILE, "非交易时段"),
+    ):
         content = _read_file(path)
         ms = list(_BLOCK_HDR_RE.finditer(content))
         for idx, m in enumerate(ms):
             if _block_owner(m) != owner:
                 continue
             end = ms[idx + 1].start() if idx + 1 < len(ms) else len(content)
-            block = content[m.end():end]
+            block = content[m.end() : end]
             rows = []
             if "---- 本轮信号流水 ----" in block:
                 data = block.split("---- 本轮信号流水 ----", 1)[1]
@@ -2149,9 +2782,16 @@ def build_daily_review(state, owner=None):
                     line = line.strip()
                     if line.count(",") >= 6:
                         rows.append(line.split(","))
-            rounds.append({"tag": tag, "day": m.group(2), "time": m.group(3),
-                           "hdr": m.group(1).strip("= #"), "rows": rows,
-                           "body": block})
+            rounds.append(
+                {
+                    "tag": tag,
+                    "day": m.group(2),
+                    "time": m.group(3),
+                    "hdr": m.group(1).strip("= #"),
+                    "rows": rows,
+                    "body": block,
+                }
+            )
     # 跨零点：先按自然日、再按时间排序，凌晨块排在夜盘之后
     rounds.sort(key=lambda x: (x["day"], x["time"]))
 
@@ -2173,10 +2813,9 @@ def build_daily_review(state, owner=None):
 
     # 当日新闻统计（夜盘跨零点：同时读 owner 与 owner+1 两个自然日的缓存，按归属过滤）
     items = []
-    seen_news = set()   # 跨重启去重：同内容新闻只计一次
+    seen_news = set()  # 跨重启去重：同内容新闻只计一次
     for day in (owner, owner + timedelta(days=1)):
-        news_path = os.path.join(config.NEWS_CACHE_DIR,
-                                 f"news_{day.strftime('%Y%m%d')}.jsonl")
+        news_path = os.path.join(config.NEWS_CACHE_DIR, f"news_{day.strftime('%Y%m%d')}.jsonl")
         try:
             fp = open(news_path, encoding="utf-8")
         except FileNotFoundError:
@@ -2212,24 +2851,43 @@ def build_daily_review(state, owner=None):
     L = []
     L.append(f"{'#' * 20} 复盘报告 | {owner_s} | 生成于 {now_str()} {'#' * 20}")
     if rounds:
-        cov = (f"{rounds[0]['day'][5:]} {rounds[0]['time']} ~ "
-               f"{rounds[-1]['day'][5:]} {rounds[-1]['time']}")
+        cov = (
+            f"{rounds[0]['day'][5:]} {rounds[0]['time']} ~ "
+            f"{rounds[-1]['day'][5:]} {rounds[-1]['time']}"
+        )
     else:
         cov = "无"
     n_tr = sum(1 for r in rounds if r["tag"] == "交易时段")
-    L.append(f"一、当日轮动概况：共 {len(rounds)} 份轮动报告（交易时段 {n_tr} 份 / "
-             f"非交易时段 {len(rounds) - n_tr} 份），覆盖 {cov}")
+    L.append(
+        f"一、当日轮动概况：共 {len(rounds)} 份轮动报告（交易时段 {n_tr} 份 / "
+        f"非交易时段 {len(rounds) - n_tr} 份），覆盖 {cov}"
+    )
     L.append("")
     L.append("二、品种当日轮动表现（当日首次轮动 vs 最后一次轮动）：")
-    L.append(" " + pad("品种", 12) + pad("首轮价", 10) + pad("末轮价", 10)
-             + pad("日内涨跌", 10) + pad("首轮分", 8) + pad("末轮分", 8) + "末轮信号")
+    L.append(
+        " "
+        + pad("品种", 12)
+        + pad("首轮价", 10)
+        + pad("末轮价", 10)
+        + pad("日内涨跌", 10)
+        + pad("首轮分", 8)
+        + pad("末轮分", 8)
+        + "末轮信号"
+    )
     for name in sorted(agg):
         a = agg[name]
         f0, l0 = a["first"], a["last"]
         chg = (l0[1] / f0[1] - 1) if f0[1] else 0.0
-        L.append(" " + pad(name, 12) + pad(f"{f0[1]:g}", 10) + pad(f"{l0[1]:g}", 10)
-                 + pad(f"{chg * 100:+.2f}%", 10) + pad(f"{f0[2]:+.1f}", 8)
-                 + pad(f"{l0[2]:+.1f}", 8) + l0[3])
+        L.append(
+            " "
+            + pad(name, 12)
+            + pad(f"{f0[1]:g}", 10)
+            + pad(f"{l0[1]:g}", 10)
+            + pad(f"{chg * 100:+.2f}%", 10)
+            + pad(f"{f0[2]:+.1f}", 8)
+            + pad(f"{l0[2]:+.1f}", 8)
+            + l0[3]
+        )
     L.append("")
     L.append("三、信号效果追踪（最近7天已到期样本，用来检验规则有效性）：")
     db = getattr(state, "db", None)
@@ -2249,9 +2907,11 @@ def build_daily_review(state, owner=None):
                     tw = sum(int(x["wins"] or 0) for x in gr)
                     avg = _weighted_avg(gr)
                     expire_txt = f"，过期{expired_n}条" if expired_n else ""
-                    wr_txt = f"胜率{tw/tn*100:.1f}%" if tn else "胜率-"
-                    L.append(f"  {_horizon_label(horizon)}：有效样本{tn}/总样本{total_n}{expire_txt}，{wr_txt}，"
-                             f"平均方向收益{avg*100:+.2f}%")
+                    wr_txt = f"胜率{tw / tn * 100:.1f}%" if tn else "胜率-"
+                    L.append(
+                        f"  {_horizon_label(horizon)}：有效样本{tn}/总样本{total_n}{expire_txt}，{wr_txt}，"
+                        f"平均方向收益{avg * 100:+.2f}%"
+                    )
             else:
                 L.append("  样本尚在累积；信号会在30分钟/2小时/次日自动回填结果。")
             L.append(f"  当前仍有待评估信号 {pending_n} 条，详见看板『信号胜率追踪』页签。")
@@ -2261,21 +2921,25 @@ def build_daily_review(state, owner=None):
     else:
         L.append("  数据库未初始化，本轮无法统计历史胜率。")
     L.append("")
-    L.append(f"四、当日消息面复盘：程序共收集新闻 {len(items)} 条，"
-             f"命中利多关键词 {pos} 条 / 利空关键词 {neg} 条；影响力Top：")
+    L.append(
+        f"四、当日消息面复盘：程序共收集新闻 {len(items)} 条，"
+        f"命中利多关键词 {pos} 条 / 利空关键词 {neg} 条；影响力Top："
+    )
     shown = 0
     for aw, w, it in scored:
         if aw < 0.05 or shown >= 8:
             break
-        L.append(f"  {w:+.1f} [{it.get('source', '')} {(it.get('time') or '')[:16]}] "
-                 f"{sanitize(it.get('content') or '')[:80]}")
+        L.append(
+            f"  {w:+.1f} [{it.get('source', '')} {(it.get('time') or '')[:16]}] "
+            f"{sanitize(it.get('content') or '')[:80]}"
+        )
         shown += 1
     L.append("")
     L.append("五、末轮期权策略推荐回顾：")
     strat_rows = getattr(state, "last_strat_rows", None)
     if strat_rows:
         for s in strat_rows:
-            _ml = s.get('month_label', '')
+            _ml = s.get("month_label", "")
             _mpar = _ml if "/" in _ml else f"{_ml}月份"
             L.append(f"  ● {s.get('variety', '')} {s['name']}（{_mpar}）{s['verdict']}")
     else:
@@ -2322,6 +2986,6 @@ def write_daily_review(text, owner=None):
         for idx, m in enumerate(ms):
             end = ms[idx + 1].start() if idx + 1 < len(ms) else len(old)
             if m.group(1) != owner_s:
-                kept.append(old[m.start():end])
+                kept.append(old[m.start() : end])
         old = "".join(kept)
     _write_file(config.DAILY_REVIEW_FILE, text + "\n\n" + old)

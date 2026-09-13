@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G21（第36轮）标准研究面板 + 特征注册表 + PIT/训练-服务一致性 零网络确定性测试。
 
 全部手算可核、不连 monitor.db/不联网：
@@ -10,23 +9,33 @@
   - PanelStore：幂等重建逐值一致、主键去重、回读一致、manifest 落表
   - 缓存面板结构审计：干净通过、ret1d 破坏/时间戳越界能被检出
 """
+
 import os
 import tempfile
 
-import config
-import futures_data
-import factors_catalog as fc
 import panel_builder as pb
 import pit_audit as pa
+
+import config
+import factors_catalog as fc
 
 
 def _bars(n=60, start=100.0, drift=0.002):
     out = []
     for i in range(n):
         c = start * (1 + drift * i) + (0.3 if i % 3 == 0 else 0.0)
-        out.append({"d": "2026-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
-                    "o": c - 0.1, "h": c + 0.2, "l": c - 0.3,
-                    "c": c, "v": 1000 + i, "p": 5000 + i, "s": c})
+        out.append(
+            {
+                "d": "2026-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
+                "o": c - 0.1,
+                "h": c + 0.2,
+                "l": c - 0.3,
+                "c": c,
+                "v": 1000 + i,
+                "p": 5000 + i,
+                "s": c,
+            }
+        )
     return out
 
 
@@ -40,7 +49,7 @@ def test_catalog_part_keys_match_config():
 def test_catalog_validate_clean_and_unique():
     assert fc.validate() == []
     keys = fc.all_keys()
-    assert len(keys) == len(set(keys))           # key 唯一
+    assert len(keys) == len(set(keys))  # key 唯一
 
 
 def test_catalog_dynamic_key_and_status():
@@ -64,11 +73,22 @@ def test_asof_boundaries():
 
 def test_fund_strict_asof():
     funds = [("2026-01-15", 0.5, 0.01, 0.0), ("2026-01-20", -0.5, -0.01, 0.0)]
-    bars = [{"d": "2026-01-%02d" % (i + 1), "o": 100 + i, "h": 101 + i, "l": 99 + i,
-             "c": 100.5 + i, "v": 1, "p": 10, "s": 100.5 + i} for i in range(28)]
+    bars = [
+        {
+            "d": "2026-01-%02d" % (i + 1),
+            "o": 100 + i,
+            "h": 101 + i,
+            "l": 99 + i,
+            "c": 100.5 + i,
+            "v": 1,
+            "p": 10,
+            "s": 100.5 + i,
+        }
+        for i in range(28)
+    ]
     rows, _ = pb.build_symbol_rows("X", "有色", bars, funds, warmup=10)
     by = {r["date"]: r for r in rows}
-    assert by["2026-01-15"]["fund_score"] is None       # 当日基本面不可见
+    assert by["2026-01-15"]["fund_score"] is None  # 当日基本面不可见
     assert by["2026-01-16"]["fund_score"] == 0.5
     assert by["2026-01-20"]["fund_score"] == 0.5
     assert by["2026-01-21"]["fund_score"] == -0.5
@@ -99,6 +119,7 @@ def test_no_future_function_by_perturbation():
     def build(b):
         rr, _ = pb.build_symbol_rows("RB", "黑色", b, warmup=10)
         return rr
+
     div = pa.assert_no_future(raw, build, [9, 19, 34, 49], ["ret1d"] + pb.FEATURE_COLS)
     assert div == []
 
@@ -111,12 +132,16 @@ def test_leaky_factor_is_caught():
         for r in rr:
             r["ret1d"] = b[-1]["c"]
         return rr
+
     assert pa.assert_no_future(raw, leaky, [10, 30], ["ret1d"])
 
 
 def test_timestamp_leak_scan():
-    rows = [{"f": "2026-01-02", "e": "2026-01-01"}, {"f": "2026-01-01", "e": "2026-01-01"},
-            {"f": None, "e": "2026-01-01"}]
+    rows = [
+        {"f": "2026-01-02", "e": "2026-01-01"},
+        {"f": "2026-01-01", "e": "2026-01-01"},
+        {"f": None, "e": "2026-01-01"},
+    ]
     assert pa.timestamp_leaks(rows, "f", "e") == [0]
 
 
@@ -125,6 +150,7 @@ def test_training_serving_parity():
     raw = _bars(50)
     rows, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
     import backtest
+
     adj, _ = backtest.ratio_adjusted_bars(list(raw))
     d2t = {str(b.get("d", "")): t for t, b in enumerate(adj)}
     for idx in (0, 10, 25, 40):
@@ -137,9 +163,11 @@ def test_parity_detects_injected_divergence():
     raw = _bars(50)
     rows, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
     import backtest
+
     adj, _ = backtest.ratio_adjusted_bars(list(raw))
     d2t = {str(b.get("d", "")): t for t, b in enumerate(adj)}
-    hacked = dict(rows[10]); hacked["ma5"] = 999.0
+    hacked = dict(rows[10])
+    hacked["ma5"] = 999.0
     assert pa.parity_one(adj, hacked, d2t[hacked["date"]], ["ma5"])
 
 
@@ -152,7 +180,7 @@ def test_panelstore_idempotent_and_readback():
         st = pb.PanelStore(dbp)
         n1 = st.replace_symbol("RB", rows)
         back1 = st.load_rows("RB")
-        n2 = st.replace_symbol("RB", rows)        # 重建
+        n2 = st.replace_symbol("RB", rows)  # 重建
         back2 = st.load_rows("RB")
         assert n1 == n2 == len(rows) == len(back1) == len(back2)
         assert back1 == back2
@@ -174,8 +202,11 @@ def test_audit_panel_db_clean_and_corrupt():
         res = pa.audit_panel_db(dbp)
         assert res["issues"] == []
         # 破坏 ret1d 自洽
-        bad = [dict(r) for r in good]; bad[5]["ret1d"] = 9.99
-        st = pb.PanelStore(dbp); st.replace_symbol("RB", bad); st.close()
+        bad = [dict(r) for r in good]
+        bad[5]["ret1d"] = 9.99
+        st = pb.PanelStore(dbp)
+        st.replace_symbol("RB", bad)
+        st.close()
         res2 = pa.audit_panel_db(dbp)
         assert any("ret1d" in x for x in res2["issues"])
 
@@ -185,9 +216,18 @@ def _long_bars(n=340, start=100.0):
     out = []
     for i in range(n):
         c = start * (1 + 0.0011 * i) + (0.4 if i % 3 == 0 else 0.0)
-        out.append({"d": "2025-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
-                    "o": c - 0.1, "h": c + 0.2, "l": c - 0.3,
-                    "c": c, "v": 1000 + i, "p": 5000 + i, "s": c})
+        out.append(
+            {
+                "d": "2025-%02d-%02d" % (i // 28 + 1, min(28, i % 28 + 1)),
+                "o": c - 0.1,
+                "h": c + 0.2,
+                "l": c - 0.3,
+                "c": c,
+                "v": 1000 + i,
+                "p": 5000 + i,
+                "s": c,
+            }
+        )
     return out
 
 
@@ -196,50 +236,58 @@ def test_panel_rows_to_bars_roundtrip():
     rows, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
     recon = pb.panel_rows_to_bars(rows)
     assert len(recon) == len(rows)
-    for r, b in zip(rows, recon):
+    for r, b in zip(rows, recon, strict=False):
         assert b["d"] == r["date"] and abs(b["c"] - r["c"]) < 1e-12 and b["p"] == r["oi"]
 
 
 def test_xsmom_panel_path_equals_network_path():
-    import backtest
     import xsmom_eval as xs
+
+    import backtest
+
     raw = _long_bars()
     LB, HOR, days = (20, 60, 120, 252), (5, 20, 60), 1023
     net = xs.build_symbol_points("RB", "黑色", raw, LB, HOR, days)
-    adj, _ = backtest.ratio_adjusted_bars(raw[-days:])       # 面板路径=已复权bar，不再二次复权
+    adj, _ = backtest.ratio_adjusted_bars(raw[-days:])  # 面板路径=已复权bar，不再二次复权
     pan = xs.points_from_adjusted("RB", "黑色", adj, LB, HOR)
     assert len(net) == len(pan)
-    for a, b in zip(net, pan):
+    for a, b in zip(net, pan, strict=False):
         assert a["date"] == b["date"]
         for L in LB:
-            assert (a["z%d" % L] is None and b["z%d" % L] is None) or abs(a["z%d" % L] - b["z%d" % L]) < 1e-12
+            assert (a["z%d" % L] is None and b["z%d" % L] is None) or abs(
+                a["z%d" % L] - b["z%d" % L]
+            ) < 1e-12
 
 
 def test_tsmom_panel_path_equals_network_path():
-    import backtest
     import tsmom_eval as te
+
+    import backtest
+
     raw = _long_bars()
     LB, HOR = (63, 126, 252), (5, 20, 60)
     net = te.build_symbol_records("RB", raw, LB, HOR)
     adj, _ = backtest.ratio_adjusted_bars(raw)
     pan = te.records_from_adjusted("RB", adj, LB, HOR)
     assert len(net) == len(pan)
-    for a, b in zip(net, pan):
+    for a, b in zip(net, pan, strict=False):
         assert a["date"] == b["date"] and abs(a["z252"] - b["z252"]) < 1e-12
 
 
 def test_load_adjusted_bars_panel_source_and_skip_double_adjust():
     import backtest
+
     raw = _long_bars()
     rows, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
     with tempfile.TemporaryDirectory() as td:
         dbp = os.path.join(td, "p.db")
-        st = pb.PanelStore(dbp); st.replace_symbol("RB", rows); st.close()
+        st = pb.PanelStore(dbp)
+        st.replace_symbol("RB", rows)
+        st.close()
         bars, src = pb.load_adjusted_bars("RB0", 1023, prefer_panel=True, db_path=dbp)
         assert src == "panel" and len(bars) == len(rows)
         # 面板回读已是复权价；再复权不产生新换月、价位不变（实证 SC/J 类二次复权误判在此被根除）
         re_bars, roll = backtest.ratio_adjusted_bars(bars)
         assert roll == 0
-        for a, b in zip(bars, re_bars):
+        for a, b in zip(bars, re_bars, strict=False):
             assert abs(a["c"] - b["c"]) < 1e-12
-

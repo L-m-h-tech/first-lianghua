@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第94轮 A1（对标 scrapling adaptive/blocked detection 的解析层子集）：解析健康探针。
 
 每当调用方完成一次 HTML 解析（新闻/行情/库存/期权等），调 record(source, ok, n_fields)
@@ -12,6 +11,7 @@ emit_health_alerts(state)           # 异常吞、不阻塞
 ```
 即可；工具链/研究脚本可自行调 record + check_alert 触发（同样零阻塞）。
 """
+
 import json
 import os
 import threading
@@ -24,12 +24,12 @@ import config
 REPORT_TXT = os.path.join(config.BASE_DIR, "reports", "parser_health.txt")
 REPORT_JSONL = os.path.join(config.BASE_DIR, "reports", "parser_health.jsonl")
 
-WINDOW = 20               # 滚动窗口大小（每次记录覆盖最近 N 次）
-ALERT_FAIL_STREAK = 4     # 连续失败次数达到该值 → 告警
-ALERT_RATIO = 0.6          # 窗口失败比例达到该值 → 告警（= 连续 60% 失败）
+WINDOW = 20  # 滚动窗口大小（每次记录覆盖最近 N 次）
+ALERT_FAIL_STREAK = 4  # 连续失败次数达到该值 → 告警
+ALERT_RATIO = 0.6  # 窗口失败比例达到该值 → 告警（= 连续 60% 失败）
 # 字段数偏离：窗口内字段数均值 >0 时，当前值低于均值 × MIN_RATIO 视为"结构疑似变化"
 MIN_RATIO = 0.3
-ALERT_STALE_MINUTES = 60   # 上次告警距今不到该值，不重复告警（节流）
+ALERT_STALE_MINUTES = 60  # 上次告警距今不到该值，不重复告警（节流）
 
 
 class _Registry:
@@ -62,8 +62,15 @@ class _Registry:
                     continue
                 if now - st["last_alert"] < ALERT_STALE_MINUTES * 60:
                     continue
-                alerts.append({"source": source, "reason": reason, "detail": detail,
-                               "last_ts": vs[-1][0], "window": len(vs)})
+                alerts.append(
+                    {
+                        "source": source,
+                        "reason": reason,
+                        "detail": detail,
+                        "last_ts": vs[-1][0],
+                        "window": len(vs),
+                    }
+                )
         return alerts
 
     def mark_alerted(self, source):
@@ -134,9 +141,9 @@ def render_reports():
             status = "✅" if info["fail"] == 0 else "⚠️ %d次失败" % info["fail"]
             f.write(f" {src:<25} {status}  (样本 {info['n']})\n")
         f.write("-" * 70 + "\n")
-        f.write(" 规则：尾部连续失败≥{0}次 → 告警；"
-                "字段数降至均值{1:.0%}以下 → 结构疑似变化\n".format(
-            ALERT_FAIL_STREAK, MIN_RATIO))
+        f.write(
+            f" 规则：尾部连续失败≥{ALERT_FAIL_STREAK}次 → 告警；字段数降至均值{MIN_RATIO:.0%}以下 → 结构疑似变化\n"
+        )
 
 
 def emit_health_alerts(state):
@@ -145,10 +152,13 @@ def emit_health_alerts(state):
         alerts = check_alert()
         for a in alerts:
             try:
-                state.alerts.emit("解析异常告警",
+                state.alerts.emit(
+                    "解析异常告警",
                     f"{a['source']}：{a['reason']}（{a['detail']}）",
-                    level="strong", key=f"ph_{a['source']}",
-                    cooldown=ALERT_STALE_MINUTES * 60)
+                    level="strong",
+                    key=f"ph_{a['source']}",
+                    cooldown=ALERT_STALE_MINUTES * 60,
+                )
             except Exception:
                 pass
             mark_alerted(a["source"])
@@ -174,9 +184,11 @@ def _append_jsonl(alert):
 
 # -------- selftest --------
 
+
 def selftest():
     """零网络合成断言：滚动窗口/连续失败告警/降级记录/节流。"""
-    import tempfile, os
+    import os
+
     checks = []
 
     def ck(name, cond):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求②/⑤】同花顺期货通控制：程序每次启动时自动以调试模式打开期货通（仅打开备用，
 分析数据全部来自公开接口，不依赖期货通）。早期版本(需求②)曾通过UIAutomation
 读取自选，后按需求⑤改为分析四大交易所全部品种，不再读取自选。
@@ -7,6 +6,7 @@
 DevTools 窗口（Chromium 全套面板）；`--remote-debugging-port`/CDP 对该客户端无效。
 启动流程：确保调试配置 → 未运行则拉起；已运行但无 DevTools 窗口则自动重启应用
 调试开关（THS_DEBUG_RESTART 可关）。"""
+
 import os
 import re
 import shutil
@@ -18,8 +18,8 @@ import config
 from utils import LOG
 
 _launched_once = False
-_ths_pid = None                 # 本模块亲手 Popen 的同花顺 PID（退出/重启前联动关闭）
-_ths_job = None                 # Windows Job Object 句柄：main 被强杀时系统自动终止同花顺
+_ths_pid = None  # 本模块亲手 Popen 的同花顺 PID（退出/重启前联动关闭）
+_ths_job = None  # Windows Job Object 句柄：main 被强杀时系统自动终止同花顺
 
 
 def _ths_job_attach(pid):
@@ -30,43 +30,49 @@ def _ths_job_attach(pid):
         return
     try:
         import ctypes
+
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
         class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
-                        ("WriteOperationCount", ctypes.c_ulonglong),
-                        ("OtherOperationCount", ctypes.c_ulonglong),
-                        ("ReadTransferCount", ctypes.c_ulonglong),
-                        ("WriteTransferCount", ctypes.c_ulonglong),
-                        ("OtherTransferCount", ctypes.c_ulonglong)]
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
 
         class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
-                        ("PerJobUserTimeLimit", ctypes.c_longlong),
-                        ("LimitFlags", ctypes.c_ulong),
-                        ("MinimumWorkingSetSize", ctypes.c_size_t),
-                        ("MaximumWorkingSetSize", ctypes.c_size_t),
-                        ("ActiveProcessLimit", ctypes.c_ulong),
-                        ("Affinity", ctypes.c_size_t),
-                        ("PriorityClass", ctypes.c_ulong),
-                        ("SchedulingClass", ctypes.c_ulong)]
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_ulong),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_ulong),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_ulong),
+                ("SchedulingClass", ctypes.c_ulong),
+            ]
 
         class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                        ("IoInfo", IO_COUNTERS),
-                        ("ProcessMemoryLimit", ctypes.c_size_t),
-                        ("JobMemoryLimit", ctypes.c_size_t),
-                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
 
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info),
-                                                ctypes.sizeof(info)):
+        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
             kernel32.CloseHandle(job)
             return
         PROCESS_SET_QUOTA = 0x0100
@@ -78,7 +84,7 @@ def _ths_job_attach(pid):
         ok = kernel32.AssignProcessToJobObject(job, hproc)
         kernel32.CloseHandle(hproc)
         if ok:
-            _ths_job = job   # 保持句柄打开；main 退出时 OS 自动关闭 job → 杀同花顺
+            _ths_job = job  # 保持句柄打开；main 退出时 OS 自动关闭 job → 杀同花顺
     except Exception:
         _ths_job = None
 
@@ -92,8 +98,9 @@ def kill_ths():
     if not pid:
         return
     try:
-        r = subprocess.run([_taskkill_path(), "/PID", str(pid), "/F", "/T"],
-                           capture_output=True, timeout=30)
+        r = subprocess.run(
+            [_taskkill_path(), "/PID", str(pid), "/F", "/T"], capture_output=True, timeout=30
+        )
         LOG.info("已关闭本程序启动的同花顺进程(pid=%d) rc=%s", pid, r.returncode)
     except Exception as e:
         LOG.warning("关闭同花顺进程(pid=%d)失败: %s", pid, e)
@@ -101,6 +108,7 @@ def kill_ths():
         if _ths_job:
             try:
                 import ctypes
+
                 ctypes.WinDLL("kernel32").CloseHandle(_ths_job)
             except Exception:
                 pass
@@ -120,7 +128,7 @@ def _patch_debug_console(text):
             attrs += ' enable="true"'
         elif not attrs:
             attrs = 'enable="true"'
-        return text[:m.start()] + "<Console " + attrs + "/>" + text[m.end():]
+        return text[: m.start()] + "<Console " + attrs + "/>" + text[m.end() :]
     m = re.search(r"(<Cef\b[^>]*>)(.*?)(</Cef>)", text, re.S)
     if m:
         lead = "\n" + " " * 6 if "\n" in m.group(2) else " "
@@ -132,7 +140,7 @@ def _patch_debug_console(text):
     m = re.search(r"(<DataCenter\b[^>]*>)", text)
     if m:
         block = '\n  <Debug>\n    <Cef>\n      <Console enable="true"/>\n    </Cef>\n  </Debug>'
-        return m.group(1) + block + text[m.end():]
+        return m.group(1) + block + text[m.end() :]
     return None
 
 
@@ -148,7 +156,7 @@ def ensure_debug_mode():
         LOG.warning("DataCenter.xml 不存在(%s)，无法开启同花顺调试模式", path)
         return False
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             text = f.read()
     except OSError as e:
         LOG.warning("读取 DataCenter.xml 失败: %s", e)
@@ -266,22 +274,29 @@ def _restart_ths():
     global _launched_once, _ths_pid
     if not os.path.exists(config.THS_EXE):
         return False
-    _launched_once = True       # 本次生命周期只重启这一次
+    _launched_once = True  # 本次生命周期只重启这一次
     exe_name = os.path.basename(config.THS_EXE)
     try:
-        r = subprocess.run([_taskkill_path(), "/IM", exe_name, "/F"],
-                           capture_output=True, timeout=30)
-        LOG.info("已结束同花顺进程(%s) rc=%s %s", exe_name, r.returncode,
-                 _dec(r.stdout or r.stderr or b"").strip())
+        r = subprocess.run(
+            [_taskkill_path(), "/IM", exe_name, "/F"], capture_output=True, timeout=30
+        )
+        LOG.info(
+            "已结束同花顺进程(%s) rc=%s %s",
+            exe_name,
+            r.returncode,
+            _dec(r.stdout or r.stderr or b"").strip(),
+        )
     except Exception as e:
         LOG.warning("结束同花顺进程失败: %s", e)
         return False
-    time.sleep(3)               # 等进程/窗口彻底退出，避免旧窗口误判
+    time.sleep(3)  # 等进程/窗口彻底退出，避免旧窗口误判
     try:
         p = subprocess.Popen([config.THS_EXE], cwd=os.path.dirname(config.THS_EXE))
         _ths_pid = p.pid
         _ths_job_attach(p.pid)
-        LOG.info("已重新以调试模式启动同花顺期货通(%s, pid=%d)，等待窗口就绪...", config.THS_EXE, p.pid)
+        LOG.info(
+            "已重新以调试模式启动同花顺期货通(%s, pid=%d)，等待窗口就绪...", config.THS_EXE, p.pid
+        )
         return True
     except Exception as e:
         LOG.warning("重启同花顺失败: %s", e)
@@ -299,7 +314,7 @@ def ensure_running():
             LOG.info("检测到同花顺期货通已运行但无调试(DevTools)窗口，自动重启以应用调试模式...")
             if _restart_ths() and _wait_for_ready():
                 return True
-            return True         # 重启失败/窗口未现也保持现状，不阻断主程序
+            return True  # 重启失败/窗口未现也保持现状，不阻断主程序
         return True
     if launch_ths():
         return _wait_for_ready()

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""装置数据研究工具 tools/device_research.py（研究侧，不进综合分）。
 
 数据来源：界面操作收集装置（E:\LHsystem\界面操作收集装置）经 fusion.py 写入
@@ -15,6 +14,7 @@ quant monitor.db 的 device_jykc 表（jiaoyikecha 7 类快照，按自然日幂
 
 CLI：python tools/device_research.py | --selftest（合成数据零网络）
 """
+
 import argparse
 import json
 import os
@@ -29,7 +29,7 @@ for _p in (_ROOT, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import config                     # noqa: E402
+import config  # noqa: E402
 
 # config.VARIETIES: 中文品种名 -> {sym, ex, cat, ...}；用于装置数据(中文名)与
 # 量化表(sym 大写)之间的标准化对照。
@@ -37,9 +37,20 @@ _VARIETY_TO_SYM = {}
 for _vn, _vcfg in getattr(config, "VARIETIES", {}).items():
     _VARIETY_TO_SYM[_vn] = str(_vcfg.get("sym", "")).upper()
 # 兼容代码直接就是 sym 的（如"RB"）
-_SYM_ALIAS = {"沪金": "AU", "沪银": "AG", "沪铝": "AL", "沪铜": "CU", "沪锌": "ZN",
-              "沪铅": "PB", "沪镍": "NI", "沪锡": "SN", "原油": "SC",
-              "螺纹": "RB", "豆一": "A", "豆二": "B"}
+_SYM_ALIAS = {
+    "沪金": "AU",
+    "沪银": "AG",
+    "沪铝": "AL",
+    "沪铜": "CU",
+    "沪锌": "ZN",
+    "沪铅": "PB",
+    "沪镍": "NI",
+    "沪锡": "SN",
+    "原油": "SC",
+    "螺纹": "RB",
+    "豆一": "A",
+    "豆二": "B",
+}
 
 
 def variety_to_sym(name):
@@ -60,7 +71,7 @@ def variety_to_sym(name):
 DB_PATH = os.path.join(config.DATA_DIR, "monitor.db")
 TXT = os.path.join(_ROOT, "reports", "device_research.txt")
 JSON = os.path.join(_ROOT, "reports", "device_research.json")
-MAX_RECENT_DAYS = 7               # 报告取最近 N 个自然日
+MAX_RECENT_DAYS = 7  # 报告取最近 N 个自然日
 
 
 def _conn(path=None):
@@ -69,6 +80,7 @@ def _conn(path=None):
 
 
 # ---------------------------------------------------------------- 读取
+
 
 def load_device_jykc(conn, item_types=None, days=MAX_RECENT_DAYS):
     """读装置 jykc 快照。:return: {item_type: {code: (variety, value_dict, data_date)}}"""
@@ -93,14 +105,14 @@ def load_fundamentals(conn, days=MAX_RECENT_DAYS):
            FROM fundamentals WHERE trade_date >= ?
              AND inventory IS NOT NULL
            ORDER BY trade_date DESC"""
-    since = (datetime.now().strftime("%Y-%m-%d"))
+    since = datetime.now().strftime("%Y-%m-%d")
     # trade_date 是 text yyyy-mm-dd，取最近 N 天里任意一天即可（示意）
     out = {}
     for sym, trade_date, inv, basis in conn.execute(
-            "SELECT sym, trade_date, inventory, basis_rate FROM fundamentals "
-            "WHERE inventory IS NOT NULL ORDER BY trade_date DESC LIMIT 5000"):
-        out.setdefault(str(sym).upper(), {"inv": inv, "basis": basis,
-                                          "date": str(trade_date)})
+        "SELECT sym, trade_date, inventory, basis_rate FROM fundamentals "
+        "WHERE inventory IS NOT NULL ORDER BY trade_date DESC LIMIT 5000"
+    ):
+        out.setdefault(str(sym).upper(), {"inv": inv, "basis": basis, "date": str(trade_date)})
     return out
 
 
@@ -126,6 +138,7 @@ def load_margins():
 
 # ---------------------------------------------------------------- 分析与报告
 
+
 def _warehouse_ranking(jykc):
     """仓库日报(wr)按品种最新 total_vol 排序：仓单绝对量与边际变化 Top。"""
     rows = []
@@ -133,9 +146,16 @@ def _warehouse_ranking(jykc):
         tv = v.get("total_vol")
         if tv is None:
             continue
-        rows.append({"code": code, "variety": variety or code, "total_vol": tv,
-                     "chge_rate": v.get("chge_rate"), "date": dt})
-    rows.sort(key=lambda r: (r.get("total_vol") or 0), reverse=True)
+        rows.append(
+            {
+                "code": code,
+                "variety": variety or code,
+                "total_vol": tv,
+                "chge_rate": v.get("chge_rate"),
+                "date": dt,
+            }
+        )
+    rows.sort(key=lambda r: r.get("total_vol") or 0, reverse=True)
     return rows
 
 
@@ -175,18 +195,27 @@ def _cross_vs_fundamentals(jykc, fund):
         if not f:
             continue
         device_vol = v.get("total_vol")
-        rows.append({"sym": sym, "device_wr": device_vol,
-                     "em_inventory": f.get("inv"), "basis": f.get("basis"),
-                     "date": dt})
+        rows.append(
+            {
+                "sym": sym,
+                "device_wr": device_vol,
+                "em_inventory": f.get("inv"),
+                "basis": f.get("basis"),
+                "date": dt,
+            }
+        )
     return rows
 
 
 def render(jykc, fund, margins):
     """生成研究报告文本。:return: (lines, summary_dict)"""
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    lines = ["装置数据研究（界面操作收集装置 → 量化跨源对照）",
-             "=" * 60,
-             "生成: %s | 数据源: monitor.db device_jykc（装置写入）" % now, ""]
+    lines = [
+        "装置数据研究（界面操作收集装置 → 量化跨源对照）",
+        "=" * 60,
+        "生成: %s | 数据源: monitor.db device_jykc（装置写入）" % now,
+        "",
+    ]
     summary = {"generated": now, "counts": {k: len(v) for k, v in jykc.items()}}
 
     # 1. 仓单日报 Top
@@ -194,9 +223,15 @@ def render(jykc, fund, margins):
     lines.append("一、装置仓单日报(wr) 总量 Top10")
     lines.append("  %-10s %-10s %10s %8s" % ("品种", "名称", "仓单量", "环比%"))
     for r in wr[:10]:
-        lines.append("  %-10s %-10s %10.0f %8s" % (
-            r["code"], r["variety"], r["total_vol"],
-            "" if r["chge_rate"] is None else "%.1f" % r["chge_rate"]))
+        lines.append(
+            "  %-10s %-10s %10.0f %8s"
+            % (
+                r["code"],
+                r["variety"],
+                r["total_vol"],
+                "" if r["chge_rate"] is None else "%.1f" % r["chge_rate"],
+            )
+        )
     summary["wr_top"] = wr[:10]
     lines.append("")
 
@@ -205,8 +240,10 @@ def render(jykc, fund, margins):
     lines.append("二、席位净持仓(net_position) 品种级净多头 Top8")
     lines.append("  %-12s %12s %8s" % ("品种", "净持仓合计", "乘数"))
     for r in np_top:
-        lines.append("  %-12s %12.0f %8s" % (
-            r["variety"], r["net_pos_tot"], "" if r["mult"] is None else "%.0f" % r["mult"]))
+        lines.append(
+            "  %-12s %12.0f %8s"
+            % (r["variety"], r["net_pos_tot"], "" if r["mult"] is None else "%.0f" % r["mult"])
+        )
     summary["net_top"] = np_top
     lines.append("")
 
@@ -216,14 +253,21 @@ def render(jykc, fund, margins):
     if x:
         lines.append("  %-10s %12s %12s" % ("品种", "装置仓单", "东财库存"))
         for r in x[:10]:
-            lines.append("  %-10s %12.0f %12s" % (
-                r["sym"], r["device_wr"],
-                "" if r["em_inventory"] is None else "%.0f" % r["em_inventory"]))
+            lines.append(
+                "  %-10s %12.0f %12s"
+                % (
+                    r["sym"],
+                    r["device_wr"],
+                    "" if r["em_inventory"] is None else "%.0f" % r["em_inventory"],
+                )
+            )
         summary["cross"] = x[:10]
     else:
         lines.append("  （quant fundamentals 表暂无装置品种对应库存，缺数据诚实标注）")
     lines.append("")
-    lines.append("说明：以上数据来自界面操作收集装置（jiaoyikecha 采集），只读对照、研究侧、不进综合分。")
+    lines.append(
+        "说明：以上数据来自界面操作收集装置（jiaoyikecha 采集），只读对照、研究侧、不进综合分。"
+    )
     summary["ok"] = True
     return "\n".join(lines) + "\n", summary
 
@@ -242,13 +286,24 @@ def selftest(conn_factory=None):
     c = conn_factory() if conn_factory else sqlite3.connect(":memory:")
     c.execute("""CREATE TABLE device_jykc(item_type TEXT, code TEXT, variety TEXT,
                  data_date TEXT, value_json TEXT, source TEXT, updated_real REAL)""")
-    c.executemany("INSERT INTO device_jykc VALUES(?,?,?,?,?,?,?)", [
-        ("wr", "RB", "螺纹钢", "2026-09-08", '{"total_vol": 134546.0, "chge_rate": 1.2}', "jj", 1),
-        ("wr", "CU", "铜", "2026-09-08", '{"total_vol": 92000.0}', "jj", 1),
-        ("net_position", "西南期货", "PTA", "2026-09-08", '{"net_position": 600.0}', "jj", 1),
-        ("net_position", "国泰君安", "RB", "2026-09-08", '{"net_position": 400.0}', "jj", 1),
-        ("hg", "LU2610", "低硫油", "2026-09-08", '{"min15": "偏多，支撑：5023-5029"}', "jj", 1),
-    ])
+    c.executemany(
+        "INSERT INTO device_jykc VALUES(?,?,?,?,?,?,?)",
+        [
+            (
+                "wr",
+                "RB",
+                "螺纹钢",
+                "2026-09-08",
+                '{"total_vol": 134546.0, "chge_rate": 1.2}',
+                "jj",
+                1,
+            ),
+            ("wr", "CU", "铜", "2026-09-08", '{"total_vol": 92000.0}', "jj", 1),
+            ("net_position", "西南期货", "PTA", "2026-09-08", '{"net_position": 600.0}', "jj", 1),
+            ("net_position", "国泰君安", "RB", "2026-09-08", '{"net_position": 400.0}', "jj", 1),
+            ("hg", "LU2610", "低硫油", "2026-09-08", '{"min15": "偏多，支撑：5023-5029"}', "jj", 1),
+        ],
+    )
     jykc = load_device_jykc(c)
     assert set(jykc.keys()) == {"wr", "net_position", "hg"}, jykc.keys()
     wr = _warehouse_ranking(jykc)
@@ -275,8 +330,10 @@ def main(argv=None):
     margins = load_margins()
     lines, summary = render(jykc, fund, margins)
     txt, js = save(lines, summary)
-    print("device_research: 装置 jykc %d 类 / 仓单 %d / 净持仓 %d → %s" % (
-        len(jykc), len(jykc.get("wr", {})), len(jykc.get("net_position", {})), txt))
+    print(
+        "device_research: 装置 jykc %d 类 / 仓单 %d / 净持仓 %d → %s"
+        % (len(jykc), len(jykc.get("wr", {})), len(jykc.get("net_position", {})), txt)
+    )
     return 0
 
 

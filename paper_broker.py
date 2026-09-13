@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G1 纸面交易引擎 PaperBroker（第27轮：表 + 撮合状态机；第28轮：平今/平昨 owner + 账户视图，
 main/报告/看板同期接入）。
 
@@ -34,19 +33,20 @@ signal_outcomes 只判固定周期方向对错（不含手续费、不连续持�
 
 自检：D:\\Python\\python.exe paper_broker.py --selftest
 """
+
 import argparse
 import threading
 from datetime import datetime
 
+import circuit_breaker
 import config
 import portfolio as portfolio_mod
-import circuit_breaker
 from backtest import load_fee_schedule
 from storage import score_band_name
-from utils import LOG   # 第121轮修复：原缺 LOG 定义导致 639 行补仓日志 NameError 被吞
-
+from utils import LOG  # 第121轮修复：原缺 LOG 定义导致 639 行补仓日志 NameError 被吞
 
 # =========================== 纯函数（无状态、零网络，可直接合成断言） ===========================
+
 
 def _default_owner_of_ts(ts):
     """把时间戳映射到【交易所结算交易日】（平今/平昨判定用），与 intraday_backtest.owner_of_dt
@@ -54,10 +54,12 @@ def _default_owner_of_ts(ts):
     解析/日历失败一律返回 None——调用方据此保守按"平昨"计费（等价第27轮行为，绝不虚增平今免费）。"""
     try:
         from intraday_backtest import owner_of_dt
+
         d = datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
         return owner_of_dt(d)
     except Exception:
         return None
+
 
 def want_position(score, held_dir, entry_score, exit_score):
     """三阈值迟滞状态机。返回 (want_dir, action)。
@@ -132,10 +134,11 @@ def _side_of(direction, leg):
     """direction 持仓/目标方向，leg=open 开仓/close 平仓，返回买卖方向 buy/sell。"""
     if leg == "open":
         return "buy" if direction > 0 else "sell"
-    return "sell" if direction > 0 else "buy"   # 平多卖出、平空买回
+    return "sell" if direction > 0 else "buy"  # 平多卖出、平空买回
 
 
 # =========================== G1续（第63轮）OMS/成交回报/持仓对账 纯函数 ===========================
+
 
 def reconcile_position_sets(internal, external, price_tol=1e-6):
     """持仓对账纯函数：把内部持仓 {sym:{direction,lots,entry_price}} 与外部/托管台账逐品种比对。
@@ -150,12 +153,14 @@ def reconcile_position_sets(internal, external, price_tol=1e-6):
     for sym in sorted(set(internal) | set(external)):
         i, e = internal.get(sym), external.get(sym)
         if i and not e:
-            breaks.append({"sym": sym, "type": "missing_external",
-                           "internal": dict(i), "external": None})
+            breaks.append(
+                {"sym": sym, "type": "missing_external", "internal": dict(i), "external": None}
+            )
             continue
         if e and not i:
-            breaks.append({"sym": sym, "type": "missing_internal",
-                           "internal": None, "external": dict(e)})
+            breaks.append(
+                {"sym": sym, "type": "missing_internal", "internal": None, "external": dict(e)}
+            )
             continue
         problems = []
         if int(i.get("direction", 0)) != int(e.get("direction", 0)):
@@ -163,25 +168,52 @@ def reconcile_position_sets(internal, external, price_tol=1e-6):
         lots_delta = int(e.get("lots", 0)) - int(i.get("lots", 0))
         if lots_delta != 0:
             problems.append("lots")
-        if price_tol is not None and \
-                abs(float(i.get("entry_price", 0.0) or 0.0)
-                    - float(e.get("entry_price", 0.0) or 0.0)) > price_tol:
+        if (
+            price_tol is not None
+            and abs(
+                float(i.get("entry_price", 0.0) or 0.0) - float(e.get("entry_price", 0.0) or 0.0)
+            )
+            > price_tol
+        ):
             problems.append("entry_price")
         if problems:
-            breaks.append({"sym": sym, "type": "+".join(problems), "lots_delta": lots_delta,
-                           "internal": dict(i), "external": dict(e)})
+            breaks.append(
+                {
+                    "sym": sym,
+                    "type": "+".join(problems),
+                    "lots_delta": lots_delta,
+                    "internal": dict(i),
+                    "external": dict(e),
+                }
+            )
         else:
             matched.append(sym)
-    return {"matched": matched, "breaks": breaks, "n_matched": len(matched),
-            "n_breaks": len(breaks), "clean": not breaks}
+    return {
+        "matched": matched,
+        "breaks": breaks,
+        "n_matched": len(matched),
+        "n_breaks": len(breaks),
+        "clean": not breaks,
+    }
 
 
 def aggregate_fills(fills):
     """成交回报汇总纯函数：对一批 fill(trade) dict 聚合笔数/手数/名义/费/滑点/已实现/多空开平。"""
-    agg = {"n_fills": len(fills), "lots": 0, "notional": 0.0, "fee_yuan": 0.0,
-           "slip_yuan": 0.0, "realized_yuan": 0.0,
-           "n_open": 0, "n_close": 0, "open_long": 0, "open_short": 0,
-           "close_long": 0, "close_short": 0, "n_forced": 0}
+    agg = {
+        "n_fills": len(fills),
+        "lots": 0,
+        "notional": 0.0,
+        "fee_yuan": 0.0,
+        "slip_yuan": 0.0,
+        "realized_yuan": 0.0,
+        "n_open": 0,
+        "n_close": 0,
+        "open_long": 0,
+        "open_short": 0,
+        "close_long": 0,
+        "close_short": 0,
+        "n_forced": 0,
+    }
     for t in fills:
         lots = int(t.get("lots", 0) or 0)
         agg["lots"] += lots
@@ -207,11 +239,16 @@ def aggregate_fills(fills):
 
 # next 档开仓时遇到这些【临时性】约束，挂单保持 pending 顺延等约束缓解（而非直接拒单丢弃）；
 # 而"无合约乘数/策略目标不足1手"这类确定性约束才立即 rejected。
-RETRYABLE_SKIP = {"同时持仓数达上限", "可用资金不足1手", "板块名义上限",
-                    "策略目标不足1手(高价品种/名义权重偏小)"}
+RETRYABLE_SKIP = {
+    "同时持仓数达上限",
+    "可用资金不足1手",
+    "板块名义上限",
+    "策略目标不足1手(高价品种/名义权重偏小)",
+}
 
 
 # =========================== 纸面经纪 ===========================
+
 
 def _locked(fn):
     """第103轮：RLock 互斥装饰器——撮合/报告读取方法与 paper_ticker 线程互斥。
@@ -236,104 +273,160 @@ class PaperBroker:
     - futures_max / options_max: equal/option_first 档同时持有的期货/期权数上限
     """
 
-    def __init__(self, *, db=None, db_path=None, name=None,
-                 equity0=None, fill_mode=None, entry_score=None,
-                 exit_score=None, sizing=None, margin_table=None, fee_table=None,
-                 sector_of=None, slip_rate=None, restore=True, clock=None, owner_fn=None,
-                 risk_sizing=None, risk_gross=None, circuit=None,
-                 # 第102轮多账户扩展：仓位/期权/优先策略（默认 None → 回退 config）
-                 per_symbol=None, max_symbol_weight=None, max_sector_weight=None,
-                 max_concurrent=None, risk_liquidate=None, risk_safe=None,
-                 opt_premium_ratio=None, stop_loss_ratio=None,
-                 priority="futures_first", futures_max=None, options_max=None,
-                 priority_expiry_days=None, target_basis=None,
-                 max_daily_orders=None, max_active_per_sym=None):   # 第141轮：账户级委托流控覆盖
+    def __init__(
+        self,
+        *,
+        db=None,
+        db_path=None,
+        name=None,
+        equity0=None,
+        fill_mode=None,
+        entry_score=None,
+        exit_score=None,
+        sizing=None,
+        margin_table=None,
+        fee_table=None,
+        sector_of=None,
+        slip_rate=None,
+        restore=True,
+        clock=None,
+        owner_fn=None,
+        risk_sizing=None,
+        risk_gross=None,
+        circuit=None,
+        # 第102轮多账户扩展：仓位/期权/优先策略（默认 None → 回退 config）
+        per_symbol=None,
+        max_symbol_weight=None,
+        max_sector_weight=None,
+        max_concurrent=None,
+        risk_liquidate=None,
+        risk_safe=None,
+        opt_premium_ratio=None,
+        stop_loss_ratio=None,
+        priority="futures_first",
+        futures_max=None,
+        options_max=None,
+        priority_expiry_days=None,
+        target_basis=None,
+        max_daily_orders=None,
+        max_active_per_sym=None,
+    ):  # 第141轮：账户级委托流控覆盖
         # 第102轮：独立数据库文件（每账户独立 SQLite）
         if db_path and db is None:
             import storage as _storage  # noqa: F401
+
             self.db = _storage.MonitorDB(path=db_path)
         else:
             self.db = db
         self.name = str(name or "").strip() if name else None  # 第102轮：账户名（如"10万_基准"）
         self.priority = (priority or "futures_first").strip()
-        self.futures_max = futures_max  # equal/option_first 档：期货同时持仓上限（None=共用 max_concurrent）
-        self.options_max = options_max  # 续：期权同时持仓上限（None=无额外限制，option_only 档按此限制）
+        self.futures_max = (
+            futures_max  # equal/option_first 档：期货同时持仓上限（None=共用 max_concurrent）
+        )
+        self.options_max = (
+            options_max  # 续：期权同时持仓上限（None=无额外限制，option_only 档按此限制）
+        )
         lo = int(priority_expiry_days) if priority_expiry_days is not None else None
-        self.opt_expiry_days = lo if lo and lo >= 1 else (3 if self.priority == "option_only" else 5)
+        self.opt_expiry_days = (
+            lo if lo and lo >= 1 else (3 if self.priority == "option_only" else 5)
+        )
         self.fill_mode = fill_mode or getattr(config, "PAPER_FILL_MODE", "next")
         if self.fill_mode not in ("close", "next"):
             self.fill_mode = "next"
         self.entry_score = entry_score if entry_score is not None else config.PAPER_ENTRY_SCORE
         self.exit_score = exit_score if exit_score is not None else config.PAPER_EXIT_SCORE
-        self.opt_premium_ratio = (opt_premium_ratio if opt_premium_ratio is not None
-                                  else getattr(config, "PAPER_OPT_PREMIUM_MAX_RATIO", 0.03))
-        self.stop_loss_ratio = (stop_loss_ratio if stop_loss_ratio is not None
-                                else getattr(config, "PAPER_OPT_STOP_LOSS_RATIO", 0.50))
+        self.opt_premium_ratio = (
+            opt_premium_ratio
+            if opt_premium_ratio is not None
+            else getattr(config, "PAPER_OPT_PREMIUM_MAX_RATIO", 0.03)
+        )
+        self.stop_loss_ratio = (
+            stop_loss_ratio
+            if stop_loss_ratio is not None
+            else getattr(config, "PAPER_OPT_STOP_LOSS_RATIO", 0.50)
+        )
         self.slip_rate = slip_rate if slip_rate is not None else config.PAPER_SLIP_RATE
-        self._cur_quote = {}    # G14 接线：on_cycle 时注入当前轮 by_quote，供 _ob_exec_price 读 bid/ask
+        self._cur_quote = {}  # G14 接线：on_cycle 时注入当前轮 by_quote，供 _ob_exec_price 读 bid/ask
         self._clock = clock or (lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         # 实时平今/平昨判定：时间戳->交易所结算交易日（可注入，测试零网络零日历依赖）
         self._owner_fn = owner_fn or _default_owner_of_ts
         self._sector_of = sector_of if sector_of is not None else sector_map()
         # 账户内核：费率/保证金表复用既有加载器（文件缺失返回空表，Portfolio 内部兜底）
         self.fee_table = fee_table if fee_table is not None else load_fee_schedule()
-        self.margin_table = margin_table if margin_table is not None else \
-            portfolio_mod.load_margin_schedule()
+        self.margin_table = (
+            margin_table if margin_table is not None else portfolio_mod.load_margin_schedule()
+        )
         equity0 = equity0 if equity0 is not None else config.PAPER_EQUITY0
         self.pf = portfolio_mod.Portfolio(
-            equity0, self.margin_table, self.fee_table,
+            equity0,
+            self.margin_table,
+            self.fee_table,
             sizing=sizing or config.PAPER_SIZING,
             per_symbol=per_symbol if per_symbol is not None else config.PAPER_PER_SYMBOL,
             risk_per_trade=config.PAPER_RISK_PER_TRADE,
-            max_symbol_weight=(max_symbol_weight if max_symbol_weight is not None
-                               else config.PAPER_MAX_SYMBOL_WEIGHT),
-            max_sector_weight=(max_sector_weight if max_sector_weight is not None
-                               else config.PAPER_MAX_SECTOR_WEIGHT),
-            risk_liquidate=(risk_liquidate if risk_liquidate is not None
-                            else config.PAPER_RISK_LIQUIDATE),
+            max_symbol_weight=(
+                max_symbol_weight
+                if max_symbol_weight is not None
+                else config.PAPER_MAX_SYMBOL_WEIGHT
+            ),
+            max_sector_weight=(
+                max_sector_weight
+                if max_sector_weight is not None
+                else config.PAPER_MAX_SECTOR_WEIGHT
+            ),
+            risk_liquidate=(
+                risk_liquidate if risk_liquidate is not None else config.PAPER_RISK_LIQUIDATE
+            ),
             risk_safe=(risk_safe if risk_safe is not None else config.PAPER_RISK_SAFE),
             default_margin=config.PAPER_DEFAULT_MARGIN,
-            max_concurrent=max_concurrent if max_concurrent is not None else config.PAPER_MAX_CONCURRENT,
-            fee_rate=config.PAPER_FEE_RATE, slip_rate=self.slip_rate,
-            use_real_fees=config.PAPER_USE_REAL_FEES, sector_of=self._sector_of,
+            max_concurrent=max_concurrent
+            if max_concurrent is not None
+            else config.PAPER_MAX_CONCURRENT,
+            fee_rate=config.PAPER_FEE_RATE,
+            slip_rate=self.slip_rate,
+            use_real_fees=config.PAPER_USE_REAL_FEES,
+            sector_of=self._sector_of,
             # 第41轮 G26续：风险型横截面sizing能力位（默认None=逐字节等价旧版）；实时权重源（K线历史
             # 协方差）尚未接线，须先在组合回测影子对照达标后再议，未注入权重时内核自动回退等名义。
             risk_sizing=risk_sizing,
             risk_gross=config.PRS_GROSS if risk_gross is None else risk_gross,
-            target_basis=target_basis)
-        self.pending = {}          # sym -> [order, ...] next 档待成交队列（先平后开）
-        self._open_seq = {}        # sym -> 开仓序号（生成 pos_ref）
-        self.pos_ref = {}          # sym -> 当前持仓 pos_ref
+            target_basis=target_basis,
+        )
+        self.pending = {}  # sym -> [order, ...] next 档待成交队列（先平后开）
+        self._open_seq = {}  # sym -> 开仓序号（生成 pos_ref）
+        self.pos_ref = {}  # sym -> 当前持仓 pos_ref
         # 第140轮 R3：日订单总数 / 每品种活动委托上限（防信号抖动频繁开平）
-        self._daily_orders = {}    # 交易日 -> {(sym): 当日累计委托数}
+        self._daily_orders = {}  # 交易日 -> {(sym): 当日累计委托数}
         self._daily_orders_day = None
         self._max_daily_orders = max_daily_orders or getattr(config, "PAPER_MAX_DAILY_ORDERS", 30)
-        self._max_active_per_sym = max_active_per_sym or getattr(config, "PAPER_MAX_ACTIVE_ORDERS_PER_SYM", 3)
+        self._max_active_per_sym = max_active_per_sym or getattr(
+            config, "PAPER_MAX_ACTIVE_ORDERS_PER_SYM", 3
+        )
         # G1续（第63轮）：内存级 OMS 全状态委托台账（id->最新委托快照）与成交回报流水，
         # 让纯内存模式也能像 DB 模式一样回溯任意终态委托/全部成交；纯增量、不改变既有撮合输出。
         self._orders_by_id = {}
         self.fill_ledger = []
-        self.last_summary = None   # 最近一轮 on_cycle 结果
+        self.last_summary = None  # 最近一轮 on_cycle 结果
         self.restored = False
         # G5④（第48轮）组合层单日浮亏熔断：显式传入优先；否则仅在 config 开启且 paper_halt 模式才挂。
         # 默认 CIRCUIT_ACTION='observe' -> self.breaker=None，阶段B不过滤任何委托、成交逐字节等价旧版。
         if circuit is not None:
             self.breaker = circuit
-        elif getattr(config, "CIRCUIT_ENABLED", False) and \
-                getattr(config, "CIRCUIT_ACTION", circuit_breaker.OBSERVE) in \
-                (circuit_breaker.PAPER_HALT, circuit_breaker.PAPER_DELEVER):
+        elif getattr(config, "CIRCUIT_ENABLED", False) and getattr(
+            config, "CIRCUIT_ACTION", circuit_breaker.OBSERVE
+        ) in (circuit_breaker.PAPER_HALT, circuit_breaker.PAPER_DELEVER):
             self.breaker = circuit_breaker.CircuitBreaker.from_config()
         else:
             self.breaker = None
         self._last_circuit = None
         # 第95轮：最后已知合约映射（回补探测前空合约，修复 paper_account 合约列显示）
-        self._known_contract: dict = {}   # sym -> (contract_code, main_month)
+        self._known_contract: dict = {}  # sym -> (contract_code, main_month)
         # 第102轮：期权持仓（pos_ref -> {record}）与独立资金池
-        self.opt_positions = {}      # pos_ref -> 期权持仓 record
-        self.opt_realized = 0.0      # 期权已实现净盈亏（含手续费）
-        self.opt_fees = 0.0          # 期权累计手续费
-        self.opt_skipped = []        # 期权被拒/跳过的原因记录
-        self.opt_last_summary = None # 最近一轮 on_cycle_options 结果
+        self.opt_positions = {}  # pos_ref -> 期权持仓 record
+        self.opt_realized = 0.0  # 期权已实现净盈亏（含手续费）
+        self.opt_fees = 0.0  # 期权累计手续费
+        self.opt_skipped = []  # 期权被拒/跳过的原因记录
+        self.opt_last_summary = None  # 最近一轮 on_cycle_options 结果
         self.opt_equity0 = float(equity0)  # 期权资金池初始资金
         # 第103轮：线程安全锁（RLock 允许同线程重入，防自死锁；项目惯例见 trade_calendar/storage/FundamentalFetcher）
         # 必须在 restore() 之前初始化（restore 内部可能调用带 _locked 装饰的方法）。
@@ -345,7 +438,7 @@ class PaperBroker:
 
     def _ins_order(self, order):
         if self.db is None:
-            order["id"] = order.get("id") or (id(order) & 0x7fffffff)
+            order["id"] = order.get("id") or (id(order) & 0x7FFFFFFF)
             self._orders_by_id[order["id"]] = dict(order)
             return order["id"]
         try:
@@ -366,7 +459,7 @@ class PaperBroker:
                 pass
 
     def _ins_trade(self, t):
-        self.fill_ledger.append(dict(t))     # 内存成交回报流水（DB 模式同时落库）
+        self.fill_ledger.append(dict(t))  # 内存成交回报流水（DB 模式同时落库）
         if self.db is None:
             return None
         try:
@@ -377,16 +470,32 @@ class PaperBroker:
     # ---------------- 订单/成交构造 ----------------
 
     def _make_order(self, ts, row, action, side, direction, signal_price, status="pending"):
-        return {"ts": ts, "sym": row["sym"], "name": row.get("name", ""),
-                "sector": row.get("cat", ""), "action": action, "side": side,
-                "direction": direction, "lots": 0, "signal_price": signal_price,
-                "score": row.get("score"), "band": score_band_name(row.get("score") or 0.0),
-                "fill_mode": self.fill_mode, "status": status,
-                "fill_ts": "", "fill_price": None, "raw_price": None,
-                "reason": "", "order_ref": "", "pos_ref": self.pos_ref.get(row["sym"], ""),
-                "contract_code": row.get("contract_code") or self._known_contract.get(row["sym"], ("", ""))[0],
-                "main_month": row.get("main_month") or self._known_contract.get(row["sym"], ("", ""))[1],
-                "raw": {"atr": row.get("atr")}}
+        return {
+            "ts": ts,
+            "sym": row["sym"],
+            "name": row.get("name", ""),
+            "sector": row.get("cat", ""),
+            "action": action,
+            "side": side,
+            "direction": direction,
+            "lots": 0,
+            "signal_price": signal_price,
+            "score": row.get("score"),
+            "band": score_band_name(row.get("score") or 0.0),
+            "fill_mode": self.fill_mode,
+            "status": status,
+            "fill_ts": "",
+            "fill_price": None,
+            "raw_price": None,
+            "reason": "",
+            "order_ref": "",
+            "pos_ref": self.pos_ref.get(row["sym"], ""),
+            "contract_code": row.get("contract_code")
+            or self._known_contract.get(row["sym"], ("", ""))[0],
+            "main_month": row.get("main_month")
+            or self._known_contract.get(row["sym"], ("", ""))[1],
+            "raw": {"atr": row.get("atr")},
+        }
 
     def _roll_daily_orders(self, ts):
         """按结算日归零当日订单计数（跨交易日自动重置）。"""
@@ -400,24 +509,34 @@ class PaperBroker:
 
         返回 (可下单的 orders, 被拦截的订单)；平仓/反手平仓腿不受限（只防频繁开仓）。
         超限时记入 pf.skipped 并诚实标注。活动委托上限在 _enqueue 入队时闸口执行。"""
-        open_legs = [o for o in orders if (o.get("action") or "").startswith("open") or
-                     (o.get("action") or "").startswith("reverse_open")]
+        open_legs = [
+            o
+            for o in orders
+            if (o.get("action") or "").startswith("open")
+            or (o.get("action") or "").startswith("reverse_open")
+        ]
         if not open_legs:
             return orders, []
         keep, blocked = [], []
         self._roll_daily_orders(ts)
         day = str(ts or "")[:10]
         for o in orders:
-            if (o.get("action") or "").startswith("open") or (o.get("action") or "").startswith("reverse_open"):
+            if (o.get("action") or "").startswith("open") or (o.get("action") or "").startswith(
+                "reverse_open"
+            ):
                 daily_n = self._daily_orders.get(day, {}).get(sym, 0)
                 if daily_n >= self._max_daily_orders:
                     blocked.append(o)
-                    self.pf.skipped.append({
-                        "dt": ts, "sym": sym,
-                        "reason": "R3委托流控(当日累计%d/上限%d)" % (
-                            daily_n, self._max_daily_orders),
-                        "available": self.pf.available(),
-                        "price": float(o.get("signal_price") or 0.0)})
+                    self.pf.skipped.append(
+                        {
+                            "dt": ts,
+                            "sym": sym,
+                            "reason": "R3委托流控(当日累计%d/上限%d)"
+                            % (daily_n, self._max_daily_orders),
+                            "available": self.pf.available(),
+                            "price": float(o.get("signal_price") or 0.0),
+                        }
+                    )
                     continue
             keep.append(o)
         return keep, blocked
@@ -477,17 +596,27 @@ class PaperBroker:
         direction = order["direction"]
         side = order["side"]
         fill_price, _use_ob = self._ob_exec_price(
-            raw_price, side, getattr(self, "_cur_quote", None), sym)
+            raw_price, side, getattr(self, "_cur_quote", None), sym
+        )
         if fill_price <= 0:
             self._upd_order(order, status="blocked", reason="无价/非法价，顺延")
             return None
         atr = (order.get("raw") or {}).get("atr")
 
         if is_open:
-            pos = pf.open(sym, order["name"], order["sector"], direction, fill_price, ts,
-                          atr=atr, score=order.get("score"), owner=self._owner_of(ts),
-                          contract_code=order.get("contract_code") or "",
-                          main_month=order.get("main_month") or "")
+            pos = pf.open(
+                sym,
+                order["name"],
+                order["sector"],
+                direction,
+                fill_price,
+                ts,
+                atr=atr,
+                score=order.get("score"),
+                owner=self._owner_of(ts),
+                contract_code=order.get("contract_code") or "",
+                main_month=order.get("main_month") or "",
+            )
             if pos is None:
                 why = pf.skipped[-1]["reason"] if pf.skipped else "未成交"
                 # next 档临时约束（持仓上限/资金/板块）：保持挂单顺延，等约束缓解再成交
@@ -503,59 +632,101 @@ class PaperBroker:
             lots = pos.lots
             notional = fill_price * pos.mult * lots
             slip_yuan = abs(fill_price - raw_price) * pos.mult * lots
-            t = {"ts": ts, "pos_ref": pos_ref, "sym": sym, "name": order["name"],
-                 "sector": order["sector"], "side": "open",
-                 "dir_text": "多" if direction > 0 else "空", "direction": direction,
-                 "lots": lots, "price": fill_price, "raw_price": raw_price,
-                 "notional": notional, "slip_yuan": slip_yuan,
-                 "fee_yuan": pos.open_fee_yuan, "realized_yuan": 0.0, "leg": "开仓",
-                 "reason": "信号开仓" if action == "open" else "反手开仓",
-                 "forced": 0, "order_id": order.get("id"), "entry_ts": ts,
-                 "entry_price": fill_price, "score": order.get("score"),
-                 "margin_rate": pos.margin_rate,
-                 "contract_code": order.get("contract_code") or pos.contract_code or "",
-                 "main_month": order.get("main_month") or pos.main_month or ""}
+            t = {
+                "ts": ts,
+                "pos_ref": pos_ref,
+                "sym": sym,
+                "name": order["name"],
+                "sector": order["sector"],
+                "side": "open",
+                "dir_text": "多" if direction > 0 else "空",
+                "direction": direction,
+                "lots": lots,
+                "price": fill_price,
+                "raw_price": raw_price,
+                "notional": notional,
+                "slip_yuan": slip_yuan,
+                "fee_yuan": pos.open_fee_yuan,
+                "realized_yuan": 0.0,
+                "leg": "开仓",
+                "reason": "信号开仓" if action == "open" else "反手开仓",
+                "forced": 0,
+                "order_id": order.get("id"),
+                "entry_ts": ts,
+                "entry_price": fill_price,
+                "score": order.get("score"),
+                "margin_rate": pos.margin_rate,
+                "contract_code": order.get("contract_code") or pos.contract_code or "",
+                "main_month": order.get("main_month") or pos.main_month or "",
+            }
             self._ins_trade(t)
-            self._upd_order(order, status="filled", fill_ts=ts, fill_price=fill_price,
-                            raw_price=raw_price, lots=lots, pos_ref=pos_ref)
+            self._upd_order(
+                order,
+                status="filled",
+                fill_ts=ts,
+                fill_price=fill_price,
+                raw_price=raw_price,
+                lots=lots,
+                pos_ref=pos_ref,
+            )
             return t
 
         # 平仓腿
         held = pf.positions.get(sym)
         if held is None:
-            self._upd_order(order, status="cancelled", raw_price=raw_price,
-                            reason="已无持仓，撤单")
+            self._upd_order(order, status="cancelled", raw_price=raw_price, reason="已无持仓，撤单")
             return None
         close_leg = self._close_leg(held, ts)
-        reduce_lots = order.get("reduce_lots")     # G5④ delever 部分减仓：None=整仓全平（旧路径）
-        close_reason = order.get("close_reason") or \
-            ("信号离场" if action == "close" else "反手平仓")
-        rec = pf.close(sym, fill_price, ts, close_reason, leg=close_leg,
-                       reduce_lots=reduce_lots)
+        reduce_lots = order.get("reduce_lots")  # G5④ delever 部分减仓：None=整仓全平（旧路径）
+        close_reason = order.get("close_reason") or (
+            "信号离场" if action == "close" else "反手平仓"
+        )
+        rec = pf.close(sym, fill_price, ts, close_reason, leg=close_leg, reduce_lots=reduce_lots)
         if rec is None:
             self._upd_order(order, status="blocked", raw_price=raw_price, reason="平仓失败，顺延")
             return None
         if rec.get("remaining", 0) <= 0:
-            self.pos_ref.pop(sym, None)           # 整仓平完才清 pos_ref；部分减仓保留持仓
+            self.pos_ref.pop(sym, None)  # 整仓平完才清 pos_ref；部分减仓保留持仓
         lots = rec["lots"]
         mult = held.mult
         notional = fill_price * mult * lots
         slip_yuan = abs(fill_price - raw_price) * mult * lots
-        t = {"ts": ts, "pos_ref": rec.get("pos_ref") or order.get("pos_ref", ""),
-             "sym": sym, "name": order["name"], "sector": order["sector"], "side": "close",
-             "dir_text": rec["dir"], "direction": held.direction, "lots": lots,
-             "price": fill_price, "raw_price": raw_price, "notional": notional,
-             "slip_yuan": slip_yuan, "fee_yuan": rec["close_fee_yuan"],
-             "realized_yuan": rec["net_yuan"], "leg": rec["leg"],
-             "reason": rec["reason"], "forced": 1 if rec.get("forced") else 0,
-             "order_id": order.get("id"), "entry_ts": str(rec["entry_dt"]),
-             "entry_price": rec["entry_px"], "score": rec.get("entry_score"),
-             "margin_rate": rec.get("margin_rate"),
-             "contract_code": getattr(held, "contract_code", "") or order.get("contract_code") or "",
-             "main_month": getattr(held, "main_month", "") or order.get("main_month") or ""}
+        t = {
+            "ts": ts,
+            "pos_ref": rec.get("pos_ref") or order.get("pos_ref", ""),
+            "sym": sym,
+            "name": order["name"],
+            "sector": order["sector"],
+            "side": "close",
+            "dir_text": rec["dir"],
+            "direction": held.direction,
+            "lots": lots,
+            "price": fill_price,
+            "raw_price": raw_price,
+            "notional": notional,
+            "slip_yuan": slip_yuan,
+            "fee_yuan": rec["close_fee_yuan"],
+            "realized_yuan": rec["net_yuan"],
+            "leg": rec["leg"],
+            "reason": rec["reason"],
+            "forced": 1 if rec.get("forced") else 0,
+            "order_id": order.get("id"),
+            "entry_ts": str(rec["entry_dt"]),
+            "entry_price": rec["entry_px"],
+            "score": rec.get("entry_score"),
+            "margin_rate": rec.get("margin_rate"),
+            "contract_code": getattr(held, "contract_code", "") or order.get("contract_code") or "",
+            "main_month": getattr(held, "main_month", "") or order.get("main_month") or "",
+        }
         self._ins_trade(t)
-        self._upd_order(order, status="filled", fill_ts=ts, fill_price=fill_price,
-                        raw_price=raw_price, lots=lots)
+        self._upd_order(
+            order,
+            status="filled",
+            fill_ts=ts,
+            fill_price=fill_price,
+            raw_price=raw_price,
+            lots=lots,
+        )
         return t
 
     # ---------------- next 档：阶段A 成交上一轮挂单 ----------------
@@ -571,15 +742,15 @@ class PaperBroker:
                 order = queue[idx]
                 if raw_price <= 0:
                     order["reason"] = "本轮无有效价，挂单顺延"
-                    break   # 无价：整组队列保留，等下一轮
+                    break  # 无价：整组队列保留，等下一轮
                 move = (config.FUTURES_LIMIT_MOVE or {}).get(sym)
                 if locked_at_quote(by_quote.get(sym), move, order["side"] == "buy"):
                     order["reason"] = "锁板封死，挂单顺延"
-                    break   # 锁板：保留队列顺延（先平后开的后续腿也一并等）
+                    break  # 锁板：保留队列顺延（先平后开的后续腿也一并等）
                 t = self._fill_leg(ts, order, raw_price)
                 if t is None and order["status"] in ("blocked", "pending"):
-                    break   # 锁板/无价/临时约束：整组队列保留顺延（后续腿也一起等）
-                queue.pop(idx)       # filled / rejected / cancelled 才出队
+                    break  # 锁板/无价/临时约束：整组队列保留顺延（后续腿也一起等）
+                queue.pop(idx)  # filled / rejected / cancelled 才出队
                 if t:
                     events.append(t)
             if not queue:
@@ -589,15 +760,21 @@ class PaperBroker:
     def _enqueue(self, orders):
         for o in orders:
             # 第140轮 R3：活动委托上限（每品种 pending 队列长度）——入队闸口
-            if self._max_active_per_sym and (o.get("action") or "").startswith(("open", "reverse_open")):
+            if self._max_active_per_sym and (o.get("action") or "").startswith(
+                ("open", "reverse_open")
+            ):
                 sym = o["sym"]
                 if len(self.pending.get(sym) or []) >= self._max_active_per_sym:
-                    self.pf.skipped.append({
-                        "dt": o.get("ts", ""), "sym": sym,
-                        "reason": "R3委托流控(活动委托%d/上限%d)" % (
-                            len(self.pending.get(sym) or []), self._max_active_per_sym),
-                        "available": self.pf.available(),
-                        "price": float(o.get("signal_price") or 0.0)})
+                    self.pf.skipped.append(
+                        {
+                            "dt": o.get("ts", ""),
+                            "sym": sym,
+                            "reason": "R3委托流控(活动委托%d/上限%d)"
+                            % (len(self.pending.get(sym) or []), self._max_active_per_sym),
+                            "available": self.pf.available(),
+                            "price": float(o.get("signal_price") or 0.0),
+                        }
+                    )
                     continue
             self.pending.setdefault(o["sym"], []).append(o)
             self._ins_order(o)
@@ -620,16 +797,22 @@ class PaperBroker:
         orders = []
         if action == "reverse":
             # 先平后开两条腿
-            orders.append(self._make_order(ts, row, "reverse_close",
-                                           _side_of(held_dir, "close"), held_dir, raw_price))
-            orders.append(self._make_order(ts, row, "reverse_open",
-                                           _side_of(want, "open"), want, raw_price))
+            orders.append(
+                self._make_order(
+                    ts, row, "reverse_close", _side_of(held_dir, "close"), held_dir, raw_price
+                )
+            )
+            orders.append(
+                self._make_order(ts, row, "reverse_open", _side_of(want, "open"), want, raw_price)
+            )
         elif action == "open":
-            orders.append(self._make_order(ts, row, "open",
-                                           _side_of(want, "open"), want, raw_price))
+            orders.append(
+                self._make_order(ts, row, "open", _side_of(want, "open"), want, raw_price)
+            )
         else:  # close
-            orders.append(self._make_order(ts, row, "close",
-                                           _side_of(held_dir, "close"), held_dir, raw_price))
+            orders.append(
+                self._make_order(ts, row, "close", _side_of(held_dir, "close"), held_dir, raw_price)
+            )
         return orders
 
     # ---------------- 强平：阶段C ----------------
@@ -663,28 +846,61 @@ class PaperBroker:
             self._cancel_pending(sym, "风控强平撤销挂单")
             held_dir = 1 if rec["dir"] == "多" else -1
             held = pf.positions.get(sym)
-            order = self._make_order(ts, {"sym": sym, "name": rec.get("name", ""),
-                                          "cat": rec.get("sector", ""), "score": rec.get("entry_score")},
-                                     "liquidate", _side_of(held_dir, "close"), held_dir,
-                                     rec["exit_px"], status="filled")
-            order.update({"fill_ts": ts, "fill_price": rec["exit_px"],
-                          "raw_price": rec["exit_px"], "lots": rec["lots"],
-                          "pos_ref": pos_ref, "reason": rec["reason"],
-                          "contract_code": getattr(held, "contract_code", "") or "",
-                          "main_month": getattr(held, "main_month", "") or ""})
+            order = self._make_order(
+                ts,
+                {
+                    "sym": sym,
+                    "name": rec.get("name", ""),
+                    "cat": rec.get("sector", ""),
+                    "score": rec.get("entry_score"),
+                },
+                "liquidate",
+                _side_of(held_dir, "close"),
+                held_dir,
+                rec["exit_px"],
+                status="filled",
+            )
+            order.update(
+                {
+                    "fill_ts": ts,
+                    "fill_price": rec["exit_px"],
+                    "raw_price": rec["exit_px"],
+                    "lots": rec["lots"],
+                    "pos_ref": pos_ref,
+                    "reason": rec["reason"],
+                    "contract_code": getattr(held, "contract_code", "") or "",
+                    "main_month": getattr(held, "main_month", "") or "",
+                }
+            )
             self._ins_order(order)
             mult = pf.mult_of(sym)
-            t = {"ts": ts, "pos_ref": pos_ref, "sym": sym, "name": rec.get("name", ""),
-                 "sector": rec.get("sector", ""), "side": "close", "dir_text": rec["dir"],
-                 "direction": held_dir, "lots": rec["lots"], "price": rec["exit_px"],
-                 "raw_price": rec["exit_px"], "notional": rec["exit_px"] * mult * rec["lots"],
-                 "slip_yuan": 0.0, "fee_yuan": rec["close_fee_yuan"],
-                 "realized_yuan": rec["net_yuan"], "leg": rec["leg"], "reason": rec["reason"],
-                 "forced": 1, "order_id": order.get("id"), "entry_ts": str(rec["entry_dt"]),
-                 "entry_price": rec["entry_px"], "score": rec.get("entry_score"),
-                 "margin_rate": rec.get("margin_rate"),
-                 "contract_code": rec.get("contract_code") or order.get("contract_code") or "",
-                 "main_month": rec.get("main_month") or order.get("main_month") or ""}
+            t = {
+                "ts": ts,
+                "pos_ref": pos_ref,
+                "sym": sym,
+                "name": rec.get("name", ""),
+                "sector": rec.get("sector", ""),
+                "side": "close",
+                "dir_text": rec["dir"],
+                "direction": held_dir,
+                "lots": rec["lots"],
+                "price": rec["exit_px"],
+                "raw_price": rec["exit_px"],
+                "notional": rec["exit_px"] * mult * rec["lots"],
+                "slip_yuan": 0.0,
+                "fee_yuan": rec["close_fee_yuan"],
+                "realized_yuan": rec["net_yuan"],
+                "leg": rec["leg"],
+                "reason": rec["reason"],
+                "forced": 1,
+                "order_id": order.get("id"),
+                "entry_ts": str(rec["entry_dt"]),
+                "entry_price": rec["entry_px"],
+                "score": rec.get("entry_score"),
+                "margin_rate": rec.get("margin_rate"),
+                "contract_code": rec.get("contract_code") or order.get("contract_code") or "",
+                "main_month": rec.get("main_month") or order.get("main_month") or "",
+            }
             self._ins_trade(t)
             events.append(t)
             ord_events.append(order)
@@ -695,28 +911,34 @@ class PaperBroker:
         if self.db is None:
             return
         try:
-            latest = {r["sym"]: (r["contract_code"], r["main_month"])
-                      for r in self.db.conn.execute(
-                          "SELECT sym, contract_code, main_month FROM signals s"
-                          " WHERE contract_code IS NOT NULL AND contract_code != ''"
-                          " AND ts = (SELECT MAX(ts) FROM signals WHERE sym = s.sym)").fetchall()
-                      if r["contract_code"]}
+            latest = {
+                r["sym"]: (r["contract_code"], r["main_month"])
+                for r in self.db.conn.execute(
+                    "SELECT sym, contract_code, main_month FROM signals s"
+                    " WHERE contract_code IS NOT NULL AND contract_code != ''"
+                    " AND ts = (SELECT MAX(ts) FROM signals WHERE sym = s.sym)"
+                ).fetchall()
+                if r["contract_code"]
+            }
             if not latest:
                 return
             n = 0
             for sym, (cc, mm) in latest.items():
                 for tbl in ("paper_trades", "paper_orders"):
-                    n += self.db.conn.execute(
-                        "UPDATE %s SET contract_code=?, main_month=? "
-                        "WHERE sym=? AND (contract_code IS NULL OR contract_code='')" % tbl,
-                        (cc, mm, sym)).rowcount or 0
+                    n += (
+                        self.db.conn.execute(
+                            "UPDATE %s SET contract_code=?, main_month=? "
+                            "WHERE sym=? AND (contract_code IS NULL OR contract_code='')" % tbl,
+                            (cc, mm, sym),
+                        ).rowcount
+                        or 0
+                    )
             self.db.conn.commit()
             self._known_contract.update(latest)
             if n:
                 LOG.info("纸面合约补仓: 回填 %d 行空 contract_code (from signals)", n)
         except Exception:
             pass
-
 
     # ---------------- G5④ 阶段A2：paper_delever 自动减仓（只平不反向） ----------------
 
@@ -730,8 +952,9 @@ class PaperBroker:
         if b is None or b.action_mode != circuit_breaker.PAPER_DELEVER:
             return trades, ord_events
         pf = self.pf
-        brief = [{"sym": s, "direction": p.direction, "lots": p.lots}
-                 for s, p in pf.positions.items()]
+        brief = [
+            {"sym": s, "direction": p.direction, "lots": p.lots} for s, p in pf.positions.items()
+        ]
         plan = b.delever_targets(brief)
         if not plan:
             return trades, ord_events
@@ -739,28 +962,38 @@ class PaperBroker:
             sym = item["sym"]
             held = pf.positions.get(sym)
             if held is None:
-                b.mark_delevered(sym)          # 已无持仓，免下轮重复计算
+                b.mark_delevered(sym)  # 已无持仓，免下轮重复计算
                 continue
             row = by_sym.get(sym) or {}
             raw = float(row.get("price") or 0.0)
             if raw <= 0:
                 raw = float(pf._last_prices.get(sym, held.entry_price) or 0.0)
             if raw <= 0:
-                continue                       # 本轮无价：不成交、不登记，下轮重试
+                continue  # 本轮无价：不成交、不登记，下轮重试
             side = _side_of(held.direction, "close")
             move = (config.FUTURES_LIMIT_MOVE or {}).get(sym)
             if locked_at_quote(by_quote.get(sym), move, side == "buy"):
-                continue                       # 锁板封死：顺延、不登记
+                continue  # 锁板封死：顺延、不登记
             order = self._make_order(
-                ts, {"sym": sym, "name": held.name, "cat": held.sector,
-                     "score": getattr(held, "score", None)},
-                "close", side, held.direction, raw, status="pending")
+                ts,
+                {
+                    "sym": sym,
+                    "name": held.name,
+                    "cat": held.sector,
+                    "score": getattr(held, "score", None),
+                },
+                "close",
+                side,
+                held.direction,
+                raw,
+                status="pending",
+            )
             order["reduce_lots"] = item["reduce_lots"]
             order["close_reason"] = "熔断自动减仓"
             self._ins_order(order)
             t = self._fill_leg(ts, order, raw)
             if t:
-                b.mark_delevered(sym)          # 成交后登记，当日不再减该品种
+                b.mark_delevered(sym)  # 成交后登记，当日不再减该品种
                 trades.append(t)
                 ord_events.append(order)
         return trades, ord_events
@@ -771,28 +1004,51 @@ class PaperBroker:
         pf = self.pf
         pf.record(ts, prices_raw)
         point = pf.curve[-1]
-        positions = {s: {"dir": p.direction, "lots": p.lots, "entry": p.entry_price,
-                         "sector": p.sector, "score": p.score}
-                     for s, p in sorted(pf.positions.items())}
+        positions = {
+            s: {
+                "dir": p.direction,
+                "lots": p.lots,
+                "entry": p.entry_price,
+                "sector": p.sector,
+                "score": p.score,
+            }
+            for s, p in sorted(pf.positions.items())
+        }
         # 第104轮统一资金池：期权盈亏/占用并入权益口径（缺链时用最近期权快照近似）。
         if getattr(config, "PAPER_UNIFIED_POOL", True):
             ua = self.unified_account()
-            snap = {"ts": ts, "static_equity": ua["static"], "float_pnl": ua["float_pnl"],
-                    "equity": ua["equity"], "margin_used": ua["margin_used"],
-                    "available": ua["available"], "risk_degree": ua["risk_degree"],
-                    "drawdown": point["drawdown"],
-                    "n_positions": point["npos"] + sum(
-                        1 for r in self.opt_positions.values() if r.get("status") == "open"),
-                    "realized": pf.realized + (self.opt_realized - self.opt_fees),
-                    "fees_paid": pf.fees_paid + self.opt_fees,
-                    "n_trades": len(pf.closed), "positions": positions}
+            snap = {
+                "ts": ts,
+                "static_equity": ua["static"],
+                "float_pnl": ua["float_pnl"],
+                "equity": ua["equity"],
+                "margin_used": ua["margin_used"],
+                "available": ua["available"],
+                "risk_degree": ua["risk_degree"],
+                "drawdown": point["drawdown"],
+                "n_positions": point["npos"]
+                + sum(1 for r in self.opt_positions.values() if r.get("status") == "open"),
+                "realized": pf.realized + (self.opt_realized - self.opt_fees),
+                "fees_paid": pf.fees_paid + self.opt_fees,
+                "n_trades": len(pf.closed),
+                "positions": positions,
+            }
         else:
-            snap = {"ts": ts, "static_equity": point["static"], "float_pnl": point["float"],
-                    "equity": point["equity"], "margin_used": point["margin"],
-                    "available": point["available"], "risk_degree": point["risk"],
-                    "drawdown": point["drawdown"], "n_positions": point["npos"],
-                    "realized": pf.realized, "fees_paid": pf.fees_paid,
-                    "n_trades": len(pf.closed), "positions": positions}
+            snap = {
+                "ts": ts,
+                "static_equity": point["static"],
+                "float_pnl": point["float"],
+                "equity": point["equity"],
+                "margin_used": point["margin"],
+                "available": point["available"],
+                "risk_degree": point["risk"],
+                "drawdown": point["drawdown"],
+                "n_positions": point["npos"],
+                "realized": pf.realized,
+                "fees_paid": pf.fees_paid,
+                "n_trades": len(pf.closed),
+                "positions": positions,
+            }
         if self.db is not None:
             try:
                 self.db.insert_paper_equity(snap)
@@ -816,7 +1072,10 @@ class PaperBroker:
                 continue
             # 第95轮：从有合约的 row 更新最后已知映射（早周期空合约回补用）
             if row.get("contract_code"):
-                self._known_contract[sym] = (row["contract_code"] or "", row.get("main_month") or "")
+                self._known_contract[sym] = (
+                    row["contract_code"] or "",
+                    row.get("main_month") or "",
+                )
             by_sym[sym] = row
             px = float(row.get("price") or 0.0)
             if px > 0:
@@ -824,7 +1083,7 @@ class PaperBroker:
             q = quotes.get(row.get("code")) or {}
             if q:
                 by_quote[sym] = q
-        self._cur_quote = by_quote   # G14 接线：供 _ob_exec_price 读取真实 bid/ask
+        self._cur_quote = by_quote  # G14 接线：供 _ob_exec_price 读取真实 bid/ask
 
         cycle_orders, cycle_trades = [], []
         # 阶段A：next 档先成交上一轮挂单（先平后开，严格晚于信号）
@@ -847,7 +1106,9 @@ class PaperBroker:
                 orders, _blocked = self._r3_allow_new_orders(ts, sym, orders)
                 if orders:
                     for o in orders:
-                        if (o.get("action") or "").startswith("open") or (o.get("action") or "").startswith("reverse_open"):
+                        if (o.get("action") or "").startswith("open") or (
+                            o.get("action") or ""
+                        ).startswith("reverse_open"):
                             self._roll_daily_orders(ts)
                             day = str(ts or "")[:10]
                             self._daily_orders.setdefault(day, {}).setdefault(sym, 0)
@@ -859,10 +1120,16 @@ class PaperBroker:
                 if len(kept) != len(orders):
                     dropped = [o for o in orders if o not in kept]
                     self.rg_veto_skips = getattr(self, "rg_veto_skips", 0) + len(dropped)
-                    self.pf.skipped.append({
-                        "dt": ts, "sym": sym,
-                        "reason": "风控veto拦截(%s)" % "；".join((row.get("risk") or {}).get("veto") or []),
-                        "available": self.pf.available(), "price": float(row.get("price") or 0.0)})
+                    self.pf.skipped.append(
+                        {
+                            "dt": ts,
+                            "sym": sym,
+                            "reason": "风控veto拦截(%s)"
+                            % "；".join((row.get("risk") or {}).get("veto") or []),
+                            "available": self.pf.available(),
+                            "price": float(row.get("price") or 0.0),
+                        }
+                    )
                     orders = kept
             # G5④ 组合熔断：断路器停开时剔除开新仓腿（保留平仓腿）；breaker=None(默认observe)时原样返回
             if self.breaker is not None:
@@ -912,17 +1179,28 @@ class PaperBroker:
         # G5④ 用本轮最新权益更新熔断状态（供下一轮阶段B使用，严格无未来函数）；observe/None 时不挂
         if self.breaker is not None:
             self._last_circuit = self.breaker.update(
-                snap["ts"], snap["equity"], risk_degree=snap.get("risk_degree"),
-                n_positions=snap.get("n_positions"))
+                snap["ts"],
+                snap["equity"],
+                risk_degree=snap.get("risk_degree"),
+                n_positions=snap.get("n_positions"),
+            )
         n_pending = sum(len(q) for q in self.pending.values())
-        summary = {"ts": ts, "snapshot": snap, "n_orders": len(cycle_orders),
-                   "n_trades": len(cycle_trades), "n_pending": n_pending,
-                   "n_positions": len(self.pf.positions), "n_delever": n_delever,
-                   "n_skipped": len(self.pf.skipped), "circuit": self._last_circuit,
-                   "orders": cycle_orders, "trades": cycle_trades,
-                   # 第136轮：ERC 影子落账标记（报告/对账可用；未开启=等名义不标注）
-                   "risk_sizing": self.pf.risk_sizing if getattr(self.pf, "risk_sizing", None) else None,
-                   "risk_meta": getattr(self.pf, "risk_meta", None)}
+        summary = {
+            "ts": ts,
+            "snapshot": snap,
+            "n_orders": len(cycle_orders),
+            "n_trades": len(cycle_trades),
+            "n_pending": n_pending,
+            "n_positions": len(self.pf.positions),
+            "n_delever": n_delever,
+            "n_skipped": len(self.pf.skipped),
+            "circuit": self._last_circuit,
+            "orders": cycle_orders,
+            "trades": cycle_trades,
+            # 第136轮：ERC 影子落账标记（报告/对账可用；未开启=等名义不标注）
+            "risk_sizing": self.pf.risk_sizing if getattr(self.pf, "risk_sizing", None) else None,
+            "risk_meta": getattr(self.pf, "risk_meta", None),
+        }
         self.last_summary = summary
         return summary
 
@@ -995,9 +1273,11 @@ class PaperBroker:
             if rec.get("status") != "open":
                 continue
             px = self._opt_px(rec, chain_map)
-            total += (px - float(rec.get("fill_prem") or 0)) \
-                * float(rec.get("multiplier") or self.pf.mult_of(rec.get("sym") or "")) \
+            total += (
+                (px - float(rec.get("fill_prem") or 0))
+                * float(rec.get("multiplier") or self.pf.mult_of(rec.get("sym") or ""))
                 * int(rec.get("lots") or 1)
+            )
         return total
 
     def _opt_premium_locked(self, chain_map=None):
@@ -1035,26 +1315,43 @@ class PaperBroker:
         margin = pf.margin_used() + opt_locked
         available = max(0.0, equity - margin)
         risk = (margin / equity) if equity > 1e-9 else 0.0
-        return {"equity": equity, "static": static,
-                "float_pnl": pf.float_pnl() + self._opt_float_pnl(chain_map),
-                "margin_used": margin, "available": available,
-                "risk_degree": risk, "opt_net_pnl": opt_net,
-                "opt_premium_locked": opt_locked}
+        return {
+            "equity": equity,
+            "static": static,
+            "float_pnl": pf.float_pnl() + self._opt_float_pnl(chain_map),
+            "margin_used": margin,
+            "available": available,
+            "risk_degree": risk,
+            "opt_net_pnl": opt_net,
+            "opt_premium_locked": opt_locked,
+        }
 
     def _opt_summary(self, ts, chain_map=None):
         """期权权益快照（期权明细表：paper_option_equity，含占用/浮盈，供统一池汇总与看板明细）。"""
         chain_map = chain_map or {}
-        eq = float(getattr(self, "opt_equity0", config.PAPER_EQUITY0)) \
-            + self.opt_realized - self.opt_fees
+        eq = (
+            float(getattr(self, "opt_equity0", config.PAPER_EQUITY0))
+            + self.opt_realized
+            - self.opt_fees
+        )
         float_pnl = self._opt_float_pnl(chain_map)
         margin_used = self._opt_premium_locked(chain_map)
         n_open = sum(1 for r in self.opt_positions.values() if r.get("status") == "open")
         equity = eq + float_pnl
         risk = (margin_used / equity) if equity > 0 else 0.0
-        snap = {"ts": ts, "static_equity": eq, "float_pnl": float_pnl, "equity": equity,
-                "margin_used": margin_used, "available": max(0.0, equity - margin_used),
-                "risk_degree": risk, "drawdown": 0.0, "n_positions": n_open,
-                "realized": self.opt_realized, "fees_paid": self.opt_fees}
+        snap = {
+            "ts": ts,
+            "static_equity": eq,
+            "float_pnl": float_pnl,
+            "equity": equity,
+            "margin_used": margin_used,
+            "available": max(0.0, equity - margin_used),
+            "risk_degree": risk,
+            "drawdown": 0.0,
+            "n_positions": n_open,
+            "realized": self.opt_realized,
+            "fees_paid": self.opt_fees,
+        }
         if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_equity"):
             try:
                 self.db.insert_paper_option_equity(self.name, snap)
@@ -1075,7 +1372,7 @@ class PaperBroker:
         ts = str(ts or self._clock())[:19]
         chain_map = chain_map or {}
         score_map = {}
-        for row in (fut_rows or []):
+        for row in fut_rows or []:
             sym = (row.get("sym") or "").upper()
             if sym:
                 score_map[sym] = float(row.get("score") or 0.0)
@@ -1119,13 +1416,22 @@ class PaperBroker:
             # 又是 opt_realized - opt_fees（opt_fees 含该笔平仓费），导致平仓费双重扣减、净值被低估。
             # 修复：opt_realized 累计毛利（不含费），手续费统一进 opt_fees，对外净值 = opt_realized - opt_fees。
             gross = (px_sell - px_buy) * multiplier * lots
-            realized = gross - fee      # 单笔净值（含该笔平仓费，落库展示用）
+            realized = gross - fee  # 单笔净值（含该笔平仓费，落库展示用）
             self.opt_realized += gross  # 毛利进累计
             self.opt_fees += fee
             t = dict(rec)
-            t.update({"ts": ts, "action": "close", "side": "close", "status": "closed",
-                      "reason": reason, "realized_yuan": realized,
-                      "fill_prem": px_sell, "fill_ts": ts})
+            t.update(
+                {
+                    "ts": ts,
+                    "action": "close",
+                    "side": "close",
+                    "status": "closed",
+                    "reason": reason,
+                    "realized_yuan": realized,
+                    "fill_prem": px_sell,
+                    "fill_ts": ts,
+                }
+            )
             if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_trade"):
                 try:
                     self.db.insert_paper_option_trade(self.name, t)
@@ -1135,14 +1441,14 @@ class PaperBroker:
             cycle_trades.append(t)
 
         # ---------- B. 新一轮买入（单腿买方，与 priority 配合） ----------
-        for strat in (strat_rows or []):
+        for strat in strat_rows or []:
             if not strat.get("all_pass"):
                 continue
             legs = strat.get("legs") or []
-            if len(legs) != 1:               # 只做单腿
+            if len(legs) != 1:  # 只做单腿
                 continue
             leg = legs[0]
-            if not leg.get("buy"):           # 只做买方
+            if not leg.get("buy"):  # 只做买方
                 continue
             cp = (leg.get("kind") or "").lower()
             if cp not in ("call", "put"):
@@ -1155,7 +1461,11 @@ class PaperBroker:
                 self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "期权持仓数达上限"})
                 n_skipped += 1
                 continue
-            if any(r.get("sym", "").upper() == sym for r in self.opt_positions.values() if r.get("status") == "open"):
+            if any(
+                r.get("sym", "").upper() == sym
+                for r in self.opt_positions.values()
+                if r.get("status") == "open"
+            ):
                 continue  # 已持有同品种期权，不加仓
             chain, _leg = self._find_chain_leg(chain_map, sym, leg.get("K"), cp)
             if not _leg:
@@ -1179,35 +1489,72 @@ class PaperBroker:
             if getattr(config, "PAPER_UNIFIED_POOL", True):
                 ua = self.unified_account()
                 if premium > ua["available"]:
-                    self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "统一可用资金不足(%.0f>%.0f)"
-                                             % (premium, ua["available"])})
+                    self.opt_skipped.append(
+                        {
+                            "ts": ts,
+                            "sym": sym,
+                            "reason": "统一可用资金不足(%.0f>%.0f)" % (premium, ua["available"]),
+                        }
+                    )
                     n_skipped += 1
                     continue
                 if premium > ua["equity"] * self.opt_premium_ratio:
-                    self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "权利金超统一权益上限(%.0f>%.0f)"
-                                             % (premium, ua["equity"] * self.opt_premium_ratio)})
+                    self.opt_skipped.append(
+                        {
+                            "ts": ts,
+                            "sym": sym,
+                            "reason": "权利金超统一权益上限(%.0f>%.0f)"
+                            % (premium, ua["equity"] * self.opt_premium_ratio),
+                        }
+                    )
                     n_skipped += 1
                     continue
             else:
                 eq0 = float(getattr(self, "opt_equity0", config.PAPER_EQUITY0))
                 if premium > eq0 * self.opt_premium_ratio:
-                    self.opt_skipped.append({"ts": ts, "sym": sym, "reason": "权利金超上限(%.0f>%d)"
-                                             % (premium, eq0 * self.opt_premium_ratio)})
+                    self.opt_skipped.append(
+                        {
+                            "ts": ts,
+                            "sym": sym,
+                            "reason": "权利金超上限(%.0f>%d)"
+                            % (premium, eq0 * self.opt_premium_ratio),
+                        }
+                    )
                     n_skipped += 1
                     continue
             pos_ref = "o%s-%d" % (sym, int(getattr(self, "_opt_seq", 0)) + 1)
             self._opt_seq = int(getattr(self, "_opt_seq", 0)) + 1
-            rec = {"ts": ts, "pos_ref": pos_ref, "sym": sym, "name": strat.get("name", ""),
-                   "variety": strat.get("variety", ""), "action": "open", "side": "open",
-                   "direction": 1, "lots": 1, "strike": leg.get("K"), "cp": cp,
-                   "expiry": strat.get("month_label", ""), "entry_prem": px,
-                   "fill_prem": px, "fill_ts": ts, "option_code": leg.get("code", ""),
-                   "legs": [leg], "notional": premium, "margin_used": premium,
-                   "fee_yuan": self._opt_fee_yuan({"fill_prem": px, "sym": sym, "lots": 1,
-                                                   "multiplier": multiplier}),
-                   "realized_yuan": 0.0, "status": "open", "entry_score": strat.get("net"),
-                   "fill_mode": self.fill_mode, "multiplier": multiplier,
-                   "days_left": strat.get("days_left"), "score": strat.get("net")}
+            rec = {
+                "ts": ts,
+                "pos_ref": pos_ref,
+                "sym": sym,
+                "name": strat.get("name", ""),
+                "variety": strat.get("variety", ""),
+                "action": "open",
+                "side": "open",
+                "direction": 1,
+                "lots": 1,
+                "strike": leg.get("K"),
+                "cp": cp,
+                "expiry": strat.get("month_label", ""),
+                "entry_prem": px,
+                "fill_prem": px,
+                "fill_ts": ts,
+                "option_code": leg.get("code", ""),
+                "legs": [leg],
+                "notional": premium,
+                "margin_used": premium,
+                "fee_yuan": self._opt_fee_yuan(
+                    {"fill_prem": px, "sym": sym, "lots": 1, "multiplier": multiplier}
+                ),
+                "realized_yuan": 0.0,
+                "status": "open",
+                "entry_score": strat.get("net"),
+                "fill_mode": self.fill_mode,
+                "multiplier": multiplier,
+                "days_left": strat.get("days_left"),
+                "score": strat.get("net"),
+            }
             # 存储为 trade 记录（account 维度；side=open）
             if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_trade"):
                 try:
@@ -1235,51 +1582,97 @@ class PaperBroker:
                 if kind not in ("call", "put"):
                     continue
                 # 已持有同品种期权不加仓（与 strat_rows 路径同一纪律）
-                if any(r.get("sym", "").upper() == ao_sym for r in self.opt_positions.values() if r.get("status") == "open"):
+                if any(
+                    r.get("sym", "").upper() == ao_sym
+                    for r in self.opt_positions.values()
+                    if r.get("status") == "open"
+                ):
                     continue
                 chain, leg = self._find_chain_leg(chain_map, ao_sym, ao.get("K"), kind)
                 if not leg:
-                    self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-链上无该行权价"})
+                    self.opt_skipped.append(
+                        {"ts": ts, "sym": ao_sym, "reason": "单腿分析-链上无该行权价"}
+                    )
                     n_skipped += 1
                     continue
                 px = self._leg_price(leg, "buy")
                 if not px or px <= 0:
-                    self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-无有效期权价"})
+                    self.opt_skipped.append(
+                        {"ts": ts, "sym": ao_sym, "reason": "单腿分析-无有效期权价"}
+                    )
                     n_skipped += 1
                     continue
                 multiplier = self.pf.mult_of(ao_sym)
                 if multiplier <= 0:
-                    self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-无合约乘数"})
+                    self.opt_skipped.append(
+                        {"ts": ts, "sym": ao_sym, "reason": "单腿分析-无合约乘数"}
+                    )
                     n_skipped += 1
                     continue
                 premium = px * multiplier
                 ua = self.unified_account() if getattr(config, "PAPER_UNIFIED_POOL", True) else None
                 if ua is not None:
                     if premium > ua["available"]:
-                        self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-统一可用资金不足(%.0f>%.0f)"
-                                                 % (premium, ua["available"])})
+                        self.opt_skipped.append(
+                            {
+                                "ts": ts,
+                                "sym": ao_sym,
+                                "reason": "单腿分析-统一可用资金不足(%.0f>%.0f)"
+                                % (premium, ua["available"]),
+                            }
+                        )
                         n_skipped += 1
                         continue
                     if premium > ua["equity"] * self.opt_premium_ratio:
-                        self.opt_skipped.append({"ts": ts, "sym": ao_sym, "reason": "单腿分析-权利金超统一权益上限(%.0f>%.0f)"
-                                                 % (premium, ua["equity"] * self.opt_premium_ratio)})
+                        self.opt_skipped.append(
+                            {
+                                "ts": ts,
+                                "sym": ao_sym,
+                                "reason": "单腿分析-权利金超统一权益上限(%.0f>%.0f)"
+                                % (premium, ua["equity"] * self.opt_premium_ratio),
+                            }
+                        )
                         n_skipped += 1
                         continue
                 pos_ref = "o%s-%d" % (ao_sym, int(getattr(self, "_opt_seq", 0)) + 1)
                 self._opt_seq = int(getattr(self, "_opt_seq", 0)) + 1
-                rec = {"ts": ts, "pos_ref": pos_ref, "sym": ao_sym, "name": ao.get("name", ""),
-                       "variety": ao.get("name", ""), "action": "open", "side": "open",
-                       "direction": 1, "lots": 1, "strike": ao.get("K"),
-                       "cp": kind, "expiry": ao.get("month_label", ""), "entry_prem": px,
-                       "fill_prem": px, "fill_ts": ts, "option_code": ao.get("opt_code", ""),
-                       "legs": [], "notional": premium, "margin_used": premium,
-                       "fee_yuan": self._opt_fee_yuan({"fill_prem": px, "sym": ao_sym, "lots": 1,
-                                                       "multiplier": multiplier}),
-                       "realized_yuan": 0.0, "status": "open", "entry_score": ao.get("score"),
-                       "fill_mode": self.fill_mode, "multiplier": multiplier,
-                       "days_left": ao.get("days"), "score": ao.get("score"),
-                       "src": "analyze_option"}
-                if self.db is not None and self.name and hasattr(self.db, "insert_paper_option_trade"):
+                rec = {
+                    "ts": ts,
+                    "pos_ref": pos_ref,
+                    "sym": ao_sym,
+                    "name": ao.get("name", ""),
+                    "variety": ao.get("name", ""),
+                    "action": "open",
+                    "side": "open",
+                    "direction": 1,
+                    "lots": 1,
+                    "strike": ao.get("K"),
+                    "cp": kind,
+                    "expiry": ao.get("month_label", ""),
+                    "entry_prem": px,
+                    "fill_prem": px,
+                    "fill_ts": ts,
+                    "option_code": ao.get("opt_code", ""),
+                    "legs": [],
+                    "notional": premium,
+                    "margin_used": premium,
+                    "fee_yuan": self._opt_fee_yuan(
+                        {"fill_prem": px, "sym": ao_sym, "lots": 1, "multiplier": multiplier}
+                    ),
+                    "realized_yuan": 0.0,
+                    "status": "open",
+                    "entry_score": ao.get("score"),
+                    "fill_mode": self.fill_mode,
+                    "multiplier": multiplier,
+                    "days_left": ao.get("days"),
+                    "score": ao.get("score"),
+                    "src": "analyze_option",
+                }
+                if (
+                    self.db is not None
+                    and self.name
+                    and hasattr(self.db, "insert_paper_option_trade")
+                ):
                     try:
                         self.db.insert_paper_option_trade(self.name, rec)
                     except Exception:
@@ -1290,9 +1683,16 @@ class PaperBroker:
                 cycle_trades.append(dict(rec))
 
         snap = self._opt_summary(ts, chain_map)
-        summary = {"ts": ts, "snapshot": snap, "n_buy": n_buy, "n_close": n_close,
-                   "n_skipped": n_skipped, "n_positions": snap.get("n_positions", 0),
-                   "trades": cycle_trades, "positions": list(self.opt_positions.values())}
+        summary = {
+            "ts": ts,
+            "snapshot": snap,
+            "n_buy": n_buy,
+            "n_close": n_close,
+            "n_skipped": n_skipped,
+            "n_positions": snap.get("n_positions", 0),
+            "trades": cycle_trades,
+            "positions": list(self.opt_positions.values()),
+        }
         self.opt_last_summary = summary
         return summary
 
@@ -1303,7 +1703,11 @@ class PaperBroker:
         if self.db is None or self.restored:
             return False
         pf = self.pf
-        open_trades = self.db.paper_open_position_trades() if hasattr(self.db, "paper_open_position_trades") else []
+        open_trades = (
+            self.db.paper_open_position_trades()
+            if hasattr(self.db, "paper_open_position_trades")
+            else []
+        )
         realized_sum, fees_sum = 0.0, 0.0
         try:
             realized_sum, fees_sum = self.db.paper_realized_fees()
@@ -1315,14 +1719,27 @@ class PaperBroker:
             mult = pf.mult_of(sym)
             direction = t["direction"]
             pos = portfolio_mod.Position(
-                sym=sym, name=t["name"], sector=t["sector"], direction=direction,
-                lots=int(t["lots"]), entry_price=t["price"], entry_dt=t["ts"],
-                stop=None, target=None, atr=None, score=t.get("score"),
+                sym=sym,
+                name=t["name"],
+                sector=t["sector"],
+                direction=direction,
+                lots=int(t["lots"]),
+                entry_price=t["price"],
+                entry_dt=t["ts"],
+                stop=None,
+                target=None,
+                atr=None,
+                score=t.get("score"),
                 margin_rate=t.get("margin_rate") or pf.margin_rate_of(sym),
-                mult=mult, open_fee_yuan=t.get("fee_yuan") or 0.0,
-                entry_owner=self._owner_of(t["ts"]), entry_i=0, block=0, calib_mult=1.0,
+                mult=mult,
+                open_fee_yuan=t.get("fee_yuan") or 0.0,
+                entry_owner=self._owner_of(t["ts"]),
+                entry_i=0,
+                block=0,
+                calib_mult=1.0,
                 contract_code=t.get("contract_code") or "",
-                main_month=t.get("main_month") or "")
+                main_month=t.get("main_month") or "",
+            )
             pf.positions[sym] = pos
             pf._last_prices[sym] = t["price"]
             self.pos_ref[sym] = t["pos_ref"]
@@ -1330,7 +1747,11 @@ class PaperBroker:
             # 第95轮：开仓成交更新最后已知映射
             if t.get("contract_code"):
                 self._known_contract[sym] = (t["contract_code"] or "", t.get("main_month") or "")
-            suffix = int(t["pos_ref"].split("-")[-1]) if str(t.get("pos_ref", "")).split("-")[-1].isdigit() else 0
+            suffix = (
+                int(t["pos_ref"].split("-")[-1])
+                if str(t.get("pos_ref", "")).split("-")[-1].isdigit()
+                else 0
+            )
             self._open_seq[sym] = max(self._open_seq.get(sym, 0), suffix)
         # 已实现净盈亏：已平仓腿的净盈亏合计；仍持仓开仓费在开仓时已付、尚未计入任何平仓腿，需补扣
         pf.realized = float(realized_sum) - open_fees
@@ -1358,8 +1779,11 @@ class PaperBroker:
         except Exception:
             pass
         try:
-            self.fill_ledger = [dict(t) for t in self.db.paper_trades_recent(100000)][::-1] \
-                if hasattr(self.db, "paper_trades_recent") else self.fill_ledger
+            self.fill_ledger = (
+                [dict(t) for t in self.db.paper_trades_recent(100000)][::-1]
+                if hasattr(self.db, "paper_trades_recent")
+                else self.fill_ledger
+            )
         except Exception:
             pass
         # 第95轮：一次性补仓——paper_trades/orders 空合约用最新信号同 sym 回填，DB 持久化
@@ -1424,14 +1848,25 @@ class PaperBroker:
             mult = p.mult or pf.mult_of(sym)
             float_yuan = p.direction * (last - p.entry_price) * mult * p.lots
             margin = last * mult * p.lots * p.margin_rate
-            rows.append({"sym": sym, "name": p.name or "", "sector": p.sector or "",
-                         "dir": "多" if p.direction > 0 else "空", "direction": p.direction,
-                         "lots": p.lots, "entry_dt": str(p.entry_dt), "entry_price": p.entry_price,
-                         "last": last, "float_yuan": float_yuan, "margin": margin,
-                         "entry_owner": str(getattr(p, "entry_owner", "") or ""),
-                         "score": p.score,
-                         "contract_code": getattr(p, "contract_code", "") or "",
-                         "main_month": getattr(p, "main_month", "") or ""})
+            rows.append(
+                {
+                    "sym": sym,
+                    "name": p.name or "",
+                    "sector": p.sector or "",
+                    "dir": "多" if p.direction > 0 else "空",
+                    "direction": p.direction,
+                    "lots": p.lots,
+                    "entry_dt": str(p.entry_dt),
+                    "entry_price": p.entry_price,
+                    "last": last,
+                    "float_yuan": float_yuan,
+                    "margin": margin,
+                    "entry_owner": str(getattr(p, "entry_owner", "") or ""),
+                    "score": p.score,
+                    "contract_code": getattr(p, "contract_code", "") or "",
+                    "main_month": getattr(p, "main_month", "") or "",
+                }
+            )
         return rows
 
     @_locked
@@ -1440,12 +1875,21 @@ class PaperBroker:
         rows = []
         for sym in sorted(self.pending):
             for o in self.pending[sym]:
-                rows.append({"sym": sym, "name": o.get("name", ""), "action": o.get("action", ""),
-                             "side": o.get("side", ""), "direction": o.get("direction", 0),
-                             "ts": o.get("ts", ""), "signal_price": o.get("signal_price"),
-                             "score": o.get("score"), "reason": o.get("reason", ""),
-                             "contract_code": o.get("contract_code") or "",
-                             "main_month": o.get("main_month") or ""})
+                rows.append(
+                    {
+                        "sym": sym,
+                        "name": o.get("name", ""),
+                        "action": o.get("action", ""),
+                        "side": o.get("side", ""),
+                        "direction": o.get("direction", 0),
+                        "ts": o.get("ts", ""),
+                        "signal_price": o.get("signal_price"),
+                        "score": o.get("score"),
+                        "reason": o.get("reason", ""),
+                        "contract_code": o.get("contract_code") or "",
+                        "main_month": o.get("main_month") or "",
+                    }
+                )
         return rows
 
     @_locked
@@ -1456,26 +1900,33 @@ class PaperBroker:
             perf = pf.performance()
         # 第104轮统一资金池：权益/可用/风险 = 期货+期权合并口径；期货风控触发不变。
         ua = self.unified_account() if getattr(config, "PAPER_UNIFIED_POOL", True) else None
-        out = {"equity0": pf.equity0, "static": ua["static"] if ua else pf.static_equity(),
-               "equity": ua["equity"] if ua else pf.equity(),
-               "float_pnl": ua["float_pnl"] if ua else pf.float_pnl(),
-               "realized": pf.realized + (self.opt_realized - self.opt_fees) if ua else pf.realized,
-               "fees_paid": pf.fees_paid + self.opt_fees if ua else pf.fees_paid,
-               "margin_used": ua["margin_used"] if ua else pf.margin_used(),
-               "available": ua["available"] if ua else pf.available(),
-               "risk_degree": ua["risk_degree"] if ua else pf.risk_degree(),
-               "n_positions": len(pf.positions),
-               "n_pending": sum(len(q) for q in self.pending.values()),
-               "n_closed": len(pf.closed), "n_liquidations": len(pf.liquidations),
-               "n_skipped": len(pf.skipped), "status": self.order_status_counts(),
-               "fill_mode": self.fill_mode,
-               "pending": {s: [dict(o) for o in q]
-                           for s, q in self.pending.items()},
-               "performance": perf,
-               # 第102轮：期权持仓明细（统一池时仅作展示明细；独立池时含独立权益）
-               "opt": {"n_positions": len(self.opt_positions),
-                       "realized": self.opt_realized, "fees_paid": self.opt_fees,
-                       "n_skipped": len(self.opt_skipped)}}
+        out = {
+            "equity0": pf.equity0,
+            "static": ua["static"] if ua else pf.static_equity(),
+            "equity": ua["equity"] if ua else pf.equity(),
+            "float_pnl": ua["float_pnl"] if ua else pf.float_pnl(),
+            "realized": pf.realized + (self.opt_realized - self.opt_fees) if ua else pf.realized,
+            "fees_paid": pf.fees_paid + self.opt_fees if ua else pf.fees_paid,
+            "margin_used": ua["margin_used"] if ua else pf.margin_used(),
+            "available": ua["available"] if ua else pf.available(),
+            "risk_degree": ua["risk_degree"] if ua else pf.risk_degree(),
+            "n_positions": len(pf.positions),
+            "n_pending": sum(len(q) for q in self.pending.values()),
+            "n_closed": len(pf.closed),
+            "n_liquidations": len(pf.liquidations),
+            "n_skipped": len(pf.skipped),
+            "status": self.order_status_counts(),
+            "fill_mode": self.fill_mode,
+            "pending": {s: [dict(o) for o in q] for s, q in self.pending.items()},
+            "performance": perf,
+            # 第102轮：期权持仓明细（统一池时仅作展示明细；独立池时含独立权益）
+            "opt": {
+                "n_positions": len(self.opt_positions),
+                "realized": self.opt_realized,
+                "fees_paid": self.opt_fees,
+                "n_skipped": len(self.opt_skipped),
+            },
+        }
         # 期权权益快照（统一池时 opt_equity 保留供 report 摘要兼容，非独立账户权益）
         ols = getattr(self, "opt_last_summary", None) or {}
         osnap = ols.get("snapshot")
@@ -1561,9 +2012,14 @@ class PaperBroker:
         return aggregate_fills(self.fills_view(since=since))
 
     def _internal_position_set(self):
-        return {r["sym"]: {"direction": r["direction"], "lots": int(r["lots"]),
-                           "entry_price": float(r["entry_price"] or 0.0)}
-                for r in self.positions_view()}
+        return {
+            r["sym"]: {
+                "direction": r["direction"],
+                "lots": int(r["lots"]),
+                "entry_price": float(r["entry_price"] or 0.0),
+            }
+            for r in self.positions_view()
+        }
 
     def reconcile_positions(self, external, price_tol=1e-6):
         """内部持仓 vs 外部/托管台账 {sym:{direction,lots,entry_price}} 对账，返回 matched/breaks 明细。"""
@@ -1577,17 +2033,28 @@ class PaperBroker:
             return None
         external = {}
         for t in self.db.paper_open_position_trades():
-            external[t["sym"]] = {"direction": int(t["direction"]), "lots": int(t["lots"]),
-                                  "entry_price": float(t["price"])}
+            external[t["sym"]] = {
+                "direction": int(t["direction"]),
+                "lots": int(t["lots"]),
+                "entry_price": float(t["price"]),
+            }
         return self.reconcile_positions(external, price_tol)
 
 
 # =========================== 合成自检（零网络） ===========================
 
+
 def _row(sym, name, cat, score, price, atr=10.0, prev=None, hi=None, lo=None):
     """构造 analyzer 结果行（只取 PaperBroker 用到的字段）。"""
-    row = {"sym": sym, "name": name, "cat": cat, "code": sym + "0",
-           "score": score, "price": price, "atr": atr}
+    row = {
+        "sym": sym,
+        "name": name,
+        "cat": cat,
+        "code": sym + "0",
+        "score": score,
+        "price": price,
+        "atr": atr,
+    }
     return row
 
 
@@ -1627,15 +2094,17 @@ def selftest():
 
     # 4) next 档：成交严格晚于信号（内存账户，给足资金/大名义上限避免被约束链拒单）
     import config as _cfg
+
     _cfg.PAPER_PER_SYMBOL = 0.05
     _cfg.PAPER_MAX_SYMBOL_WEIGHT = 1.0
     _cfg.PAPER_MAX_SECTOR_WEIGHT = 1.0
     _cfg.PAPER_MAX_CONCURRENT = 64
-    pb = PaperBroker(db=None, fill_mode="next", equity0=10_000_000,
-                     slip_rate=0.0001, restore=False)
+    pb = PaperBroker(db=None, fill_mode="next", equity0=10_000_000, slip_rate=0.0001, restore=False)
     s1 = pb.on_cycle("2026-09-02 09:05:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
-    ck("next信号轮只挂单不成交", s1["n_trades"] == 0 and s1["n_pending"] == 1
-       and s1["n_positions"] == 0)
+    ck(
+        "next信号轮只挂单不成交",
+        s1["n_trades"] == 0 and s1["n_pending"] == 1 and s1["n_positions"] == 0,
+    )
     s2 = pb.on_cycle("2026-09-02 09:10:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3010.0)])
     ck("next次轮才成交", s2["n_trades"] == 1 and s2["n_positions"] == 1)
     o = s2["orders"]
@@ -1660,107 +2129,179 @@ def selftest():
     ck("次轮平掉空仓", len(pb.pf.positions) == 0 and len(pb.pf.closed) == 2)
 
     # 7) close 档：信号轮当轮立即成交
-    pbc = PaperBroker(db=None, fill_mode="close", equity0=10_000_000,
-                      slip_rate=0.0, restore=False)
+    pbc = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0, restore=False)
     sc = pbc.on_cycle("2026-09-02 10:00:00", [_row("CU", "铜", "有色", 6.0, 70000.0)])
     ck("close当轮成交", sc["n_trades"] == 1 and len(pbc.pf.positions) == 1)
 
     # 8) 锁板顺延（close 档当轮 blocked，不成交）
-    pbl = PaperBroker(db=None, fill_mode="close", equity0=10_000_000,
-                      slip_rate=0.0, restore=False)
+    pbl = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0, restore=False)
     locked_q = {"CU0": _quote(None, 70000.0, 0.09, locked=True)}
     row = _row("CU", "铜", "有色", 6.0, 70000.0 * 1.09)
     sl = pbl.on_cycle("2026-09-02 10:05:00", [row], locked_q)
-    ck("涨停锁死开多被blocked", sl["orders"][0]["status"] == "blocked"
-       and len(pbl.pf.positions) == 0)
+    ck(
+        "涨停锁死开多被blocked",
+        sl["orders"][0]["status"] == "blocked" and len(pbl.pf.positions) == 0,
+    )
 
     # 9) 强平：把强平线压到 0，下一轮必触发，持仓被砍
-    pbf = PaperBroker(db=None, fill_mode="close", equity0=10_000_000,
-                      slip_rate=0.0, restore=False)
+    pbf = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0, restore=False)
     pbf.on_cycle("2026-09-02 11:00:00", [_row("AU", "黄金", "贵金属", 6.0, 500.0)])
     ck("强平前有持仓", len(pbf.pf.positions) == 1)
     pbf.pf.risk_liquidate = 0.0
     pbf.pf.risk_safe = 0.0
     sf = pbf.on_cycle("2026-09-02 11:05:00", [_row("AU", "黄金", "贵金属", 6.0, 500.0)])
-    ck("触发强平后空仓", len(pbf.pf.positions) == 0 and len(pbf.pf.liquidations) >= 1
-       and any(t["forced"] for t in sf["trades"]))
+    ck(
+        "触发强平后空仓",
+        len(pbf.pf.positions) == 0
+        and len(pbf.pf.liquidations) >= 1
+        and any(t["forced"] for t in sf["trades"]),
+    )
 
     # 10) 资金不足拒单（1手都买不起 -> rejected，不持仓）
-    pbp = PaperBroker(db=None, fill_mode="close", equity0=2000.0,
-                      slip_rate=0.0, restore=False)
+    pbp = PaperBroker(db=None, fill_mode="close", equity0=2000.0, slip_rate=0.0, restore=False)
     sp = pbp.on_cycle("2026-09-02 13:30:00", [_row("CU", "铜", "有色", 6.0, 70000.0)])
     ck("资金不足拒单", len(pbp.pf.positions) == 0 and sp["orders"][0]["status"] == "rejected")
 
     # 11) 实时平今/平昨 owner 判定（注入确定性 owner_fn 与显式费率表，零日历/网络依赖）
     from datetime import date as _date
+
     def _fee_row(mult, today_free):
-        return {"multiplier": mult, "open_amt_rate": 1e-4, "open_per_lot": 3.0,
-                "close_amt_rate": 1e-4, "close_per_lot": 3.0,
-                "today_amt_rate": 0.0 if today_free else 1e-4,
-                "today_per_lot": 0.0 if today_free else 3.0}
-    own_map = {"2026-09-02 10:00:00": _date(2026, 9, 2),
-               "2026-09-02 14:00:00": _date(2026, 9, 2),
-               "2026-09-03 10:00:00": _date(2026, 9, 3)}
-    pbo = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0,
-                      restore=False, margin_table={"RB": {"broker_margin": 0.1,
-                      "limit_basic": 0.05, "multiplier": 10}},
-                      fee_table={"RB": _fee_row(10, True)}, sector_of={"RB": "黑色"},
-                      owner_fn=lambda ts: own_map.get(str(ts)[:19]))
+        return {
+            "multiplier": mult,
+            "open_amt_rate": 1e-4,
+            "open_per_lot": 3.0,
+            "close_amt_rate": 1e-4,
+            "close_per_lot": 3.0,
+            "today_amt_rate": 0.0 if today_free else 1e-4,
+            "today_per_lot": 0.0 if today_free else 3.0,
+        }
+
+    own_map = {
+        "2026-09-02 10:00:00": _date(2026, 9, 2),
+        "2026-09-02 14:00:00": _date(2026, 9, 2),
+        "2026-09-03 10:00:00": _date(2026, 9, 3),
+    }
+    pbo = PaperBroker(
+        db=None,
+        fill_mode="close",
+        equity0=10_000_000,
+        slip_rate=0.0,
+        restore=False,
+        margin_table={"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}},
+        fee_table={"RB": _fee_row(10, True)},
+        sector_of={"RB": "黑色"},
+        owner_fn=lambda ts: own_map.get(str(ts)[:19]),
+    )
     pbo.on_cycle("2026-09-02 10:00:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     s_today = pbo.on_cycle("2026-09-02 14:00:00", [_row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     rec_today = pbo.pf.closed[-1]
     ck("同一结算交易日=平今", rec_today["leg"] == "平今" and rec_today["close_fee_yuan"] == 0.0)
     own_map["2026-09-02 14:00:00"] = _date(2026, 9, 2)
-    pbo2 = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0,
-                       restore=False, margin_table={"RB": {"broker_margin": 0.1,
-                       "limit_basic": 0.05, "multiplier": 10}},
-                       fee_table={"RB": _fee_row(10, True)}, sector_of={"RB": "黑色"},
-                       owner_fn=lambda ts: own_map.get(str(ts)[:19]))
+    pbo2 = PaperBroker(
+        db=None,
+        fill_mode="close",
+        equity0=10_000_000,
+        slip_rate=0.0,
+        restore=False,
+        margin_table={"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}},
+        fee_table={"RB": _fee_row(10, True)},
+        sector_of={"RB": "黑色"},
+        owner_fn=lambda ts: own_map.get(str(ts)[:19]),
+    )
     pbo2.on_cycle("2026-09-02 10:00:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     pbo2.on_cycle("2026-09-03 10:00:00", [_row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     rec_yest = pbo2.pf.closed[-1]
     ck("跨结算交易日=平昨(收费)", rec_yest["leg"] == "平昨" and rec_yest["close_fee_yuan"] > 0.0)
     # owner_fn 失效时保守按平昨（不虚构平今免费）
-    pbo3 = PaperBroker(db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0,
-                       restore=False, margin_table={"RB": {"broker_margin": 0.1,
-                       "limit_basic": 0.05, "multiplier": 10}},
-                       fee_table={"RB": _fee_row(10, True)}, sector_of={"RB": "黑色"},
-                       owner_fn=lambda ts: None)
+    pbo3 = PaperBroker(
+        db=None,
+        fill_mode="close",
+        equity0=10_000_000,
+        slip_rate=0.0,
+        restore=False,
+        margin_table={"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}},
+        fee_table={"RB": _fee_row(10, True)},
+        sector_of={"RB": "黑色"},
+        owner_fn=lambda ts: None,
+    )
     pbo3.on_cycle("2026-09-02 10:00:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     pbo3.on_cycle("2026-09-02 14:00:00", [_row("RB", "螺纹钢", "黑色", 1.0, 3000.0)])
     ck("owner判不了保守平昨", pbo3.pf.closed[-1]["leg"] == "平昨")
     # 账户视图字段齐全
     view = pbo.account_summary()
-    ck("账户摘要含状态计数/视图", set(["pending", "filled", "blocked", "rejected",
-       "cancelled"]).issubset(view["status"]) and "float_pnl" in view and "n_pending" in view)
+    ck(
+        "账户摘要含状态计数/视图",
+        set(["pending", "filled", "blocked", "rejected", "cancelled"]).issubset(view["status"])
+        and "float_pnl" in view
+        and "n_pending" in view,
+    )
 
     # 12) G1续 OMS 全状态台账 + 主动撤单（pbc 为 group7 close 档持 CU 多）
-    ck("OMS台账含已成交终态", any(o["status"] == "filled" for o in pbc.orders_view())
-       and len(pbc.orders_view()) >= 1)
-    ck("OMS按状态过滤", len(pbc.orders_view(status="filled")) >= 1
-       and len(pbc.orders_view(status="rejected")) == 0)
+    ck(
+        "OMS台账含已成交终态",
+        any(o["status"] == "filled" for o in pbc.orders_view()) and len(pbc.orders_view()) >= 1,
+    )
+    ck(
+        "OMS按状态过滤",
+        len(pbc.orders_view(status="filled")) >= 1 and len(pbc.orders_view(status="rejected")) == 0,
+    )
     pbq = PaperBroker(db=None, fill_mode="next", equity0=10_000_000, slip_rate=0.0, restore=False)
     pbq.on_cycle("2026-09-02 09:05:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     ck("挂单在途1", pbq.order_status_counts()["pending"] == 1)
-    ck("主动撤单返回1且清在途", pbq.cancel_order(sym="RB") == 1
-       and pbq.order_status_counts()["pending"] == 0)
+    ck(
+        "主动撤单返回1且清在途",
+        pbq.cancel_order(sym="RB") == 1 and pbq.order_status_counts()["pending"] == 0,
+    )
     ck("撤单落 cancelled 终态", any(o["status"] == "cancelled" for o in pbq.orders_view()))
 
     # 13) 成交回报汇总（broker 方法 + 纯聚合函数）
     fr = pbc.fill_report()
-    ck("成交回报笔数/开平/费", fr["n_fills"] == 1 and fr["lots"] >= 1 and fr["n_open"] == 1
-       and fr["open_long"] >= 1 and fr["fee_yuan"] >= 0.0)
-    agg = aggregate_fills([
-        {"side": "open", "direction": 1, "lots": 2, "notional": 100.0, "fee_yuan": 1.0,
-         "slip_yuan": 0.2, "realized_yuan": 0.0, "forced": 0},
-        {"side": "close", "direction": 1, "lots": 2, "notional": 100.0, "fee_yuan": 1.0,
-         "slip_yuan": 0.2, "realized_yuan": 5.0, "forced": 1}])
-    ck("成交回报聚合多空开平/强平", agg["lots"] == 4 and agg["open_long"] == 2
-       and agg["close_long"] == 2 and agg["n_forced"] == 1 and abs(agg["realized_yuan"] - 5.0) < 1e-9)
+    ck(
+        "成交回报笔数/开平/费",
+        fr["n_fills"] == 1
+        and fr["lots"] >= 1
+        and fr["n_open"] == 1
+        and fr["open_long"] >= 1
+        and fr["fee_yuan"] >= 0.0,
+    )
+    agg = aggregate_fills(
+        [
+            {
+                "side": "open",
+                "direction": 1,
+                "lots": 2,
+                "notional": 100.0,
+                "fee_yuan": 1.0,
+                "slip_yuan": 0.2,
+                "realized_yuan": 0.0,
+                "forced": 0,
+            },
+            {
+                "side": "close",
+                "direction": 1,
+                "lots": 2,
+                "notional": 100.0,
+                "fee_yuan": 1.0,
+                "slip_yuan": 0.2,
+                "realized_yuan": 5.0,
+                "forced": 1,
+            },
+        ]
+    )
+    ck(
+        "成交回报聚合多空开平/强平",
+        agg["lots"] == 4
+        and agg["open_long"] == 2
+        and agg["close_long"] == 2
+        and agg["n_forced"] == 1
+        and abs(agg["realized_yuan"] - 5.0) < 1e-9,
+    )
 
     # 14) 持仓对账：纯函数五类 break + broker 方法
-    internal = {"RB": {"direction": 1, "lots": 2, "entry_price": 3000.0},
-                "CU": {"direction": -1, "lots": 1, "entry_price": 70000.0}}
+    internal = {
+        "RB": {"direction": 1, "lots": 2, "entry_price": 3000.0},
+        "CU": {"direction": -1, "lots": 1, "entry_price": 70000.0},
+    }
     ck("对账完全一致=clean", reconcile_position_sets(internal, dict(internal))["clean"])
     ext_dir = dict(internal)
     ext_dir["RB"] = {"direction": -1, "lots": 2, "entry_price": 3000.0}
@@ -1770,23 +2311,29 @@ def selftest():
     ext_miss["AU"] = {"direction": 1, "lots": 1, "entry_price": 500.0}
     t_miss = {b["sym"]: b["type"] for b in reconcile_position_sets(internal, ext_miss)["breaks"]}
     ck("对账识别内部漏记(missing_internal)", t_miss.get("AU") == "missing_internal")
-    t_ghost = {b["sym"]: b["type"]
-               for b in reconcile_position_sets(internal, {"CU": internal["CU"]})["breaks"]}
+    t_ghost = {
+        b["sym"]: b["type"]
+        for b in reconcile_position_sets(internal, {"CU": internal["CU"]})["breaks"]
+    }
     ck("对账识别外部漏仓(missing_external)", t_ghost.get("RB") == "missing_external")
     ext_lots = dict(internal)
     ext_lots["CU"] = {"direction": -1, "lots": 3, "entry_price": 70000.0}
     t_lots = {b["sym"]: b["type"] for b in reconcile_position_sets(internal, ext_lots)["breaks"]}
     ck("对账识别手数不符带delta", t_lots.get("CU") == "lots")
-    own_ext = {x["sym"]: {"direction": x["direction"], "lots": x["lots"],
-                          "entry_price": x["entry_price"]} for x in pbc.positions_view()}
+    own_ext = {
+        x["sym"]: {"direction": x["direction"], "lots": x["lots"], "entry_price": x["entry_price"]}
+        for x in pbc.positions_view()
+    }
     ck("broker对账自洽clean", pbc.reconcile_positions(own_ext)["clean"])
-    bad_ext = {s: {"direction": v["direction"], "lots": v["lots"] + 1,
-                   "entry_price": v["entry_price"]} for s, v in own_ext.items()}
+    bad_ext = {
+        s: {"direction": v["direction"], "lots": v["lots"] + 1, "entry_price": v["entry_price"]}
+        for s, v in own_ext.items()
+    }
     ck("broker对账抓手数差", not pbc.reconcile_positions(bad_ext)["clean"])
     ck("纯内存无DB自洽对账返回None", pbc.reconcile_against_db() is None)
 
     # 15) 第103轮：threading.RLock 存在 + 同线程可重入（普通 Lock 会在此自死锁）
-    import threading as _th
+
     _lk = pb._lock
     # Python 3.x 中 threading.RLock 是函数不是类，用 acquire 行为检测
     ck("broker._lock 存在", _lk is not None)
@@ -1801,8 +2348,9 @@ def selftest():
     ck("RLock 同线程可重入", _ok_reentrant)
 
     # 16) 第104轮：统一资金池公式（一个钱包两张持仓表；初始资本只计一次）
-    ua0 = PaperBroker(db=None, fill_mode="close", equity0=10_000_000,
-                      slip_rate=0.0001, restore=False).unified_account()
+    ua0 = PaperBroker(
+        db=None, fill_mode="close", equity0=10_000_000, slip_rate=0.0001, restore=False
+    ).unified_account()
     ck("无操作统一权益==初始资金", abs(ua0["equity"] - 10_000_000) < 1e-6)
     ck("无操作统一占用==0", ua0["margin_used"] == 0.0)
     ck("无操作统一权益公式", abs(ua0["equity"] - 10_000_000) < 1e-6)
@@ -1811,10 +2359,14 @@ def selftest():
     _cfg.PAPER_MAX_SYMBOL_WEIGHT = 1.0
     _cfg.PAPER_MAX_SECTOR_WEIGHT = 1.0
     _cfg.PAPER_MAX_CONCURRENT = 64
-    _fut_broker = PaperBroker(db=None, fill_mode="close", equity0=1_000_000.0,
-                              slip_rate=0.0001, restore=False,
-                              margin_table={"RB": {"broker_margin": 0.1,
-                                                   "limit_basic": 0.05, "multiplier": 10}})
+    _fut_broker = PaperBroker(
+        db=None,
+        fill_mode="close",
+        equity0=1_000_000.0,
+        slip_rate=0.0001,
+        restore=False,
+        margin_table={"RB": {"broker_margin": 0.1, "limit_basic": 0.05, "multiplier": 10}},
+    )
     _fut_broker.on_cycle("2026-09-02 09:05:00", [_row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
     uaf = _fut_broker.unified_account()
     ck("期货盈利统一权益=期货口径", abs(uaf["equity"] - _fut_broker.pf.equity()) < 1e-6)

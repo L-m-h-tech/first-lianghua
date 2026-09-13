@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分钟K线数据层（新浪主连全周期唯一源 + 通用周期聚合）。
 
 为什么需要：
@@ -16,15 +15,12 @@
 能力天花板（诚实声明）：免费源无历史 L2 逐笔；新浪主连是比例复权连续序列（换月点为近似）；
 分钟长期历史靠常驻自采滚动积累。
 """
-import json
+
 import threading
-import time
 from datetime import datetime, timedelta
 
 import config
-from http_client import http
 from data_router import REGISTRY
-from utils import LOG
 
 # 新浪主连分钟K支持的周期（分钟）；2026-09-01 晚补测 type=1（一分钟）同样返回1023根
 SINA_MIN_PERIODS = (1, 5, 15, 30, 60)
@@ -35,6 +31,7 @@ SESSION_STARTS = ("09:00", "10:30", "13:30", "21:00")
 
 
 # ---------------- 新浪主连分钟K（主源，主连代码 RB0，5/15/30/60m） ----------------
+
 
 def fetch_sina_minute(sina_code, ex, period, lmt=None):
     """新浪主力连续分钟K（支持 1/5/15/30/60m），升序返回统一 bar dict；不支持的周期/任何失败返回 []。
@@ -48,6 +45,7 @@ def fetch_sina_minute(sina_code, ex, period, lmt=None):
         return []
     try:
         from futures_data import fetch_intraday_kline  # 延迟导入：避免数据层之间的循环导入
+
         raw = fetch_intraday_kline(str(sina_code), period=period, retry=1)
     except Exception:
         return []
@@ -61,13 +59,26 @@ def fetch_sina_minute(sina_code, ex, period, lmt=None):
             continue
         if c <= 0 or not dt:
             continue
-        bars.append({"dt": dt, "trade_date": dt[:10], "o": o, "h": h, "l": l, "c": c,
-                     "v": float(r.get("v") or 0), "amount": 0.0,
-                     "sym": sym, "contract": str(sina_code).upper(),
-                     "exchange": ex, "period": period, "src": "sina"})
+        bars.append(
+            {
+                "dt": dt,
+                "trade_date": dt[:10],
+                "o": o,
+                "h": h,
+                "l": l,
+                "c": c,
+                "v": float(r.get("v") or 0),
+                "amount": 0.0,
+                "sym": sym,
+                "contract": str(sina_code).upper(),
+                "exchange": ex,
+                "period": period,
+                "src": "sina",
+            }
+        )
     bars.sort(key=lambda b: b["dt"])
     if lmt:
-        bars = bars[-int(lmt):]
+        bars = bars[-int(lmt) :]
     return bars
 
 
@@ -76,6 +87,7 @@ def fetch_sina_minute(sina_code, ex, period, lmt=None):
 # 通达信公共服务器 7727 不可达；东财 CDP/curl 调试浏览器兜底一并删除——不再向被封锁
 # 域名发请求、不再拉起调试浏览器空白页）。新浪 stock2（日线+分钟K同域）被 WAF 456 封锁时，
 # 先代理池（秒级独立出口绕过），再天勤 TqSdk（独立通道）。
+
 
 def _sina_raw_to_bars(raw, sina_code, ex, period):
     """把新浪 getFewMinLine 原始返回 [{d,o,h,l,c,v,p,s}] 转成统一 bar 格式（与 fetch_sina_minute 对齐）。"""
@@ -89,10 +101,23 @@ def _sina_raw_to_bars(raw, sina_code, ex, period):
             continue
         if c <= 0 or not dt:
             continue
-        bars.append({"dt": dt, "trade_date": dt[:10], "o": o, "h": h, "l": l, "c": c,
-                     "v": float(r.get("v") or 0), "amount": 0.0,
-                     "sym": sym, "contract": str(sina_code).upper(),
-                     "exchange": ex, "period": int(period), "src": "proxy"})
+        bars.append(
+            {
+                "dt": dt,
+                "trade_date": dt[:10],
+                "o": o,
+                "h": h,
+                "l": l,
+                "c": c,
+                "v": float(r.get("v") or 0),
+                "amount": 0.0,
+                "sym": sym,
+                "contract": str(sina_code).upper(),
+                "exchange": ex,
+                "period": int(period),
+                "src": "proxy",
+            }
+        )
     bars.sort(key=lambda b: b["dt"])
     return bars
 
@@ -126,6 +151,7 @@ class MinuteCollector:
         if getattr(config, "SINA_SERVER_ENABLED", False):
             try:
                 from server_minute_client import _fetch_via_server
+
                 raw = _fetch_via_server(sina_code, period, lmt)
                 if raw:
                     bars = _sina_raw_to_bars(raw, sina_code, ex, period)
@@ -142,11 +168,12 @@ class MinuteCollector:
                 src = "sina"
                 REGISTRY.record("minute_sina", True)
             else:
-                REGISTRY.record("minute_sina", False)   # G11 主源健康上报
+                REGISTRY.record("minute_sina", False)  # G11 主源健康上报
         # 第118轮：新浪禁用/失败时——先代理池（秒级、代理IP独立出口绕过封锁），再天勤 TqSdk（独立通道）
         if not bars:
             try:
                 from futures_data import _fetch_intraday_via_proxy
+
                 raw = _fetch_intraday_via_proxy(sina_code, period, lmt)
                 if raw:
                     bars = _sina_raw_to_bars(raw, sina_code, ex, period)
@@ -157,6 +184,7 @@ class MinuteCollector:
         if not bars:
             try:
                 from backup_sources import tqsdk_minute_kline
+
                 tq_bars = tqsdk_minute_kline(sina_code, period, num_bars=lmt or 20)
                 if tq_bars:
                     bars = tq_bars
@@ -169,6 +197,7 @@ class MinuteCollector:
 
 
 # ---------------- 通用分钟周期聚合（纯函数，零网络；供第15轮日内回测把细周期聚合成粗周期） ----------------
+
 
 def _parse_dt(text):
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
@@ -201,10 +230,11 @@ def aggregate_bars(bars, base_min, factor, session_starts=None):
     out, seg, prev_dt = [], [], None
 
     def _merge(seg_items):
-        dts, items = zip(*seg_items)
+        dts, items = zip(*seg_items, strict=False)
         merged = dict(items[-1])
         merged["dt"] = items[-1].get("dt")
-        merged["o"] = float(items[0]["o"]); merged["c"] = float(items[-1]["c"])
+        merged["o"] = float(items[0]["o"])
+        merged["c"] = float(items[-1]["c"])
         merged["h"] = max(float(x["h"]) for x in items)
         merged["l"] = min(float(x["l"]) for x in items)
         merged["v"] = sum(float(x.get("v") or 0) for x in items)
@@ -226,9 +256,11 @@ def aggregate_bars(bars, base_min, factor, session_starts=None):
             dt = _parse_dt(b.get("dt"))
             if dt is None:
                 continue
-            contiguous = prev_dt is not None and abs((dt - prev_dt).total_seconds() - base_min * 60) < 1
+            contiguous = (
+                prev_dt is not None and abs((dt - prev_dt).total_seconds() - base_min * 60) < 1
+            )
             if not contiguous:
-                seg = []                       # 跨休市段：另起
+                seg = []  # 跨休市段：另起
             seg.append((dt, b))
             if len(seg) == factor:
                 out.append(_merge(seg))
@@ -247,12 +279,14 @@ def aggregate_bars(bars, base_min, factor, session_starts=None):
             return dt.replace(hour=m // 60, minute=m % 60, second=0, microsecond=0)
         # 凌晨（夜盘跨日，如 00:30）：归属前一日夜盘锚点（21:00）
         m = max(anchors)
-        return (dt - timedelta(days=1)).replace(hour=m // 60, minute=m % 60, second=0, microsecond=0)
+        return (dt - timedelta(days=1)).replace(
+            hour=m // 60, minute=m % 60, second=0, microsecond=0
+        )
 
     def _emit_full(buckets):
         for b_idx in sorted(buckets):
             items = buckets[b_idx]
-            if len(items) == factor:           # 只保留满桶；段头/段尾不足整桶丢弃
+            if len(items) == factor:  # 只保留满桶；段头/段尾不足整桶丢弃
                 out.append(_merge(items))
 
     buckets, anchor_dt = {}, None
@@ -261,14 +295,14 @@ def aggregate_bars(bars, base_min, factor, session_starts=None):
         if dt is None:
             continue
         contiguous = prev_dt is not None and abs((dt - prev_dt).total_seconds() - base_min * 60) < 1
-        if not contiguous:                     # 跨休市：先结算上一段，锚点重算
+        if not contiguous:  # 跨休市：先结算上一段，锚点重算
             _emit_full(buckets)
             buckets, anchor_dt = {}, None
         if anchor_dt is None:
             anchor_dt = _anchor_for(dt)
         # bar_dt 为桶末口径：bar 恰好落在锚点+k×周期边界时归属刚结束的桶 → 向上取整
         total_sec = int(round((dt - anchor_dt).total_seconds()))
-        idx = -((-total_sec) // period_sec)            # 整数 ceil（anchor ≤ dt 恒正）
+        idx = -((-total_sec) // period_sec)  # 整数 ceil（anchor ≤ dt 恒正）
         buckets.setdefault(idx, []).append((dt, b))
         prev_dt = dt
     _emit_full(buckets)

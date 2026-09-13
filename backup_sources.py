@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第116轮：备用数据源模块 backup_sources.py。
 
 项目数据层长期依赖新浪(主)+东财(兜底)，2026-09-10 起新浪对盘后日线请求返回
@@ -21,19 +20,21 @@ WAF 拦截页、东财 push2his 对 Python http 客户端按 TLS 指纹封锁—
   3. 不写主链缓存：返回裸数据，由调用方（KlineCache/DataRouter）决定缓存策略。
   4. 结构对齐：日线返回 [{d,o,h,l,c,v,p,s}, ...]（同 futures_data.fetch_daily_kline）。
 """
+
 import os
 import sys
-import time
 import threading
+import time
 
 import config
 from utils import LOG
 
 # ---------------- 可选依赖探测（零影响主链） ----------------
 
-_AK = None          # akshare 模块或 None
+_AK = None  # akshare 模块或 None
 try:
     import akshare as _AK
+
     _AK_AVAILABLE = True
 except Exception as _e:  # pragma: no cover - 环境缺依赖时静默降级
     _AK_AVAILABLE = False
@@ -44,13 +45,16 @@ try:
     # E 盘 vendor：两个候选路径——项目根目录旁/量化目录旁/BACKUP_VENDOR_DIR 覆盖
     _vendor_candidates = [
         getattr(config, "BACKUP_VENDOR_DIR", None),
-        os.path.join(os.path.dirname(os.path.dirname(config.BASE_DIR)), "vendor"),  # E:\LHsystem\vendor
-        os.path.join(os.path.dirname(config.BASE_DIR), "vendor"),                  # E:\LHsystem\量化\vendor
+        os.path.join(
+            os.path.dirname(os.path.dirname(config.BASE_DIR)), "vendor"
+        ),  # E:\LHsystem\vendor
+        os.path.join(os.path.dirname(config.BASE_DIR), "vendor"),  # E:\LHsystem\量化\vendor
     ]
     for _v in [v for v in _vendor_candidates if v and os.path.isdir(v)]:
         if _v not in sys.path:
             sys.path.insert(0, _v)
         import tqsdk  # noqa: F401
+
         _TQSDK_AVAILABLE = True
         break
 except Exception as _e:  # pragma: no cover
@@ -59,6 +63,7 @@ except Exception as _e:  # pragma: no cover
 _CURL_AVAILABLE = False
 try:
     import curl_cffi  # noqa: F401
+
     _CURL_AVAILABLE = True
 except Exception as _e:  # pragma: no cover
     LOG.debug("curl_cffi 不可用: %s", _e)
@@ -133,8 +138,10 @@ def inventory_em_akshare(symbol_cn):
         rows = []
         # 列通常为 日期/库存；兼容常见列名
         dcol = next((c for c in df.columns if "日期" in str(c)), df.columns[0])
-        vcol = next((c for c in df.columns if "库存" in str(c) or "仓单" in str(c)),
-                    df.columns[1] if len(df.columns) > 1 else None)
+        vcol = next(
+            (c for c in df.columns if "库存" in str(c) or "仓单" in str(c)),
+            df.columns[1] if len(df.columns) > 1 else None,
+        )
         if vcol is None:
             return None
         for _, r in df.iterrows():
@@ -154,20 +161,23 @@ def basis_daily_akshare(start_day, end_day, vars_list):
     if not _AK_AVAILABLE:
         return None
     try:
-        df = _AK.futures_spot_price_daily(start_day=str(start_day), end_day=str(end_day),
-                                          vars_list=list(vars_list))
+        df = _AK.futures_spot_price_daily(
+            start_day=str(start_day), end_day=str(end_day), vars_list=list(vars_list)
+        )
         if df is None or df.empty:
             return None
         rows = []
         for _, r in df.iterrows():
             try:
-                rows.append((
-                    str(r.get("date", ""))[:10],
-                    str(r.get("symbol", "")),
-                    float(r.get("spot_price", 0.0) or 0.0),
-                    float(r.get("near_contract_price", 0.0) or 0.0),
-                    float(r.get("dominant_contract_price", 0.0) or 0.0),
-                ))
+                rows.append(
+                    (
+                        str(r.get("date", ""))[:10],
+                        str(r.get("symbol", "")),
+                        float(r.get("spot_price", 0.0) or 0.0),
+                        float(r.get("near_contract_price", 0.0) or 0.0),
+                        float(r.get("dominant_contract_price", 0.0) or 0.0),
+                    )
+                )
             except (TypeError, ValueError):
                 continue
         return rows or None
@@ -182,8 +192,9 @@ def hold_pos_sina_akshare(symbol, contract, date_str):
     if not _AK_AVAILABLE:
         return None
     try:
-        df = _AK.futures_hold_pos_sina(symbol=str(symbol), contract=str(contract),
-                                       date=str(date_str))
+        df = _AK.futures_hold_pos_sina(
+            symbol=str(symbol), contract=str(contract), date=str(date_str)
+        )
         if df is None or df.empty:
             return None
         return df.to_dict("records")
@@ -198,8 +209,8 @@ def hold_pos_sina_akshare(symbol, contract, date_str):
 # 通常只有几个品种缺失，按需订阅每次约 1-8 秒即可拿到。
 
 _tq_lock = threading.Lock()
-_tq_api = None        # 调用线程内 TqApi 单例（不跨线程共享）
-_tq_cache = {}        # code(RB0) -> Quote 引用
+_tq_api = None  # 调用线程内 TqApi 单例（不跨线程共享）
+_tq_cache = {}  # code(RB0) -> Quote 引用
 _tq_connecting = False
 
 
@@ -247,8 +258,14 @@ def _tq_ins_of(code):
     if not meta:
         return None
     ex = meta.get("ex")
-    _exmap = {"SHFE": "SHFE", "DCE": "DCE", "CZCE": "CZCE", "CFFEX": "CFFEX",
-              "GFEX": "GFEX", "INE": "INE"}
+    _exmap = {
+        "SHFE": "SHFE",
+        "DCE": "DCE",
+        "CZCE": "CZCE",
+        "CFFEX": "CFFEX",
+        "GFEX": "GFEX",
+        "INE": "INE",
+    }
     if not ex or ex not in _exmap:
         return None
     return "KQ.m@%s.%s" % (_exmap[ex], sym.lower())
@@ -289,6 +306,7 @@ def _tq_get_api():
     def _connect():
         try:
             from tqsdk import TqApi, TqAuth
+
             if auth:
                 api = TqApi(auth=TqAuth(*auth), disable_print=True)
                 LOG.info("天勤 TqSdk 连接成功（快期账户模式）")
@@ -391,6 +409,7 @@ def tqsdk_daily_kline(code, num_bars=540):
         return None
     try:
         import datetime as _dt
+
         kline = api.get_kline_serial(ins, 86400, data_length=num_bars)
         # 首次等待行情数据到达（天勤需 wait_update 驱动一次；看门狗 20 秒防挂起）
         time.sleep(3)
@@ -401,16 +420,18 @@ def tqsdk_daily_kline(code, num_bars=540):
                 try:
                     dt_ns = row.get("datetime", 0)
                     d = _dt.datetime.fromtimestamp(dt_ns / 1e9).strftime("%Y-%m-%d")
-                    bars.append({
-                        "d": d,
-                        "o": float(row["open"]),
-                        "h": float(row["high"]),
-                        "l": float(row["low"]),
-                        "c": float(row["close"]),
-                        "v": float(row["volume"]),
-                        "p": float(row.get("open_oi", 0.0) or 0.0),
-                        "s": 0.0,
-                    })
+                    bars.append(
+                        {
+                            "d": d,
+                            "o": float(row["open"]),
+                            "h": float(row["high"]),
+                            "l": float(row["low"]),
+                            "c": float(row["close"]),
+                            "v": float(row["volume"]),
+                            "p": float(row.get("open_oi", 0.0) or 0.0),
+                            "s": 0.0,
+                        }
+                    )
                 except Exception:
                     continue
         result = bars or None
@@ -450,7 +471,8 @@ def tqsdk_minute_kline(code, period=30, num_bars=1023):
         return []
     try:
         import datetime as _dt
-        duration = period * 60   # 秒
+
+        duration = period * 60  # 秒
         kline = api.get_kline_serial(ins, duration, data_length=int(num_bars))
         time.sleep(2)
         _tq_wait_with_timeout(api, timeout=20)
@@ -460,21 +482,23 @@ def tqsdk_minute_kline(code, period=30, num_bars=1023):
                 try:
                     dt_ns = row.get("datetime", 0)
                     dt_text = _dt.datetime.fromtimestamp(dt_ns / 1e9).strftime("%Y-%m-%d %H:%M")
-                    bars.append({
-                        "dt": dt_text,
-                        "trade_date": dt_text[:10],
-                        "o": float(row["open"]),
-                        "h": float(row["high"]),
-                        "l": float(row["low"]),
-                        "c": float(row["close"]),
-                        "v": float(row["volume"]),
-                        "amount": 0.0,
-                        "sym": code,
-                        "contract": code,
-                        "exchange": "",
-                        "period": period,
-                        "src": "tq",
-                    })
+                    bars.append(
+                        {
+                            "dt": dt_text,
+                            "trade_date": dt_text[:10],
+                            "o": float(row["open"]),
+                            "h": float(row["high"]),
+                            "l": float(row["low"]),
+                            "c": float(row["close"]),
+                            "v": float(row["volume"]),
+                            "amount": 0.0,
+                            "sym": code,
+                            "contract": code,
+                            "exchange": "",
+                            "period": period,
+                            "src": "tq",
+                        }
+                    )
                 except Exception:
                     continue
         bars.sort(key=lambda b: b["dt"])
@@ -491,6 +515,7 @@ def tqsdk_minute_kline(code, period=30, num_bars=1023):
 
 # ---------------- C 级：curl_cffi TLS 指纹伪装（东财封锁场景备选） ----------------
 
+
 def curl_get(url, headers=None, timeout=None, impersonate="chrome"):
     """用 curl_cffi 以浏览器 TLS 指纹发 GET。curl_cffi 缺失返回 None。
     返回 (status_code, text) 或 None。仅作东财等 TLS 封锁场景的最后一搏。"""
@@ -498,6 +523,7 @@ def curl_get(url, headers=None, timeout=None, impersonate="chrome"):
         return None
     try:
         from curl_cffi import requests as _creq
+
         t = timeout or getattr(config, "TIMEOUT", 10)
         resp = _creq.get(url, headers=headers or {}, timeout=t, impersonate=impersonate)
         return resp.status_code, resp.text
@@ -510,10 +536,12 @@ def curl_get(url, headers=None, timeout=None, impersonate="chrome"):
 
 if __name__ == "__main__":
     import json
+
     print("备用源可用性:", json.dumps(availability(), ensure_ascii=False, indent=1))
     if _AK_AVAILABLE:
         bars = daily_kline_akshare("RB0", retry=0)
-        print("日线第4源 RB0: %d 根, 最新=%s" % (len(bars) if bars else 0,
-                                              bars[-1] if bars else None))
+        print(
+            "日线第4源 RB0: %d 根, 最新=%s" % (len(bars) if bars else 0, bars[-1] if bars else None)
+        )
     else:
         print("akshare 未装，跳过日线自检")

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G8（第57轮）只读 Web / 手机看板服务器 web_dashboard —— 纯标准库、零第三方依赖、默认只绑本机。
 
 定位：把已经落盘的 reports/ 研究产物（图表看板.html、实时报告.html、各 *.txt/*.json/*.csv）用标准库
@@ -16,6 +15,7 @@ http.server 在本机/局域网起一个**只读静态站点**，手机连同一
     python tools/web_dashboard.py --lan           # 绑 0.0.0.0，手机同 Wi-Fi 访问（打印本机IP）
     python tools/web_dashboard.py --selftest      # 离线纯逻辑自测（不起 socket）
 """
+
 import argparse
 import datetime as _dt
 import html as _html
@@ -29,12 +29,22 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORTS = os.path.join(_ROOT, "reports")
 DEFAULT_PORT = 8765
 ALLOWED_METHODS = ("GET", "HEAD")
-_CT = {".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
-       ".js": "application/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
-       ".txt": "text/plain; charset=utf-8", ".csv": "text/csv; charset=utf-8",
-       ".css": "text/css; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg",
-       ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml",
-       ".ico": "image/x-icon", ".pdf": "application/pdf"}
+_CT = {
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".pdf": "application/pdf",
+}
 # 首页优先展示的入口
 PRIORITY = ("图表看板.html", "实时报告.html")
 
@@ -62,7 +72,7 @@ def safe_join(root, urlpath):
     try:
         if os.path.commonpath([base, target]) != base:
             return None
-    except ValueError:          # 不同盘符（如 C: vs D:）
+    except ValueError:  # 不同盘符（如 C: vs D:）
         return None
     return target
 
@@ -103,22 +113,27 @@ def render_index(entries, root_label="reports", generated=None):
         href = urllib.parse.quote(name)
         rows.append(
             '<li><a href="%s">%s</a><span class="meta">%s · %s</span></li>'
-            % (href, _html.escape(name), _human_size(size), _html.escape(mt)))
-    body = "\n".join(rows) or '<li class="empty">reports/ 暂无文件（先运行一轮监控/研究工具）。</li>'
-    return ("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-            "<title>期货监控·只读看板索引</title><style>"
-            "body{background:#1c1c1c;color:#e6e6e6;font-family:-apple-system,Segoe UI,Microsoft YaHei,sans-serif;"
-            "margin:0;padding:18px;line-height:1.5}h1{font-size:18px;margin:0 0 4px}"
-            ".tip{color:#9a9a9a;font-size:12px;margin-bottom:14px}"
-            "ul{list-style:none;padding:0;margin:0}li{border-bottom:1px solid #2c2c2c;padding:10px 2px;"
-            "display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap}"
-            "a{color:#7ecbff;text-decoration:none;font-size:15px;word-break:break-all}"
-            ".meta{color:#8a8a8a;font-size:12px;white-space:nowrap}.empty{color:#8a8a8a;border:none}"
-            "</style></head><body>"
-            "<h1>期货监控 · 只读研究看板</h1>"
-            "<div class=\"tip\">目录 %s（只读静态服务，不接收写入）· 生成 %s · 手机同 Wi-Fi 可直接点开</div>"
-            "<ul>%s</ul></body></html>" % (_html.escape(root_label), _html.escape(generated), body))
+            % (href, _html.escape(name), _human_size(size), _html.escape(mt))
+        )
+    body = (
+        "\n".join(rows) or '<li class="empty">reports/ 暂无文件（先运行一轮监控/研究工具）。</li>'
+    )
+    return (
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>期货监控·只读看板索引</title><style>"
+        "body{background:#1c1c1c;color:#e6e6e6;font-family:-apple-system,Segoe UI,Microsoft YaHei,sans-serif;"
+        "margin:0;padding:18px;line-height:1.5}h1{font-size:18px;margin:0 0 4px}"
+        ".tip{color:#9a9a9a;font-size:12px;margin-bottom:14px}"
+        "ul{list-style:none;padding:0;margin:0}li{border-bottom:1px solid #2c2c2c;padding:10px 2px;"
+        "display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap}"
+        "a{color:#7ecbff;text-decoration:none;font-size:15px;word-break:break-all}"
+        ".meta{color:#8a8a8a;font-size:12px;white-space:nowrap}.empty{color:#8a8a8a;border:none}"
+        "</style></head><body>"
+        "<h1>期货监控 · 只读研究看板</h1>"
+        '<div class="tip">目录 %s（只读静态服务，不接收写入）· 生成 %s · 手机同 Wi-Fi 可直接点开</div>'
+        "<ul>%s</ul></body></html>" % (_html.escape(root_label), _html.escape(generated), body)
+    )
 
 
 def is_allowed_method(method):
@@ -131,7 +146,7 @@ def make_handler(root):
     class _ReadOnlyHandler(http.server.BaseHTTPRequestHandler):
         server_version = "FuturesMonitorRO/1.0"
 
-        def log_message(self, fmt, *args):          # 静默默认访问日志，错误仍由下法打印
+        def log_message(self, fmt, *args):  # 静默默认访问日志，错误仍由下法打印
             pass
 
         def _reply_bytes(self, code, body, ctype="text/html; charset=utf-8"):
@@ -157,17 +172,21 @@ def make_handler(root):
             urlpath = self.path
             target = safe_join(root, urlpath)
             if target is None:
-                self._reply_text(403, "<h1>403 Forbidden</h1>"); return
+                self._reply_text(403, "<h1>403 Forbidden</h1>")
+                return
             if os.path.isdir(target) or urlpath in ("/", ""):
                 body = render_index(list_reports(root)).encode("utf-8")
-                self._reply_bytes(200, body); return
+                self._reply_bytes(200, body)
+                return
             if not os.path.isfile(target):
-                self._reply_text(404, "<h1>404 Not Found</h1>"); return
+                self._reply_text(404, "<h1>404 Not Found</h1>")
+                return
             try:
                 with open(target, "rb") as fp:
                     body = fp.read()
             except OSError:
-                self._reply_text(404, "<h1>404 Not Found</h1>"); return
+                self._reply_text(404, "<h1>404 Not Found</h1>")
+                return
             self._reply_bytes(200, body, content_type(target))
 
         do_GET = _serve
@@ -186,7 +205,7 @@ class _ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def lan_ip():
-    """ best-effort 取本机局域网 IP（不实际发包），失败返 127.0.0.1。"""
+    """best-effort 取本机局域网 IP（不实际发包），失败返 127.0.0.1。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -204,12 +223,15 @@ def serve(host="127.0.0.1", port=DEFAULT_PORT, root=REPORTS, open_browser=True):
     print("只读看板已启动（Ctrl+C 停止）：")
     print("  本机: http://127.0.0.1:%d/" % bound)
     if host == "0.0.0.0":
-        print("  手机/局域网: http://%s:%d/  （同一 Wi-Fi；此模式局域网内他人可读 reports，离开公共网络请用默认本机模式）"
-              % (lan_ip(), bound))
+        print(
+            "  手机/局域网: http://%s:%d/  （同一 Wi-Fi；此模式局域网内他人可读 reports，离开公共网络请用默认本机模式）"
+            % (lan_ip(), bound)
+        )
     print("  服务目录(只读): %s" % root)
     if open_browser:
         try:
             import webbrowser
+
             webbrowser.open("http://127.0.0.1:%d/" % bound)
         except Exception:
             pass
@@ -224,6 +246,7 @@ def serve(host="127.0.0.1", port=DEFAULT_PORT, root=REPORTS, open_browser=True):
 # =========================== 离线纯逻辑自测 ===========================
 def selftest():
     import tempfile
+
     # 1) safe_join：正常、中文、子文件
     root = os.path.abspath("reports")
     assert safe_join(root, "/a.txt").endswith(os.path.join("reports", "a.txt"))
@@ -247,10 +270,10 @@ def selftest():
         open(os.path.join(td, "图表看板.html"), "w", encoding="utf-8").write("<html>")
         open(os.path.join(td, "x&y.txt"), "w", encoding="utf-8").write("x")
         ent = list_reports(td)
-        assert ent[0][0] == "图表看板.html"          # 入口优先
+        assert ent[0][0] == "图表看板.html"  # 入口优先
         idx = render_index(ent, "tmp")
         assert "viewport" in idx and "图表看板.html" in idx
-        assert "x&y.txt" not in idx and "x&amp;y.txt" in idx   # 文件名做 HTML 转义防 XSS
+        assert "x&y.txt" not in idx and "x&amp;y.txt" in idx  # 文件名做 HTML 转义防 XSS
         assert list_reports(os.path.join(td, "no-such")) == []
     # 6) handler 工厂可构造出类、且实现了只读方法
     h = make_handler(root)
@@ -265,7 +288,9 @@ def main(argv=None):
     ap.add_argument("--host", default=None, help="绑定地址，默认127.0.0.1；用--lan改0.0.0.0")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--root", default=REPORTS, help="只读服务目录，默认 reports/")
-    ap.add_argument("--lan", action="store_true", help="绑0.0.0.0供局域网/手机访问（会打印风险提示）")
+    ap.add_argument(
+        "--lan", action="store_true", help="绑0.0.0.0供局域网/手机访问（会打印风险提示）"
+    )
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)

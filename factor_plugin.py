@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G2（第57轮·第一切片）因子/策略插件化宿主 factor_plugin —— 纯标准库、纯增量、当前不接主链。
 
 为什么是"第一切片"而不是一次性重写 analyzer：
@@ -20,19 +19,29 @@
 
 try:
     import factors_catalog as _catalog
-except Exception:          # 允许在缺依赖的极端环境导入，一致性校验时再报
+except Exception:  # 允许在缺依赖的极端环境导入，一致性校验时再报
     _catalog = None
 
 VALID_STATUS = ("live", "shadow", "research", "tracking", "archived")
 VALID_DIRECTION = (-1, 0, 1)
 
 
-class FactorPlugin(object):
+class FactorPlugin:
     """一个不可变因子/策略插件（轻量、显式字段，不用第三方）。"""
+
     __slots__ = ("key", "name", "layer", "direction", "bound", "status", "compute", "meta")
 
-    def __init__(self, key, compute, name=None, layer="自定义", direction=0,
-                 bound=None, status="research", meta=None):
+    def __init__(
+        self,
+        key,
+        compute,
+        name=None,
+        layer="自定义",
+        direction=0,
+        bound=None,
+        status="research",
+        meta=None,
+    ):
         if not isinstance(key, str) or not key:
             raise ValueError("plugin key 必须是非空字符串")
         if not callable(compute):
@@ -42,8 +51,13 @@ class FactorPlugin(object):
         if status not in VALID_STATUS:
             raise ValueError("plugin %r status 非法: %r" % (key, status))
         if bound is not None:
-            if (not isinstance(bound, (tuple, list)) or len(bound) != 2
-                    or bound[0] is None or bound[1] is None or bound[0] > bound[1]):
+            if (
+                not isinstance(bound, (tuple, list))
+                or len(bound) != 2
+                or bound[0] is None
+                or bound[1] is None
+                or bound[0] > bound[1]
+            ):
                 raise ValueError("plugin %r bound 必须是 (lo,hi) 且 lo<=hi" % key)
         # 显式拒绝可变默认共享
         object.__setattr__(self, "key", key)
@@ -128,7 +142,7 @@ def evaluate(context, key):
     try:
         val = p.compute(context if context is not None else {})
         return val, None
-    except Exception as exc:           # 研究插件失败绝不允许拖垮宿主
+    except Exception as exc:  # 研究插件失败绝不允许拖垮宿主
         return None, "%s: %s" % (type(exc).__name__, exc)
 
 
@@ -161,7 +175,9 @@ def check_registry_vs_catalog(plugins=None):
         if p.status == "live" and p.key not in part_keys:
             problems.append("live 插件 %r 不在综合分 PART_KEYS，禁止以 live 进分" % p.key)
         if p.key not in cat_keys and not p.meta.get("external"):
-            problems.append("插件 %r 未在 factors_catalog.CATALOG 登记（或显式 meta.external=True）" % p.key)
+            problems.append(
+                "插件 %r 未在 factors_catalog.CATALOG 登记（或显式 meta.external=True）" % p.key
+            )
         if p.status == "live" and p.direction not in VALID_DIRECTION:
             problems.append("live 插件 %r direction 非法" % p.key)
     return problems
@@ -178,6 +194,7 @@ def ordered_live_keys():
 
 def example_plugins():
     """两个**研究态**示例插件（不进综合分），演示函数式与带状态两种写法；调用方自行 register/clear。"""
+
     def _ret5(ctx):
         c = ctx.get("close")
         if not c or len(c) < 6:
@@ -189,11 +206,27 @@ def example_plugins():
         if v is None or not oi:
             return None
         return v / oi
+
     return [
-        make_plugin("plugin_demo_ret5", _ret5, name="示例·5日收益", layer="表达式研究",
-                    direction=1, status="research", meta={"external": True}),
-        make_plugin("plugin_demo_turnover", _turnover, name="示例·投机度", layer="量仓",
-                    direction=0, bound=(0.0, 50.0), status="research", meta={"external": True}),
+        make_plugin(
+            "plugin_demo_ret5",
+            _ret5,
+            name="示例·5日收益",
+            layer="表达式研究",
+            direction=1,
+            status="research",
+            meta={"external": True},
+        ),
+        make_plugin(
+            "plugin_demo_turnover",
+            _turnover,
+            name="示例·投机度",
+            layer="量仓",
+            direction=0,
+            bound=(0.0, 50.0),
+            status="research",
+            meta={"external": True},
+        ),
     ]
 
 
@@ -201,26 +234,31 @@ def example_plugins():
 def selftest():
     clear()
     # 1) 构造期校验：key/compute/direction/status/bound
-    for bad in (lambda: make_plugin("", lambda c: 1),
-                lambda: make_plugin("k", None),
-                lambda: make_plugin("k", lambda c: 1, direction=2),
-                lambda: make_plugin("k", lambda c: 1, status="bogus"),
-                lambda: make_plugin("k", lambda c: 1, bound=(1, 0))):
+    for bad in (
+        lambda: make_plugin("", lambda c: 1),
+        lambda: make_plugin("k", None),
+        lambda: make_plugin("k", lambda c: 1, direction=2),
+        lambda: make_plugin("k", lambda c: 1, status="bogus"),
+        lambda: make_plugin("k", lambda c: 1, bound=(1, 0)),
+    ):
         try:
-            bad(); assert False, "应当校验失败"
+            bad()
+            assert False, "应当校验失败"
         except ValueError:
             pass
     # 2) 不可变
     p = make_plugin("a", lambda c: 1)
     try:
-        p.key = "b"; assert False
+        p.key = "b"
+        assert False
     except AttributeError:
         pass
     # 3) 注册/重复/覆盖/过滤/注销
     register(make_plugin("a", lambda c: 2, status="research", meta={"external": True}))
     register(make_plugin("b", lambda c: 3, status="shadow", meta={"external": True}))
     try:
-        register(make_plugin("a", lambda c: 9)); assert False
+        register(make_plugin("a", lambda c: 9))
+        assert False
     except ValueError:
         pass
     assert names() == ["a", "b"] and names(status="shadow") == ["b"]
@@ -235,9 +273,11 @@ def selftest():
     assert evaluate({}, "nope") == (None, "missing")
     vals2, _ = evaluate_all(None, keys=["ok"])
     assert vals2["ok"] == 1
+
     # 5) wrap_function 适配器
     def f(ctx):
         return 42
+
     register(wrap_function("wf", f, meta={"external": True}), replace=True)
     assert evaluate({}, "wf")[0] == 42
     # 6) catalog 一致性：external 研究插件不报错；伪 live 非 PART key 必被拦

@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
 """新闻情绪词典/否定反转/上下文闸门 + 五维情绪回归（第18轮 D1，不改主分）。"""
-import math
+
 from datetime import datetime, timedelta
 
 import factors
-from factors import NewsFactor, _lex_weight, sentiment_facets, facet_tags, _distinct_hits
+from factors import NewsFactor, _distinct_hits, _lex_weight, facet_tags, sentiment_facets
 
 
 # ---------------- 词典极性 / 闸门 / 否定 ----------------
@@ -40,12 +39,12 @@ def test_distinct_hits_dedup():
 # ---------------- 五维情绪 ----------------
 def test_facet_intensity_uncertainty_forward():
     f = sentiment_facets("螺纹钢大幅飙升涨停", variety="螺纹")
-    assert f["intensity"] >= 0.99                 # 3个强度词 tanh 饱和
+    assert f["intensity"] >= 0.99  # 3个强度词 tanh 饱和
     assert f["relevance"] == 1.0
     assert f["event"] == "综合"
     f2 = sentiment_facets("市场可能或预计波动，下周仍有不确定性")
     assert f2["uncertainty"] > 0.9 and f2["forwardness"] > 0.5
-    assert f2["relevance"] == 0.35                # 未点名品种
+    assert f2["relevance"] == 0.35  # 未点名品种
 
 
 def test_facet_event_classification():
@@ -58,47 +57,62 @@ def test_facet_event_classification():
 def test_facet_polarity_reuses_lex():
     f = sentiment_facets("美联储大幅降息", cat=None)
     assert f["polarity"] > 0
-    assert abs(f["polarity"]) <= 3.5              # 裁剪
+    assert abs(f["polarity"]) <= 3.5  # 裁剪
 
 
 def test_facet_safe_on_empty():
     f = sentiment_facets(None)
-    assert f == {"polarity": 0.0, "intensity": 0.0, "uncertainty": 0.0,
-                 "relevance": 0.35, "forwardness": 0.0, "event": "综合"}
+    assert f == {
+        "polarity": 0.0,
+        "intensity": 0.0,
+        "uncertainty": 0.0,
+        "relevance": 0.35,
+        "forwardness": 0.0,
+        "event": "综合",
+    }
 
 
 def test_facet_tags_threshold():
-    tags = facet_tags({"intensity": 0.9, "forwardness": 0.1, "uncertainty": 0.0,
-                       "event": "供给"})
+    tags = facet_tags({"intensity": 0.9, "forwardness": 0.1, "uncertainty": 0.0, "event": "供给"})
     assert "强0.9" in tags and "供给" in tags and "前瞻" not in tags
     assert facet_tags(None) == ""
-    assert facet_tags({"intensity": 0.0, "forwardness": 0.0, "uncertainty": 0.0,
-                       "event": "综合"}) == ""
+    assert (
+        facet_tags({"intensity": 0.0, "forwardness": 0.0, "uncertainty": 0.0, "event": "综合"})
+        == ""
+    )
 
 
 # ---------------- NewsFactor 缓冲池 ----------------
 def _news(content, important=False, confidence=1.0, mins_ago=0):
-    return {"source": "t", "content": content,
-            "time": datetime.now() - timedelta(minutes=mins_ago),
-            "important": important, "confidence": confidence}
+    return {
+        "source": "t",
+        "content": content,
+        "time": datetime.now() - timedelta(minutes=mins_ago),
+        "important": important,
+        "confidence": confidence,
+    }
 
 
 def test_newsfactor_dedup_and_score():
     nf = NewsFactor()
-    n = nf.add([_news("美联储降息"), _news("美联储降息")])     # 同内容去重
+    n = nf.add([_news("美联储降息"), _news("美联储降息")])  # 同内容去重
     assert n == 1
     score, hits = nf.score(None)
     assert score > 0 and len(hits) >= 1
 
 
 def test_newsfactor_confidence_discount():
-    a = NewsFactor(); a.add([_news("美联储降息", confidence=1.0)])
-    b = NewsFactor(); b.add([_news("美联储降息", confidence=0.4)])
+    a = NewsFactor()
+    a.add([_news("美联储降息", confidence=1.0)])
+    b = NewsFactor()
+    b.add([_news("美联储降息", confidence=0.4)])
     assert b.score(None)[0] < a.score(None)[0]
 
 
 def test_newsfactor_variety_hit_amplifies():
-    a = NewsFactor(); a.add([_news("螺纹钢地产政策发力")])
-    b = NewsFactor(); b.add([_news("地产政策发力")])
+    a = NewsFactor()
+    a.add([_news("螺纹钢地产政策发力")])
+    b = NewsFactor()
+    b.add([_news("地产政策发力")])
     # 点名品种的那条在对应品种打分上被加权（这里用全局命中数对比方向即可）
     assert a.score(None)[0] != 0

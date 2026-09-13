@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """第94轮 A1 parser_health 探针/告警测试：零网络、确定性。"""
+
 import parser_health as ph
 
 
@@ -39,7 +39,7 @@ def test_alert_throttle():
     assert first
     ph.mark_alerted("throttle")
     second = ph.check_alert()
-    assert second == []            # 节流期内不再重复
+    assert second == []  # 节流期内不再重复
 
 
 def test_structure_change_trigger():
@@ -58,6 +58,7 @@ def test_emit_writes_txt(tmp_path, monkeypatch):
         ph.record("emit", False, 0)
     ph.render_reports()
     import os
+
     assert os.path.exists(str(tmp_path / "parser_health.txt"))
 
 

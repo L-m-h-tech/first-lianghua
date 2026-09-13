@@ -1,6 +1,6 @@
-# -*- coding: utf-8 -*-
 """【需求①】新闻/消息数据源：新浪财经7x24直播 + 金十数据快讯（每60秒抓取一次，
 供 factors.NewsFactor 生成新闻情绪判断因子；report.append_daily_news 同步缓存当日新闻供需求⑩复盘）"""
+
 import json
 import re
 from datetime import datetime
@@ -12,14 +12,15 @@ from utils import LOG, sanitize
 
 def fetch_sina_zhibo():
     """新浪财经7x24全球实时财经直播（zhibo_id=152）"""
-    url = ("https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=30"
-           "&zhibo_id=152&tag_id=0&dire=f&dpc=1")
+    url = (
+        "https://zhibo.sina.com.cn/api/zhibo/feed?page=1&page_size=30"
+        "&zhibo_id=152&tag_id=0&dire=f&dpc=1"
+    )
     r = http.get(url, headers=config.HEADERS_COMMON, timeout=config.TIMEOUT)
     r.encoding = "utf-8"
     r.raise_for_status()
     data = r.json()
-    items = (data.get("result", {}).get("data", {})
-                 .get("feed", {}).get("list")) or []
+    items = (data.get("result", {}).get("data", {}).get("feed", {}).get("list")) or []
     out = []
     for it in items:
         content = sanitize((it.get("rich_text") or "").strip())
@@ -30,8 +31,7 @@ def fetch_sina_zhibo():
             dt = datetime.strptime(it.get("create_time", ""), "%Y-%m-%d %H:%M:%S")
         except Exception:
             pass
-        out.append({"source": "新浪7x24", "time": dt,
-                    "content": content, "important": False})
+        out.append({"source": "新浪7x24", "time": dt, "content": content, "important": False})
     return out
 
 
@@ -60,8 +60,7 @@ def fetch_jin10():
         except Exception:
             pass
         important = bool(it.get("important"))
-        out.append({"source": "金十数据", "time": dt,
-                    "content": content, "important": important})
+        out.append({"source": "金十数据", "time": dt, "content": content, "important": important})
     return out
 
 
@@ -76,6 +75,7 @@ def fetch_all_news():
     # A1（第94轮）：解析健康探针——新闻条数归零=结构变化/接口失效早期信号
     try:
         import parser_health
+
         parser_health.record("sina_news", bool(news), len(news))
     except Exception:
         pass

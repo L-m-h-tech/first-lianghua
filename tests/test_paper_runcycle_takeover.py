@@ -1,17 +1,16 @@
-# -*- coding: utf-8 -*-
 """第115轮：run_cycle 5.5 纸面分支接管测试（零网络、确定性）。
 
 验证交易时段 + paper_ticker 已接管时，run_cycle 5.5 段跳过 on_cycle/write_paper_account
 （避免 run_cycle 5/10 分钟写盘覆盖 ticker 每分钟写盘）；未接管/非交易时段保留旧行为。
 仅验证分支选择逻辑（mock 最小 state），不跑 run_cycle 全量（依赖太重）。
 """
-import types
 
-import pytest
+import types
 
 
 class _MiniBroker:
     """最小 broker 桩：记录 on_cycle / on_cycle_options 是否被调用。"""
+
     def __init__(self, name="10万_激进", priority="futures_first"):
         self.name = name
         self.priority = priority
@@ -42,6 +41,7 @@ def _run_branch(st, trading_now, pa_fut):
     """复刻 main.py run_cycle 5.5 段的纯分支选择（不含真实撮合/写盘副作用）。
     返回 (action, called)：action∈{"skip_frozen","skip_ticker","do_cycle"}。"""
     import config as _cfg
+
     _skip_paper = (not trading_now) and getattr(_cfg, "PAPER_TRADING_ONLY", True)
     _ticker_took_over = bool(getattr(st, "_paper_ticker_running", False)) and trading_now
     if _skip_paper:

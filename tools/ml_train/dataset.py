@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G16（第88轮）浅ML训练管线·数据集构建（研究侧预备，等样本跨度达标即解锁）。
 
 按总纲 G16：
@@ -10,29 +9,58 @@ r"""G16（第88轮）浅ML训练管线·数据集构建（研究侧预备，等�
 本模块：从 monitor.db 的 ml_samples 读特征/标签 → X/y/meta；按时间序 purged 切分；
 特征标准化（只用训练折统计，防泄漏）。纯函数可合成断言、零网络。
 """
+
 import json
 import math
 import sqlite3
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]      # tools/ml_train/ -> 项目根
+ROOT = Path(__file__).resolve().parents[2]  # tools/ml_train/ -> 项目根
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
-import build_ml_samples as bms                  # noqa: E402  purged_embargo_split 复用
+import build_ml_samples as bms  # noqa: E402
 
 DEFAULT_DB = ROOT / "data" / "monitor.db"
-FEATURES = ("mom5", "mom20", "ma10_bias", "ma20_bias", "ma60_bias",
-            "rsv20", "atr_pct", "vol60", "tech_score", "ret1")
+FEATURES = (
+    "mom5",
+    "mom20",
+    "ma10_bias",
+    "ma20_bias",
+    "ma60_bias",
+    "rsv20",
+    "atr_pct",
+    "vol60",
+    "tech_score",
+    "ret1",
+)
 N_FOLD = 4
-EMBARGO = 3          # 标签窗口后留 embargo 根（禁横跨切分点）
+EMBARGO = 3  # 标签窗口后留 embargo 根（禁横跨切分点）
 
-_MEAN = {"mom5": 0.0, "mom20": 0.0, "ma10_bias": 0.0, "ma20_bias": 0.0,
-         "ma60_bias": 0.0, "rsv20": 0.5, "atr_pct": 0.0, "vol60": 10000.0,
-         "tech_score": 0.0, "ret1": 0.0}
-_STD = {"mom5": 0.02, "mom20": 0.05, "ma10_bias": 0.03, "ma20_bias": 0.05,
-        "ma60_bias": 0.08, "rsv20": 0.3, "atr_pct": 0.01, "vol60": 20000.0,
-        "tech_score": 2.0, "ret1": 0.01}
+_MEAN = {
+    "mom5": 0.0,
+    "mom20": 0.0,
+    "ma10_bias": 0.0,
+    "ma20_bias": 0.0,
+    "ma60_bias": 0.0,
+    "rsv20": 0.5,
+    "atr_pct": 0.0,
+    "vol60": 10000.0,
+    "tech_score": 0.0,
+    "ret1": 0.0,
+}
+_STD = {
+    "mom5": 0.02,
+    "mom20": 0.05,
+    "ma10_bias": 0.03,
+    "ma20_bias": 0.05,
+    "ma60_bias": 0.08,
+    "rsv20": 0.3,
+    "atr_pct": 0.01,
+    "vol60": 20000.0,
+    "tech_score": 2.0,
+    "ret1": 0.01,
+}
 
 
 def is_num(x):
@@ -48,8 +76,9 @@ def load_samples(db_path=None, features=FEATURES):
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     for row in cur.execute(
-            "SELECT features_json,label,variety,trade_date,direction,bars_held "
-            "FROM ml_samples ORDER BY trade_date,id"):
+        "SELECT features_json,label,variety,trade_date,direction,bars_held "
+        "FROM ml_samples ORDER BY trade_date,id"
+    ):
         try:
             f = json.loads(row[0])
         except (TypeError, ValueError):
@@ -59,8 +88,14 @@ def load_samples(db_path=None, features=FEATURES):
             continue
         X.append(vec)
         y.append(int(row[1]))
-        meta.append({"variety": row[2], "trade_date": row[3],
-                     "direction": int(row[4] or 0), "bars_held": int(row[5] or 1)})
+        meta.append(
+            {
+                "variety": row[2],
+                "trade_date": row[3],
+                "direction": int(row[4] or 0),
+                "bars_held": int(row[5] or 1),
+            }
+        )
     con.close()
     return X, y, meta
 
@@ -71,7 +106,7 @@ def purged_folds(meta, n_fold=N_FOLD, embargo=EMBARGO):
 
     返回 [(train_idx, test_idx), ...]，idx 为样本下标。纯函数、可合成断言。"""
     n = len(meta)
-    order = list(range(n))                       # 已按时间排序
+    order = list(range(n))  # 已按时间排序
     edges = [round(n * k / n_fold) for k in range(n_fold + 1)]
     folds = []
     for k in range(n_fold):
@@ -87,13 +122,12 @@ def fit_scaler(X_train):
     n = len(X_train)
     k = len(X_train[0])
     mean = [sum(r[i] for r in X_train) / n for i in range(k)]
-    std = [math.sqrt(sum((r[i] - mean[i]) ** 2 for r in X_train) / n) or 1.0
-           for i in range(k)]
+    std = [math.sqrt(sum((r[i] - mean[i]) ** 2 for r in X_train) / n) or 1.0 for i in range(k)]
     return mean, std
 
 
 def standardize(X, mean, std):
-    return [[(v - m) / s for v, m, s in zip(row, mean, std)] for row in X]
+    return [[(v - m) / s for v, m, s in zip(row, mean, std, strict=False)] for row in X]
 
 
 def pos_target(y):
@@ -119,18 +153,23 @@ def binary_metrics(y_true, y_prob):
     if n == 0:
         return {}
     preds = [1 if p >= 0.5 else 0 for p in y_prob]
-    acc = sum(1 for a, b in zip(y_true, preds) if a == b) / n
-    tp = sum(1 for a, p in zip(y_true, preds) if a == 1 and p == 1)
-    fp = sum(1 for a, p in zip(y_true, preds) if a == 0 and p == 1)
-    fn = sum(1 for a, p in zip(y_true, preds) if a == 1 and p == 0)
+    acc = sum(1 for a, b in zip(y_true, preds, strict=False) if a == b) / n
+    tp = sum(1 for a, p in zip(y_true, preds, strict=False) if a == 1 and p == 1)
+    fp = sum(1 for a, p in zip(y_true, preds, strict=False) if a == 0 and p == 1)
+    fn = sum(1 for a, p in zip(y_true, preds, strict=False) if a == 1 and p == 0)
     prec = tp / (tp + fp) if tp + fp else 0.0
     rec = tp / (tp + fn) if tp + fn else 0.0
-    pos = [(p, a) for p, a in zip(y_prob, y_true) if p is not None]
+    pos = [(p, a) for p, a in zip(y_prob, y_true, strict=False) if p is not None]
     pos.sort(key=lambda kv: -kv[0])
     auc = _auc_rank(pos)
-    return {"n": n, "accuracy": round(acc, 4), "precision_pos": round(prec, 4),
-            "recall_pos": round(rec, 4), "auc": round(auc, 4),
-            "pos_rate": round(sum(y_true) / n, 4)}
+    return {
+        "n": n,
+        "accuracy": round(acc, 4),
+        "precision_pos": round(prec, 4),
+        "recall_pos": round(rec, 4),
+        "auc": round(auc, 4),
+        "pos_rate": round(sum(y_true) / n, 4),
+    }
 
 
 def _auc_rank(pairs):
@@ -157,8 +196,10 @@ def _auc_rank(pairs):
 
 def selftest():
     # 1) 合成小样本：purged_folds 各折不相交、train+test 覆盖、embargo 剔除生效
-    meta = [{"variety": "RB", "trade_date": "2026-01-%02d" % d, "direction": 1,
-             "bars_held": 5} for d in range(1, 41)]
+    meta = [
+        {"variety": "RB", "trade_date": "2026-01-%02d" % d, "direction": 1, "bars_held": 5}
+        for d in range(1, 41)
+    ]
     folds = purged_folds(meta, n_fold=4, embargo=2)
     assert len(folds) == 4
     for tr, te in folds:

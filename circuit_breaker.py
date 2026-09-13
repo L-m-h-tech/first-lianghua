@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G5④（第48轮）组合层单日浮亏熔断 circuit_breaker.py：与 risk_gate 的**单品种信号级** veto 正交，
 本模块是**组合账户级**的日内回撤断路器——盯住"当日日初权益 → 当前权益"的浮亏（以及保证金风险度），
 按阈值分级产出 normal/warn/halt/delever 决策。纯标准库、零网络、纯决策**不直接下单/不改持仓**，
@@ -20,11 +19,11 @@ r"""G5④（第48轮）组合层单日浮亏熔断 circuit_breaker.py：与 risk
 NORMAL, WARN, HALT, DELEVER = "normal", "warn", "halt", "delever"
 _LEVEL_RANK = {NORMAL: 0, WARN: 1, HALT: 2, DELEVER: 3}
 
-OBSERVE = "observe"          # 默认：只计算/标注，allow_open 恒 True
-PAPER_HALT = "paper_halt"    # 纸面层：halt/delever 时停开新仓（平仓照常），不自动减仓
+OBSERVE = "observe"  # 默认：只计算/标注，allow_open 恒 True
+PAPER_HALT = "paper_halt"  # 纸面层：halt/delever 时停开新仓（平仓照常），不自动减仓
 PAPER_DELEVER = "paper_delever"  # 纸面层：在 paper_halt 停开基础上，delever 档对当前持仓按比例自动减仓（只平不反向）
 ACTION_MODES = (OBSERVE, PAPER_HALT, PAPER_DELEVER)
-_HALT_MODES = (PAPER_HALT, PAPER_DELEVER)   # 这两种模式在 halt/delever 档停开新仓
+_HALT_MODES = (PAPER_HALT, PAPER_DELEVER)  # 这两种模式在 halt/delever 档停开新仓
 
 # 委托动作里属于"开新仓/增加敞口"的类型（与 paper_broker _make_order 的 action 对齐）
 OPEN_ACTIONS = ("open", "reverse_open")
@@ -33,7 +32,7 @@ CLOSE_ACTIONS = ("close", "reverse_close")
 DEFAULT_WARN = 0.02
 DEFAULT_HALT = 0.03
 DEFAULT_DELEVER = 0.05
-DEFAULT_RISK_HALT = 0.95     # 保证金风险度（占用/权益）≥此值抬到 halt
+DEFAULT_RISK_HALT = 0.95  # 保证金风险度（占用/权益）≥此值抬到 halt
 DEFAULT_DELEVER_RATIO = 0.5  # delever 档建议减仓到一半（仅文字建议）
 
 
@@ -100,6 +99,7 @@ def reduce_lots_of(held_lots, ratio):
     if held <= 0 or not (0 < r <= 1):
         return 0
     import math
+
     return max(0, int(math.floor(held * r)))
 
 
@@ -116,8 +116,14 @@ def delever_plan(positions_brief, ratio, done=None):
         held = int(b.get("lots") or 0)
         rl = reduce_lots_of(held, ratio)
         if rl >= 1 and rl < held:
-            plan.append({"sym": sym, "direction": int(b.get("direction") or 0),
-                         "held_lots": held, "reduce_lots": rl})
+            plan.append(
+                {
+                    "sym": sym,
+                    "direction": int(b.get("direction") or 0),
+                    "held_lots": held,
+                    "reduce_lots": rl,
+                }
+            )
     plan.sort(key=lambda x: x["sym"])
     return plan
 
@@ -125,9 +131,16 @@ def delever_plan(positions_brief, ratio, done=None):
 class CircuitBreaker:
     """组合层日内熔断状态机。阈值/动作模式构造时注入（不 import config，便于零环境自测）。"""
 
-    def __init__(self, *, action_mode=OBSERVE, warn=DEFAULT_WARN, halt=DEFAULT_HALT,
-                 delever=DEFAULT_DELEVER, risk_halt=DEFAULT_RISK_HALT,
-                 delever_ratio=DEFAULT_DELEVER_RATIO):
+    def __init__(
+        self,
+        *,
+        action_mode=OBSERVE,
+        warn=DEFAULT_WARN,
+        halt=DEFAULT_HALT,
+        delever=DEFAULT_DELEVER,
+        risk_halt=DEFAULT_RISK_HALT,
+        delever_ratio=DEFAULT_DELEVER_RATIO,
+    ):
         if action_mode not in ACTION_MODES:
             raise ValueError("未知熔断动作模式 %r（可选 %s）" % (action_mode, ACTION_MODES))
         if not (0 < warn <= halt <= delever):
@@ -140,7 +153,7 @@ class CircuitBreaker:
         self.day_open_equity = None
         self.peak_loss = 0.0
         self.level = NORMAL
-        self.events = []          # 当日升档事件 [(ts, new_level, loss)]
+        self.events = []  # 当日升档事件 [(ts, new_level, loss)]
         self._delever_done = set()  # 当日已执行自动减仓的 sym（当日只减一次，_reset_day 清空）
 
     # ---------------- 状态更新 ----------------
@@ -181,48 +194,83 @@ class CircuitBreaker:
         if _LEVEL_RANK[level] > _LEVEL_RANK[self.level]:
             self.events.append((str(ts), level, self.peak_loss))
         self.level = level
-        return self.decision(ts, equity, loss, risk_degree, n_positions,
-                             day_changed=day_changed, risk_trigger=risk_trigger)
+        return self.decision(
+            ts,
+            equity,
+            loss,
+            risk_degree,
+            n_positions,
+            day_changed=day_changed,
+            risk_trigger=risk_trigger,
+        )
 
-    def decision(self, ts, equity, loss, risk_degree, n_positions, *,
-                 day_changed=False, risk_trigger=False):
+    def decision(
+        self, ts, equity, loss, risk_degree, n_positions, *, day_changed=False, risk_trigger=False
+    ):
         """由当前 level + 动作模式组装决策（不改变状态）。"""
         allow_open = True
         if self.action_mode in _HALT_MODES and _LEVEL_RANK[self.level] >= _LEVEL_RANK[HALT]:
             allow_open = False
         msgs = []
-        warn, halt, delever = self.thresholds["warn"], self.thresholds["halt"], self.thresholds["delever"]
+        warn, halt, delever = (
+            self.thresholds["warn"],
+            self.thresholds["halt"],
+            self.thresholds["delever"],
+        )
         if self.level == WARN:
-            msgs.append("组合当日浮亏%.2f%%达预警线%.0f%%，提示降杠杆、多核对，不拦截开仓"
-                        % (self.peak_loss * 100, warn * 100))
+            msgs.append(
+                "组合当日浮亏%.2f%%达预警线%.0f%%，提示降杠杆、多核对，不拦截开仓"
+                % (self.peak_loss * 100, warn * 100)
+            )
         elif self.level == HALT:
             src = "（含保证金风险度%.0f%%触发）" % (risk_degree * 100) if risk_trigger else ""
             if self.action_mode == PAPER_HALT:
-                msgs.append("组合当日浮亏%.2f%%达停开线%.0f%%%s，已停止开新仓、只允许平仓（当日粘性，日切解除）"
-                            % (self.peak_loss * 100, halt * 100, src))
+                msgs.append(
+                    "组合当日浮亏%.2f%%达停开线%.0f%%%s，已停止开新仓、只允许平仓（当日粘性，日切解除）"
+                    % (self.peak_loss * 100, halt * 100, src)
+                )
             else:
-                msgs.append("组合当日浮亏%.2f%%达停开线%.0f%%%s（observe只标注：若切 paper_halt 将停开新仓）"
-                            % (self.peak_loss * 100, halt * 100, src))
+                msgs.append(
+                    "组合当日浮亏%.2f%%达停开线%.0f%%%s（observe只标注：若切 paper_halt 将停开新仓）"
+                    % (self.peak_loss * 100, halt * 100, src)
+                )
         elif self.level == DELEVER:
             if self.action_mode == PAPER_DELEVER:
-                msgs.append("组合当日浮亏%.2f%%达减仓线%.0f%%，paper_delever 已对持仓自动减仓约%.0f%%"
-                            "（只平不反向、当日各品种只减一次、日切可再评估）并停开新仓"
-                            % (self.peak_loss * 100, delever * 100, self.delever_ratio * 100))
+                msgs.append(
+                    "组合当日浮亏%.2f%%达减仓线%.0f%%，paper_delever 已对持仓自动减仓约%.0f%%"
+                    "（只平不反向、当日各品种只减一次、日切可再评估）并停开新仓"
+                    % (self.peak_loss * 100, delever * 100, self.delever_ratio * 100)
+                )
             else:
-                msgs.append("组合当日浮亏%.2f%%达减仓线%.0f%%，建议主动减仓约%.0f%%（%s），%s"
-                            % (self.peak_loss * 100, delever * 100, self.delever_ratio * 100,
-                               "paper_delever才自动执行" if self.action_mode == OBSERVE else "仅建议、不自动砍仓",
-                               "已停开新仓" if not allow_open else "observe未拦截"))
+                msgs.append(
+                    "组合当日浮亏%.2f%%达减仓线%.0f%%，建议主动减仓约%.0f%%（%s），%s"
+                    % (
+                        self.peak_loss * 100,
+                        delever * 100,
+                        self.delever_ratio * 100,
+                        "paper_delever才自动执行"
+                        if self.action_mode == OBSERVE
+                        else "仅建议、不自动砍仓",
+                        "已停开新仓" if not allow_open else "observe未拦截",
+                    )
+                )
         auto_delever = self.action_mode == PAPER_DELEVER and self.level == DELEVER
         return {
-            "ts": str(ts) if ts is not None else None, "day": self.day, "day_changed": day_changed,
-            "level": self.level, "action_mode": self.action_mode, "allow_open": allow_open,
-            "daily_loss": loss, "peak_loss": self.peak_loss,
-            "day_open_equity": self.day_open_equity, "equity": equity,
-            "risk_degree": risk_degree, "risk_trigger": risk_trigger,
-            "n_positions": n_positions, "auto_delever": auto_delever,
-            "suggest_reduce_ratio":
-                (self.delever_ratio if self.level == DELEVER else 0.0),
+            "ts": str(ts) if ts is not None else None,
+            "day": self.day,
+            "day_changed": day_changed,
+            "level": self.level,
+            "action_mode": self.action_mode,
+            "allow_open": allow_open,
+            "daily_loss": loss,
+            "peak_loss": self.peak_loss,
+            "day_open_equity": self.day_open_equity,
+            "equity": equity,
+            "risk_degree": risk_degree,
+            "risk_trigger": risk_trigger,
+            "n_positions": n_positions,
+            "auto_delever": auto_delever,
+            "suggest_reduce_ratio": (self.delever_ratio if self.level == DELEVER else 0.0),
             "messages": msgs,
         }
 
@@ -249,15 +297,18 @@ class CircuitBreaker:
         """从 config 的 CIRCUIT_* 常量构造；cfg=None 时延迟 import config；缺项回退默认。"""
         if cfg is None:
             import config as cfg
+
         def g(name, default):
             return getattr(cfg, name, default)
+
         return cls(
             action_mode=g("CIRCUIT_ACTION", OBSERVE),
             warn=g("CIRCUIT_WARN_LOSS", DEFAULT_WARN),
             halt=g("CIRCUIT_HALT_LOSS", DEFAULT_HALT),
             delever=g("CIRCUIT_DELEVER_LOSS", DEFAULT_DELEVER),
             risk_halt=g("CIRCUIT_RISK_HALT", DEFAULT_RISK_HALT),
-            delever_ratio=g("CIRCUIT_DELEVER_RATIO", DEFAULT_DELEVER_RATIO))
+            delever_ratio=g("CIRCUIT_DELEVER_RATIO", DEFAULT_DELEVER_RATIO),
+        )
 
     def render(self, d=None):
         """一行人类可读状态（报告/日志用）。"""
@@ -266,8 +317,11 @@ class CircuitBreaker:
         if d["level"] == NORMAL:
             return "组合熔断 normal（当日浮亏%+.2f%%，允许开仓）" % (d["daily_loss"] * 100)
         return "组合熔断 %s｜%s｜当日峰值浮亏%.2f%%｜%s" % (
-            d["level"], d["action_mode"], d["peak_loss"] * 100,
-            "；".join(d["messages"]) if d["messages"] else "")
+            d["level"],
+            d["action_mode"],
+            d["peak_loss"] * 100,
+            "；".join(d["messages"]) if d["messages"] else "",
+        )
 
 
 # =========================== 零网络/零DB 手算自测 ===========================
@@ -305,7 +359,7 @@ def selftest():
     cb = CircuitBreaker()
     d = cb.update("2026-09-03 09:30:00", 1_000_000)
     assert d["level"] == NORMAL and d["day_changed"] and d["allow_open"]
-    cb.update("2026-09-03 10:00:00", 940_000)   # -6% → delever
+    cb.update("2026-09-03 10:00:00", 940_000)  # -6% → delever
     d = cb.update("2026-09-03 10:01:00", 940_000)
     assert d["level"] == DELEVER and d["allow_open"] is True and d["suggest_reduce_ratio"] == 0.5
     assert cb.events[-1][1] == DELEVER
@@ -313,7 +367,7 @@ def selftest():
     # 6) 当日粘性：浮亏先到 halt 后反弹回 warn 区，级别仍停在 halt（不抖动解锁）
     cb2 = CircuitBreaker(action_mode=PAPER_HALT)
     cb2.update("2026-09-03 09:30:00", 1_000_000)
-    cb2.update("2026-09-03 10:00:00", 965_000)    # -3.5% halt
+    cb2.update("2026-09-03 10:00:00", 965_000)  # -3.5% halt
     assert cb2.level == HALT
     d = cb2.update("2026-09-03 11:00:00", 990_000)  # 反弹到 -1%
     assert d["level"] == HALT and d["allow_open"] is False and d["daily_loss"] == 0.01
@@ -326,9 +380,9 @@ def selftest():
     # 8) paper_halt 逐档 allow_open：warn 仍可开、halt/delever 停开
     cb3 = CircuitBreaker(action_mode=PAPER_HALT)
     cb3.update("2026-09-03 09:30:00", 1_000_000)
-    assert cb3.update("2026-09-03 09:45:00", 985_000)["allow_open"] is True   # -1.5% normal
+    assert cb3.update("2026-09-03 09:45:00", 985_000)["allow_open"] is True  # -1.5% normal
     assert cb3.update("2026-09-03 10:00:00", 978_000)["level"] == WARN
-    assert cb3.update("2026-09-03 10:01:00", 978_000)["allow_open"] is True   # warn 不停开
+    assert cb3.update("2026-09-03 10:01:00", 978_000)["allow_open"] is True  # warn 不停开
     assert cb3.update("2026-09-03 10:30:00", 968_000)["allow_open"] is False  # halt 停开
 
     # 9) 第二触发源：风险度超限抬到 halt（即使浮亏不大）
@@ -341,12 +395,20 @@ def selftest():
     assert d2["risk_trigger"] is False
 
     # 10) filter_orders：停开时剔 open/reverse_open、保留 close/reverse_close
-    orders = [{"action": "open", "sym": "A"}, {"action": "reverse_close", "sym": "B"},
-              {"action": "reverse_open", "sym": "B"}, {"action": "close", "sym": "C"}]
+    orders = [
+        {"action": "open", "sym": "A"},
+        {"action": "reverse_close", "sym": "B"},
+        {"action": "reverse_open", "sym": "B"},
+        {"action": "close", "sym": "C"},
+    ]
     kept = filter_orders(orders, False)
     assert [o["action"] for o in kept] == ["reverse_close", "close"]
-    assert [o["action"] for o in filter_orders(orders, True)] == ["open", "reverse_close",
-                                                                  "reverse_open", "close"]
+    assert [o["action"] for o in filter_orders(orders, True)] == [
+        "open",
+        "reverse_close",
+        "reverse_open",
+        "close",
+    ]
     assert filter_orders(None, False) == [] and filter_orders([], True) == []
     # 不改原列表
     assert len(orders) == 4
@@ -354,6 +416,7 @@ def selftest():
     # 11) render 不崩且含级别；from_config 在无 config 环境下回退默认（传 stub）
     class _Stub:
         CIRCUIT_ACTION = PAPER_HALT
+
     cbc = CircuitBreaker.from_config(_Stub())
     assert cbc.action_mode == PAPER_HALT
     cbc.update("2026-09-03 09:30:00", 1_000_000)
@@ -363,14 +426,16 @@ def selftest():
 
     # 12) reduce_lots_of：向下取整、不足1手不减、非法安全
     assert reduce_lots_of(10, 0.5) == 5 and reduce_lots_of(3, 0.5) == 1
-    assert reduce_lots_of(1, 0.5) == 0       # 1手减半=0.5手向下取整0，绝不清仓
+    assert reduce_lots_of(1, 0.5) == 0  # 1手减半=0.5手向下取整0，绝不清仓
     assert reduce_lots_of(10, 0) == 0 and reduce_lots_of(-1, 0.5) == 0
     assert reduce_lots_of("x", 0.5) == 0
 
     # 13) delever_plan：只减不清、跳过done、按sym排序、不改入参
-    brief = [{"sym": "RB", "direction": 1, "lots": 4},
-             {"sym": "I", "direction": -1, "lots": 1},
-             {"sym": "CU", "direction": 1, "lots": 10}]
+    brief = [
+        {"sym": "RB", "direction": 1, "lots": 4},
+        {"sym": "I", "direction": -1, "lots": 1},
+        {"sym": "CU", "direction": 1, "lots": 10},
+    ]
     plan = delever_plan(brief, 0.5, done={"CU"})
     # I 仅1手→减半0手不减；CU 已减过跳过；故只剩 RB（4手减2手）
     assert plan == [{"sym": "RB", "direction": 1, "held_lots": 4, "reduce_lots": 2}]
@@ -384,9 +449,10 @@ def selftest():
     assert cb5.open_allowed() is False
     tgt = cb5.delever_targets(brief)
     assert [p["sym"] for p in tgt] == ["CU", "RB"] and tgt[0]["reduce_lots"] == 5
-    cb5.mark_delevered("CU"); cb5.mark_delevered("RB")
-    assert cb5.delever_targets(brief) == []     # 当日已减不再减
-    d2 = cb5.update("2026-09-04 09:30:00", 1_000_000)   # 日切 normal、done 清空
+    cb5.mark_delevered("CU")
+    cb5.mark_delevered("RB")
+    assert cb5.delever_targets(brief) == []  # 当日已减不再减
+    d2 = cb5.update("2026-09-04 09:30:00", 1_000_000)  # 日切 normal、done 清空
     assert d2["level"] == NORMAL and cb5._delever_done == set()
     # observe/paper_halt 模式不出自动减仓计划
     assert CircuitBreaker(action_mode=OBSERVE).delever_targets(brief) == []
@@ -400,9 +466,11 @@ def selftest():
     cb7.update("2026-09-03 09:30:00", 1_000_000)
     assert cb7.update("2026-09-03 10:00:00", 940_000)["auto_delever"] is False
 
-    print("circuit_breaker selftest ALL PASS（日期解析/浮亏口径/三档边界/参数校验/observe恒可开/"
-          "当日粘性/日切重置/paper_halt逐档/风险度第二触发/委托过滤/渲染与工厂/"
-          "减仓手数/减仓计划/paper_delever执行与当日一次/auto_delever标志 共15组）")
+    print(
+        "circuit_breaker selftest ALL PASS（日期解析/浮亏口径/三档边界/参数校验/observe恒可开/"
+        "当日粘性/日切重置/paper_halt逐档/风险度第二触发/委托过滤/渲染与工厂/"
+        "减仓手数/减仓计划/paper_delever执行与当日一次/auto_delever标志 共15组）"
+    )
     return 0
 
 

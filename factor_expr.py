@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G25（第38轮）纯标准库表达式因子引擎 factor expression——"算子→表达式→因子"的唯一确定性载体。
 
 动机（见《总体对标与统一改进总纲》G25）：此前每加一个因子都要写一段过程式代码、实时 analyzer 与离线
@@ -21,22 +20,40 @@ panel 各接一次，口径只靠"调用同一函数"口头保证。本模块用
 因子治理（纯标准库，自含不依赖 tools）：pearson/spearman、高斯消元 _solve、orthogonalize 正交残差、
 等权/IC 加权/ICIR 加权 combine。
 """
+
 import math
 
 # =========================== 安全解析器（递归下降，白名单） ===========================
 _TS_OPS = {
-    "delay": (2, "ts"), "delta": (2, "ts"), "ts_sum": (2, "ts"), "ts_mean": (2, "ts"),
-    "ts_std": (2, "ts"), "ts_min": (2, "ts"), "ts_max": (2, "ts"), "ts_rank": (2, "ts"),
-    "ts_minmax": (2, "ts"), "decay_linear": (2, "ts"), "corr": (3, "ts"),
+    "delay": (2, "ts"),
+    "delta": (2, "ts"),
+    "ts_sum": (2, "ts"),
+    "ts_mean": (2, "ts"),
+    "ts_std": (2, "ts"),
+    "ts_min": (2, "ts"),
+    "ts_max": (2, "ts"),
+    "ts_rank": (2, "ts"),
+    "ts_minmax": (2, "ts"),
+    "decay_linear": (2, "ts"),
+    "corr": (3, "ts"),
     # 第61轮：状态型递推时序算子（全序列因果递推、无未来；跳过前导非有限值，前 n 个有限值SMA播种）
-    "ts_ema": (2, "ts"),   # 标准EMA：alpha=2/(n+1)，逐字对齐 futures_data._ema_series
-    "ts_rma": (2, "ts"),   # Wilder RMA：((n-1)*prev+x)/n，逐字对齐 RSI 的 avg_gain/avg_loss 平滑
+    "ts_ema": (2, "ts"),  # 标准EMA：alpha=2/(n+1)，逐字对齐 futures_data._ema_series
+    "ts_rma": (2, "ts"),  # Wilder RMA：((n-1)*prev+x)/n，逐字对齐 RSI 的 avg_gain/avg_loss 平滑
     # 第63轮 G25续：KDJ 专用算子（非 close-only，吃 high/low）
-    "kdj_rsv": (4, "ts"),  # 未成熟随机值 (high,low,close,n)：尾窗 hh/ll，(c-ll)/(hh-ll)*100，平盘给50
-    "kdj_sm": (2, "ts"),   # K/D 固定初值50、α=1/3 的递推 (2prev+x)/3（首个有限值即起递推，区别于 ts_ema 的SMA播种）
+    "kdj_rsv": (
+        4,
+        "ts",
+    ),  # 未成熟随机值 (high,low,close,n)：尾窗 hh/ll，(c-ll)/(hh-ll)*100，平盘给50
+    "kdj_sm": (
+        2,
+        "ts",
+    ),  # K/D 固定初值50、α=1/3 的递推 (2prev+x)/3（首个有限值即起递推，区别于 ts_ema 的SMA播种）
     # 第81轮：偏度（收益分布不对称性，低波异象/波动族研究用）——域专用算子而非通用 pow：
     # 通用 pow/条件聚合会把溢出/类型/元数审计面扩大，ts_skew 限定尾窗标准化三阶矩、审计面最小
-    "ts_skew": (2, "ts"),  # 尾窗样本偏度（成对剔非有限值，n_eff≥3；population g1=m3/m2^1.5，平窗None）
+    "ts_skew": (
+        2,
+        "ts",
+    ),  # 尾窗样本偏度（成对剔非有限值，n_eff≥3；population g1=m3/m2^1.5，平窗None）
 }
 _CS_OPS = {"cross_rank": (1, "cs"), "scale": (1, "cs"), "zscore": (1, "cs")}
 _EL_OPS = {"abs": 1, "sign": 1, "log": 1, "tanh": 1, "max": 2, "min": 2}
@@ -72,14 +89,14 @@ class _Tokenizer:
             j = self.i
             while j < self.n and (self.s[j].isdigit() or self.s[j] == "."):
                 j += 1
-            tok = self.s[self.i:j]
+            tok = self.s[self.i : j]
             self.i = j
             return ("num", tok)
         if ch.isalpha() or ch == "_":
             j = self.i
             while j < self.n and (self.s[j].isalnum() or self.s[j] == "_"):
                 j += 1
-            tok = self.s[self.i:j]
+            tok = self.s[self.i : j]
             self.i = j
             return ("name", tok)
         raise ExprError("非法字符 %r（位置%d）" % (ch, self.i))
@@ -148,11 +165,11 @@ class _Parser:
             return node
         if t[0] == "name":
             self._advance()
-            if self.cur == ("op", "("):   # 函数调用：必须命中白名单
+            if self.cur == ("op", "("):  # 函数调用：必须命中白名单
                 fname = t[1]
                 if fname not in WHITELIST:
                     raise ExprError("未知/未授权算子 %r（仅允许白名单算子）" % fname)
-                self._advance()           # 吃掉 '('
+                self._advance()  # 吃掉 '('
                 args = []
                 if self.cur != ("op", ")"):
                     while True:
@@ -166,7 +183,7 @@ class _Parser:
                 self._advance()
                 self._check_arity(fname, args)
                 return ("call", fname, args)
-            return ("var", t[1])          # 普通输入字段
+            return ("var", t[1])  # 普通输入字段
         raise ExprError("意外记号 %r" % (t,))
 
     @staticmethod
@@ -225,7 +242,11 @@ def _eval_ts(node, data):
         return data[node[1]]
     if kind == "neg":
         x = _eval_ts(node[1], data)
-        return [(-v if _isnum(v) else None) for v in x] if isinstance(x, list) else (-x if _isnum(x) else None)
+        return (
+            [(-v if _isnum(v) else None) for v in x]
+            if isinstance(x, list)
+            else (-x if _isnum(x) else None)
+        )
     if kind == "bin":
         return _bin_broadcast(node[1], _eval_ts(node[2], data), _eval_ts(node[3], data))
     if kind == "call":
@@ -237,7 +258,7 @@ def _eval_ts(node, data):
             series = [_eval_ts(c, data) for c in children[:-1]]
             n = _int_window(children[-1], data)
             return _ts_op(fn, series + [n])
-        xs = [_eval_ts(a, data) for a in node[2]]   # 逐元素数学算子
+        xs = [_eval_ts(a, data) for a in node[2]]  # 逐元素数学算子
         return _el_ts(fn, xs)
     raise ExprError("未知节点 %r" % (kind,))
 
@@ -271,6 +292,7 @@ def _bin_scalar(op, a, b):
 
 def _el_ts(fn, xs):
     """逐元素数学算子；max/min 二元，其余一元。标量或序列均可。"""
+
     def one(args):
         if fn == "abs":
             return abs(args[0]) if _isnum(args[0]) else None
@@ -285,6 +307,7 @@ def _el_ts(fn, xs):
         if fn == "min":
             return min(args) if all(_isnum(v) for v in args) else None
         raise ExprError("未知逐元素算子 %r" % fn)
+
     if any(isinstance(x, list) for x in xs):
         n = len(next(x for x in xs if isinstance(x, list)))
         out = [None] * n
@@ -346,7 +369,7 @@ def _kdj_rsv(high, low, close, n):
     t>=n-1 取尾窗 [t-n+1,t] 的最高/最低；hh==ll（|差|<1e-12）给 50，否则 (c-ll)/(hh-ll)*100。因果无未来。"""
     out = [None] * len(close)
     for t in range(n - 1, len(close)):
-        hs, ls, cs = high[t - n + 1:t + 1], low[t - n + 1:t + 1], close[t]
+        hs, ls, cs = high[t - n + 1 : t + 1], low[t - n + 1 : t + 1], close[t]
         if not all(_isnum(v) for v in hs + ls) or not _isnum(cs):
             continue
         hh, ll = max(hs), min(ls)
@@ -431,9 +454,9 @@ def _ts_op(fn, args):
         wts = list(range(1, n + 1))
         sw = sum(wts)
         for t in range(len(x)):
-            seg = x[t - n + 1:t + 1]
+            seg = x[t - n + 1 : t + 1]
             if len(seg) == n and all(_isnum(v) for v in seg):
-                out[t] = sum(w * v for w, v in zip(wts, seg)) / sw
+                out[t] = sum(w * v for w, v in zip(wts, seg, strict=False)) / sw
         return out
     if fn == "corr":
         y = args[1]
@@ -441,7 +464,8 @@ def _ts_op(fn, args):
             xs, ys = [], []
             for k in range(max(0, t - n + 1), t + 1):
                 if _isnum(x[k]) and _isnum(y[k]):
-                    xs.append(x[k]); ys.append(y[k])
+                    xs.append(x[k])
+                    ys.append(y[k])
             out[t] = pearson(xs, ys) if len(xs) >= 3 else None
         return out
     if fn == "ts_skew":
@@ -453,7 +477,7 @@ def _ts_op(fn, args):
             m2 = sum((v - mu) ** 2 for v in w) / len(w)
             m3 = sum((v - mu) ** 3 for v in w) / len(w)
             if m2 > 1e-20:
-                out[t] = m3 / (m2 ** 1.5)      # population 偏度 g1
+                out[t] = m3 / (m2**1.5)  # population 偏度 g1
         return out
     raise ExprError("未实现的时序算子 %r" % fn)
 
@@ -519,16 +543,16 @@ def eval_cs(expr, cs_data, syms=None):
             vals = [v for _, v in finite]
             if fn == "cross_rank":
                 ranks = _average_ranks(vals)
-                for s, r in zip(ss, ranks):
+                for s, r in zip(ss, ranks, strict=False):
                     out[s] = (r - 1.0) / (len(vals) - 1) if len(vals) > 1 else 0.5
             elif fn == "scale":
                 denom = sum(abs(v) for v in vals)
-                for s, v in zip(ss, vals):
+                for s, v in zip(ss, vals, strict=False):
                     out[s] = v / denom if denom > 1e-15 else None
             elif fn == "zscore":
                 m = _mean(vals)
                 sd = _sample_std(vals)
-                for s, v in zip(ss, vals):
+                for s, v in zip(ss, vals, strict=False):
                     out[s] = (v - m) / sd if sd and sd > 1e-15 else 0.0
             return out
         raise ExprError("未知节点 %r" % k)
@@ -553,7 +577,7 @@ def _el_scalar(fn, args):
 # =========================== 因子治理：相关/正交/加权合成（纯标准库） ===========================
 def pearson(xs, ys):
     """有限对齐样本 Pearson；样本<2 或零方差返回 None。"""
-    pairs = [(x, y) for x, y in zip(xs, ys) if _isnum(x) and _isnum(y)]
+    pairs = [(x, y) for x, y in zip(xs, ys, strict=False) if _isnum(x) and _isnum(y)]
     n = len(pairs)
     if n < 2:
         return None
@@ -569,7 +593,7 @@ def pearson(xs, ys):
 
 def spearman(xs, ys):
     """Spearman=秩的 Pearson（并列平均秩）；非有限样本位置成对剔除。"""
-    pairs = [(x, y) for x, y in zip(xs, ys) if _isnum(x) and _isnum(y)]
+    pairs = [(x, y) for x, y in zip(xs, ys, strict=False) if _isnum(x) and _isnum(y)]
     if len(pairs) < 2:
         return None
     rx = _average_ranks([p[0] for p in pairs])
@@ -675,122 +699,288 @@ def combine(matrix, weights):
 # =========================== 表达式因子库（研究侧、默认不进综合分） ===========================
 # 每条：key/表达式/方向/中文名/说明；引擎只承载这些"新研究因子"，旧因子保持过程式原实现。
 LIBRARY = (
-    {"key": "expr_ma_bias5", "expr": "delta(close,5)/delay(close,5)", "direction": +1,
-     "name": "5日价格动量(表达式版)", "note": "等价 ret5，用于实时/离线 parity 基准"},
-    {"key": "expr_ma_ratio", "expr": "ts_mean(close,5)/ts_mean(close,20)-1", "direction": +1,
-     "name": "短长均线比", "note": "5日均线上穿20日均线强度"},
-    {"key": "expr_trend_per_vol", "expr": "(close/ts_mean(close,20)-1)/(ts_std(close,20)+0.000001)", "direction": +1,
-     "name": "单位波动趋势", "note": "20日趋势除以其波动，风险调整动量"},
-    {"key": "expr_price_accel", "expr": "delta(delta(close,5),5)/delay(close,10)", "direction": +1,
-     "name": "价格二阶加速度", "note": "嵌套 delta 的动量变化率"},
-    {"key": "expr_illiq", "expr": "abs(delta(close,1)/delay(close,1))/(volume+1)", "direction": -1,
-     "name": "非流动性代理", "note": "Amihud |收益|/成交量 的无量纲代理（面板无成交额，用volume）"},
+    {
+        "key": "expr_ma_bias5",
+        "expr": "delta(close,5)/delay(close,5)",
+        "direction": +1,
+        "name": "5日价格动量(表达式版)",
+        "note": "等价 ret5，用于实时/离线 parity 基准",
+    },
+    {
+        "key": "expr_ma_ratio",
+        "expr": "ts_mean(close,5)/ts_mean(close,20)-1",
+        "direction": +1,
+        "name": "短长均线比",
+        "note": "5日均线上穿20日均线强度",
+    },
+    {
+        "key": "expr_trend_per_vol",
+        "expr": "(close/ts_mean(close,20)-1)/(ts_std(close,20)+0.000001)",
+        "direction": +1,
+        "name": "单位波动趋势",
+        "note": "20日趋势除以其波动，风险调整动量",
+    },
+    {
+        "key": "expr_price_accel",
+        "expr": "delta(delta(close,5),5)/delay(close,10)",
+        "direction": +1,
+        "name": "价格二阶加速度",
+        "note": "嵌套 delta 的动量变化率",
+    },
+    {
+        "key": "expr_illiq",
+        "expr": "abs(delta(close,1)/delay(close,1))/(volume+1)",
+        "direction": -1,
+        "name": "非流动性代理",
+        "note": "Amihud |收益|/成交量 的无量纲代理（面板无成交额，用volume）",
+    },
     # ===== G25续（第59轮）旧技术因子过程式→表达式：以下表达式刻意按 futures_data 过程式的**同一运算顺序**书写，
     # ret 用 close/delay-1（而非 delta/delay）以保证逐字节相等；SMA 用 ts_mean（与增量SMA仅末位舍入差异，见 factor_legacy_expr）。
-    {"key": "expr_ret5_exact", "expr": "close/delay(close,5)-1", "direction": +1,
-     "name": "5日收益(过程式逐字节镜像)", "note": "与 technical_profile.ret5 同运算序，float.hex 逐位相等；区别于 delta 写法的 expr_ma_bias5"},
-    {"key": "expr_ret20_exact", "expr": "close/delay(close,20)-1", "direction": +1,
-     "name": "20日收益(过程式逐字节镜像)", "note": "与 technical_profile.ret20 同运算序，float.hex 逐位相等"},
-    {"key": "expr_ma10", "expr": "ts_mean(close,10)", "direction": 0,
-     "name": "10日均线(表达式版)", "note": "对应 _sma_series(close,10)，窗内求和与增量累加仅末位浮点差异"},
+    {
+        "key": "expr_ret5_exact",
+        "expr": "close/delay(close,5)-1",
+        "direction": +1,
+        "name": "5日收益(过程式逐字节镜像)",
+        "note": "与 technical_profile.ret5 同运算序，float.hex 逐位相等；区别于 delta 写法的 expr_ma_bias5",
+    },
+    {
+        "key": "expr_ret20_exact",
+        "expr": "close/delay(close,20)-1",
+        "direction": +1,
+        "name": "20日收益(过程式逐字节镜像)",
+        "note": "与 technical_profile.ret20 同运算序，float.hex 逐位相等",
+    },
+    {
+        "key": "expr_ma10",
+        "expr": "ts_mean(close,10)",
+        "direction": 0,
+        "name": "10日均线(表达式版)",
+        "note": "对应 _sma_series(close,10)，窗内求和与增量累加仅末位浮点差异",
+    },
     # ===== G25续（第60轮）更多过程式技术量按同运算序表达式化 =====
-    {"key": "expr_ma5", "expr": "ts_mean(close,5)", "direction": 0,
-     "name": "5日均线(表达式版)", "note": "对应 _sma_series(close,5)，与增量SMA仅末位舍入差异"},
-    {"key": "expr_ma20", "expr": "ts_mean(close,20)", "direction": 0,
-     "name": "20日均线(表达式版)", "note": "对应 _sma_series(close,20)，布林中轨同源"},
-    {"key": "expr_ma60", "expr": "ts_mean(close,60)", "direction": 0,
-     "name": "60日均线(表达式版)", "note": "对应 _sma_series(close,60)=TECH_LONG_MA"},
-    {"key": "expr_boll_std20", "expr": "ts_std(close,20)", "direction": 0,
-     "name": "20日样本标准差(表达式版)", "note": "与 _sample_std(close[-20:]) 同求和序，float.hex 逐位相等（布林带宽用）"},
-    {"key": "expr_hv20", "expr": "ts_std(log(close/delay(close,1)),20)*15.874507866387544", "direction": 0,
-     "name": "20日历史波动率年化(表达式版)", "note": "log收益样本std*sqrt252(=15.874507866387544)，与 _hv_at(.,20) 同运算序逐位相等"},
+    {
+        "key": "expr_ma5",
+        "expr": "ts_mean(close,5)",
+        "direction": 0,
+        "name": "5日均线(表达式版)",
+        "note": "对应 _sma_series(close,5)，与增量SMA仅末位舍入差异",
+    },
+    {
+        "key": "expr_ma20",
+        "expr": "ts_mean(close,20)",
+        "direction": 0,
+        "name": "20日均线(表达式版)",
+        "note": "对应 _sma_series(close,20)，布林中轨同源",
+    },
+    {
+        "key": "expr_ma60",
+        "expr": "ts_mean(close,60)",
+        "direction": 0,
+        "name": "60日均线(表达式版)",
+        "note": "对应 _sma_series(close,60)=TECH_LONG_MA",
+    },
+    {
+        "key": "expr_boll_std20",
+        "expr": "ts_std(close,20)",
+        "direction": 0,
+        "name": "20日样本标准差(表达式版)",
+        "note": "与 _sample_std(close[-20:]) 同求和序，float.hex 逐位相等（布林带宽用）",
+    },
+    {
+        "key": "expr_hv20",
+        "expr": "ts_std(log(close/delay(close,1)),20)*15.874507866387544",
+        "direction": 0,
+        "name": "20日历史波动率年化(表达式版)",
+        "note": "log收益样本std*sqrt252(=15.874507866387544)，与 _hv_at(.,20) 同运算序逐位相等",
+    },
     # ===== G25续（第61轮）状态量表达式化：ts_ema/ts_rma 状态递推算子，MACD/RSI 与过程式逐位一致 =====
-    {"key": "expr_macd_dif", "expr": "ts_ema(close,12)-ts_ema(close,26)", "direction": 0,
-     "name": "MACD-DIF(表达式版)", "note": "12/26 EMA之差，SMA播种，与 technical_profile dif 逐位相等"},
-    {"key": "expr_macd_dea", "expr": "ts_ema(ts_ema(close,12)-ts_ema(close,26),9)", "direction": 0,
-     "name": "MACD-DEA(表达式版)", "note": "对DIF连续子序列再做9日EMA（嵌套ts_ema），与 dea 逐位相等"},
-    {"key": "expr_macd_hist",
-     "expr": "(ts_ema(close,12)-ts_ema(close,26)-ts_ema(ts_ema(close,12)-ts_ema(close,26),9))*2.0", "direction": 0,
-     "name": "MACD柱(表达式版)", "note": "(DIF-DEA)*2，与 macd_hist 逐位相等"},
-    {"key": "expr_rsi14",
-     "expr": "100.0-100.0/(1.0+ts_rma(max(close-delay(close,1),0.0),14)/ts_rma(max(delay(close,1)-close,0.0),14))",
-     "direction": 0, "name": "Wilder RSI14(表达式版)",
-     "note": "ts_rma=Wilder平滑；非平盘分支与 _rsi_series 逐位相等，avg_loss≈0 的平盘强制100分支口径差异已在parity钉死"},
+    {
+        "key": "expr_macd_dif",
+        "expr": "ts_ema(close,12)-ts_ema(close,26)",
+        "direction": 0,
+        "name": "MACD-DIF(表达式版)",
+        "note": "12/26 EMA之差，SMA播种，与 technical_profile dif 逐位相等",
+    },
+    {
+        "key": "expr_macd_dea",
+        "expr": "ts_ema(ts_ema(close,12)-ts_ema(close,26),9)",
+        "direction": 0,
+        "name": "MACD-DEA(表达式版)",
+        "note": "对DIF连续子序列再做9日EMA（嵌套ts_ema），与 dea 逐位相等",
+    },
+    {
+        "key": "expr_macd_hist",
+        "expr": "(ts_ema(close,12)-ts_ema(close,26)-ts_ema(ts_ema(close,12)-ts_ema(close,26),9))*2.0",
+        "direction": 0,
+        "name": "MACD柱(表达式版)",
+        "note": "(DIF-DEA)*2，与 macd_hist 逐位相等",
+    },
+    {
+        "key": "expr_rsi14",
+        "expr": "100.0-100.0/(1.0+ts_rma(max(close-delay(close,1),0.0),14)/ts_rma(max(delay(close,1)-close,0.0),14))",
+        "direction": 0,
+        "name": "Wilder RSI14(表达式版)",
+        "note": "ts_rma=Wilder平滑；非平盘分支与 _rsi_series 逐位相等，avg_loss≈0 的平盘强制100分支口径差异已在parity钉死",
+    },
     # ===== G25续（第63轮）EMA 列 + KDJ 表达式化（KDJ 非 close-only，输入需带 high/low） =====
-    {"key": "expr_ema12", "expr": "ts_ema(close,12)", "direction": 0,
-     "name": "12日EMA(表达式版)", "note": "MACD 快线 ema_fast，SMA播种，与 futures_data._ema_series(close,12) 逐位相等"},
-    {"key": "expr_ema26", "expr": "ts_ema(close,26)", "direction": 0,
-     "name": "26日EMA(表达式版)", "note": "MACD 慢线 ema_slow，SMA播种，与 futures_data._ema_series(close,26) 逐位相等"},
-    {"key": "expr_kdj_k", "expr": "kdj_sm(kdj_rsv(high,low,close,9),9)", "direction": 0,
-     "name": "KDJ-K(表达式版)", "note": "RSV 固定初值50、α=1/3 递推，与 _kdj_series 的 K 逐位相等（需 high/low 输入）"},
-    {"key": "expr_kdj_d", "expr": "kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)", "direction": 0,
-     "name": "KDJ-D(表达式版)", "note": "对 K 序列再做一次同系数平滑（当拍新K即时喂入），与 _kdj_series 的 D 逐位相等"},
-    {"key": "expr_kdj_j",
-     "expr": "3.0*kdj_sm(kdj_rsv(high,low,close,9),9)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)",
-     "direction": 0, "name": "KDJ-J(表达式版)", "note": "J=3K-2D，与 _kdj_series 的 J 逐位相等"},
+    {
+        "key": "expr_ema12",
+        "expr": "ts_ema(close,12)",
+        "direction": 0,
+        "name": "12日EMA(表达式版)",
+        "note": "MACD 快线 ema_fast，SMA播种，与 futures_data._ema_series(close,12) 逐位相等",
+    },
+    {
+        "key": "expr_ema26",
+        "expr": "ts_ema(close,26)",
+        "direction": 0,
+        "name": "26日EMA(表达式版)",
+        "note": "MACD 慢线 ema_slow，SMA播种，与 futures_data._ema_series(close,26) 逐位相等",
+    },
+    {
+        "key": "expr_kdj_k",
+        "expr": "kdj_sm(kdj_rsv(high,low,close,9),9)",
+        "direction": 0,
+        "name": "KDJ-K(表达式版)",
+        "note": "RSV 固定初值50、α=1/3 递推，与 _kdj_series 的 K 逐位相等（需 high/low 输入）",
+    },
+    {
+        "key": "expr_kdj_d",
+        "expr": "kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)",
+        "direction": 0,
+        "name": "KDJ-D(表达式版)",
+        "note": "对 K 序列再做一次同系数平滑（当拍新K即时喂入），与 _kdj_series 的 D 逐位相等",
+    },
+    {
+        "key": "expr_kdj_j",
+        "expr": "3.0*kdj_sm(kdj_rsv(high,low,close,9),9)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,9),9),9)",
+        "direction": 0,
+        "name": "KDJ-J(表达式版)",
+        "note": "J=3K-2D，与 _kdj_series 的 J 逐位相等",
+    },
     # ===== 第64轮 G25续：ATR14 表达式化（TR 非 close-only，吃 high/low/前收；嵌套 max 二元算子） =====
-    {"key": "expr_atr14",
-     "expr": "ts_mean(max(max(high-low,abs(high-delay(close,1))),abs(low-delay(close,1))),14)",
-     "direction": 0, "name": "14日ATR(表达式版)",
-     "note": "TR=max(h-l,|h-prev_c|,|l-prev_c|) 的14日均值，与 compute_indicators 同求和序逐位相等（需 high/low 输入）"},
+    {
+        "key": "expr_atr14",
+        "expr": "ts_mean(max(max(high-low,abs(high-delay(close,1))),abs(low-delay(close,1))),14)",
+        "direction": 0,
+        "name": "14日ATR(表达式版)",
+        "note": "TR=max(h-l,|h-prev_c|,|l-prev_c|) 的14日均值，与 compute_indicators 同求和序逐位相等（需 high/low 输入）",
+    },
     # ===== 第65轮 G25续：TSMOM 多窗口时序动量 z 表达式化（波动标准化趋势） =====
     # z{L}=ret{L}/(窗口日简单收益样本std*sqrt(ann))；ts_std(close/delay(close,1)-1,L) 与 _window_std 同求和序逐位相等
-    {"key": "expr_tsmom63",
-     "expr": "(close/delay(close,63)-1)/(ts_std(close/delay(close,1)-1,63)*15.874507866387544)",
-     "direction": 0, "name": "TSMOM63 z(表达式版)",
-     "note": "63日波动调整动量，与 futures_data.tsmom_at 的 tsmom63 逐位相等"},
-    {"key": "expr_tsmom126",
-     "expr": "(close/delay(close,126)-1)/(ts_std(close/delay(close,1)-1,126)*15.874507866387544)",
-     "direction": 0, "name": "TSMOM126 z(表达式版)",
-     "note": "126日波动调整动量，与 futures_data.tsmom_at 的 tsmom126 逐位相等"},
-    {"key": "expr_tsmom252",
-     "expr": "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)",
-     "direction": 0, "name": "TSMOM252 z(表达式版)",
-     "note": "252日波动调整动量，与 futures_data.tsmom_at 的 tsmom252 逐位相等"},
+    {
+        "key": "expr_tsmom63",
+        "expr": "(close/delay(close,63)-1)/(ts_std(close/delay(close,1)-1,63)*15.874507866387544)",
+        "direction": 0,
+        "name": "TSMOM63 z(表达式版)",
+        "note": "63日波动调整动量，与 futures_data.tsmom_at 的 tsmom63 逐位相等",
+    },
+    {
+        "key": "expr_tsmom126",
+        "expr": "(close/delay(close,126)-1)/(ts_std(close/delay(close,1)-1,126)*15.874507866387544)",
+        "direction": 0,
+        "name": "TSMOM126 z(表达式版)",
+        "note": "126日波动调整动量，与 futures_data.tsmom_at 的 tsmom126 逐位相等",
+    },
+    {
+        "key": "expr_tsmom252",
+        "expr": "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)",
+        "direction": 0,
+        "name": "TSMOM252 z(表达式版)",
+        "note": "252日波动调整动量，与 futures_data.tsmom_at 的 tsmom252 逐位相等",
+    },
     # ===== 第68轮 G25续：量仓类表达式因子（vol/oi 衍生量，研究侧；白名单 DSL 可编译、无未来） =====
-    {"key": "expr_vol_chg5", "expr": "volume/delay(volume,5)-1", "direction": +1,
-     "name": "5日成交量变化率(表达式版)",
-     "note": "量能扩张/收缩代理；与 microstructure_lab 的 rolling 口径同思路，研究侧登记"},
-    {"key": "expr_oi_chg5", "expr": "oi/delay(oi,5)-1", "direction": +1,
-     "name": "5日持仓量变化率(表达式版)",
-     "note": "持仓增减代理（增仓上行/减仓回补的资金方向原料）；研究侧登记"},
-    {"key": "expr_vol_oi_ratio", "expr": "volume/(oi+1)", "direction": 0,
-     "name": "量仓比(换手代理)(表达式版)",
-     "note": "成交量/持仓量，换手活跃度代理；研究侧登记"},
-    {"key": "expr_amount_proxy", "expr": "close*volume", "direction": 0,
-     "name": "成交额代理(表达式版)",
-     "note": "收盘价×成交量，与 carry_eval 的 amount 口径一致；研究侧登记"},
-    {"key": "expr_oi_corr_price20", "expr": "corr(close,oi,20)", "direction": 0,
-     "name": "价仓相关性20日(表达式版)",
-     "note": "价格与持仓量20日Pearson相关，量价配合诊断；研究侧登记"},
+    {
+        "key": "expr_vol_chg5",
+        "expr": "volume/delay(volume,5)-1",
+        "direction": +1,
+        "name": "5日成交量变化率(表达式版)",
+        "note": "量能扩张/收缩代理；与 microstructure_lab 的 rolling 口径同思路，研究侧登记",
+    },
+    {
+        "key": "expr_oi_chg5",
+        "expr": "oi/delay(oi,5)-1",
+        "direction": +1,
+        "name": "5日持仓量变化率(表达式版)",
+        "note": "持仓增减代理（增仓上行/减仓回补的资金方向原料）；研究侧登记",
+    },
+    {
+        "key": "expr_vol_oi_ratio",
+        "expr": "volume/(oi+1)",
+        "direction": 0,
+        "name": "量仓比(换手代理)(表达式版)",
+        "note": "成交量/持仓量，换手活跃度代理；研究侧登记",
+    },
+    {
+        "key": "expr_amount_proxy",
+        "expr": "close*volume",
+        "direction": 0,
+        "name": "成交额代理(表达式版)",
+        "note": "收盘价×成交量，与 carry_eval 的 amount 口径一致；研究侧登记",
+    },
+    {
+        "key": "expr_oi_corr_price20",
+        "expr": "corr(close,oi,20)",
+        "direction": 0,
+        "name": "价仓相关性20日(表达式版)",
+        "note": "价格与持仓量20日Pearson相关，量价配合诊断；研究侧登记",
+    },
     # ===== G25续（第76轮人工复核晋升）：range_pct 日均振幅——第74轮 expr_miner 全池体检截面
     # 上榜（H20 meanIC -0.068/t-9.7）、第75轮 regime_cond_lab 确认低波条件化结构
-    #（|IC| 0.082→0.148，反向低波≈+11.0%年化/高波失效）。按红线"自动挖掘产物须人工复核+体检
+    # （|IC| 0.082→0.148，反向低波≈+11.0%年化/高波失效）。按红线"自动挖掘产物须人工复核+体检
     # 后方可登记"晋升为 research 因子（不进综合分、不被 main import）。
-    {"key": "expr_range_pct5", "expr": "ts_mean((high-low)/close,5)", "direction": 0,
-     "name": "5日日均振幅(表达式版)",
-     "note": "日内振幅5日均值；截面负IC=低波异象（第74/75轮体检与条件化实验），研究侧登记"},
-    {"key": "expr_range_pct20", "expr": "ts_mean((high-low)/close,20)", "direction": 0,
-     "name": "20日日均振幅(表达式版)",
-     "note": "日内振幅20日均值；低波状态反向结构见 regime_cond_lab（第75轮），研究侧登记"},
+    {
+        "key": "expr_range_pct5",
+        "expr": "ts_mean((high-low)/close,5)",
+        "direction": 0,
+        "name": "5日日均振幅(表达式版)",
+        "note": "日内振幅5日均值；截面负IC=低波异象（第74/75轮体检与条件化实验），研究侧登记",
+    },
+    {
+        "key": "expr_range_pct20",
+        "expr": "ts_mean((high-low)/close,20)",
+        "direction": 0,
+        "name": "20日日均振幅(表达式版)",
+        "note": "日内振幅20日均值；低波状态反向结构见 regime_cond_lab（第75轮），研究侧登记",
+    },
     # ===== 第81轮 #7 收尾：剩余旧特征精确镜像（day_chg/ret63/126/252/hv60，逐位 parity 对面板列验证；
     # tsmom_blend 因动态 n_valid 分母+条件聚合在当前 DSL 不可表达，单独记录（见 expr_research 报告注记）。
     # 仅登记研究侧定义、analyzer 默认不换（综合分逐字节不变）。
-    {"key": "expr_day_chg_exact", "expr": "close/delay(close,1)-1", "direction": 0,
-     "name": "日涨跌幅(过程式逐位镜像)",
-     "note": "与 compute_indicators.day_chg 同式；逐位 parity 见 expr_research 报告"},
-    {"key": "expr_ret63_exact", "expr": "close/delay(close,63)-1", "direction": 0,
-     "name": "63日累计收益(过程式逐位镜像)",
-     "note": "与 tsmom_at.ret63 同式（_lookback_return=closes[end]/closes[end-L]-1）"},
-    {"key": "expr_ret126_exact", "expr": "close/delay(close,126)-1", "direction": 0,
-     "name": "126日累计收益(过程式逐位镜像)",
-     "note": "同上 126 日窗；regime 趋势字段（REGIME_TREND_FIELD）的镜像"},
-    {"key": "expr_ret252_exact", "expr": "close/delay(close,252)-1", "direction": 0,
-     "name": "252日累计收益(过程式逐位镜像)",
-     "note": "同上 252 日窗"},
-    {"key": "expr_hv60_exact", "expr": "ts_std(log(close/delay(close,1)),60)*15.874507866387544",
-     "direction": 0, "name": "60日历史波动率年化(过程式逐位镜像)",
-     "note": "与 _hv_at(60)=_sample_std(log收益)*sqrt252 同式（hv20 同形已逐位验证）；regime 波动字段镜像"},
+    {
+        "key": "expr_day_chg_exact",
+        "expr": "close/delay(close,1)-1",
+        "direction": 0,
+        "name": "日涨跌幅(过程式逐位镜像)",
+        "note": "与 compute_indicators.day_chg 同式；逐位 parity 见 expr_research 报告",
+    },
+    {
+        "key": "expr_ret63_exact",
+        "expr": "close/delay(close,63)-1",
+        "direction": 0,
+        "name": "63日累计收益(过程式逐位镜像)",
+        "note": "与 tsmom_at.ret63 同式（_lookback_return=closes[end]/closes[end-L]-1）",
+    },
+    {
+        "key": "expr_ret126_exact",
+        "expr": "close/delay(close,126)-1",
+        "direction": 0,
+        "name": "126日累计收益(过程式逐位镜像)",
+        "note": "同上 126 日窗；regime 趋势字段（REGIME_TREND_FIELD）的镜像",
+    },
+    {
+        "key": "expr_ret252_exact",
+        "expr": "close/delay(close,252)-1",
+        "direction": 0,
+        "name": "252日累计收益(过程式逐位镜像)",
+        "note": "同上 252 日窗",
+    },
+    {
+        "key": "expr_hv60_exact",
+        "expr": "ts_std(log(close/delay(close,1)),60)*15.874507866387544",
+        "direction": 0,
+        "name": "60日历史波动率年化(过程式逐位镜像)",
+        "note": "与 _hv_at(60)=_sample_std(log收益)*sqrt252 同式（hv20 同形已逐位验证）；regime 波动字段镜像",
+    },
 )
 
 
@@ -806,8 +996,18 @@ def _close_series():
 def selftest():
     # 1) 解析器：白名单放行、危险/未知算子拒绝（反向用例）
     assert parse("a+b*2")[0] == "bin"
-    for bad in ["__import__('os')", "x.open", "eval(x)", "lambda:1", "foo(close,3)",
-                "import os", "x;y", "globals()", "close..3", "ts_mean(close,-2)"]:
+    for bad in [
+        "__import__('os')",
+        "x.open",
+        "eval(x)",
+        "lambda:1",
+        "foo(close,3)",
+        "import os",
+        "x;y",
+        "globals()",
+        "close..3",
+        "ts_mean(close,-2)",
+    ]:
         try:
             compute_ts(bad, {"close": [1.0, 2.0], "x": [1.0, 2.0]})
             raise AssertionError("应拒绝: %s" % bad)
@@ -837,6 +1037,7 @@ def selftest():
     assert tmin[3] == min(c[1:4]) and tmax[3] == max(c[1:4])
     sd = compute_ts("ts_std(close,3)", {"close": c})
     import statistics
+
     assert abs(sd[3] - statistics.stdev(c[1:4])) < 1e-12
 
     # 4) ts_rank/ts_minmax/decay_linear 手算
@@ -860,7 +1061,7 @@ def selftest():
     assert float.hex(rm[3]) == float.hex((2 * seed + 6.0) / 3.0)
     lead = compute_ts("ts_ema(close,2)", {"close": [None, None, 4.0, 6.0]})  # 前导 None 不影响播种
     assert lead[0] is None and lead[1] is None and lead[2] is None
-    assert float.hex(lead[3]) == float.hex((4.0 + 6.0) / 2.0)   # 前2个有限值(4,6)SMA播种于idx3
+    assert float.hex(lead[3]) == float.hex((4.0 + 6.0) / 2.0)  # 前2个有限值(4,6)SMA播种于idx3
 
     # 5) corr 与嵌套表达式、无未来（末根之外不依赖未来）
     x = [1.0, 2.0, 3.0, 4.0, 5.0]
@@ -871,19 +1072,26 @@ def selftest():
     assert len(nested) == len(c)
     # 扰动未来：改最后一根，前面所有输出必须不变（无未来函数）
     base = compute_ts("ts_mean(close,5)", {"close": c})
-    pert = list(c); pert[-1] += 50.0
+    pert = list(c)
+    pert[-1] += 50.0
     after = compute_ts("ts_mean(close,5)", {"close": pert})
     assert all(base[t] == after[t] for t in range(len(c) - 1))
 
     # 6) 逐元素/四则/除零安全
-    assert compute_ts("1/0", {"close": c}) is None or all(v is None for v in [compute_ts("close/0", {"close": c})[0]])
+    assert compute_ts("1/0", {"close": c}) is None or all(
+        v is None for v in [compute_ts("close/0", {"close": c})[0]]
+    )
     sg = compute_ts("sign(close-104)", {"close": c})
     assert sg[0] == -1 and sg[4] == 1 and sg[3] == -1
     lg = compute_ts("log(close)", {"close": [1.0, math.e, 0.0, -1.0]})
     assert abs(lg[1] - 1.0) < 1e-12 and lg[2] is None and lg[3] is None
     # tanh 逐元素（G25续：声明式复刻综合分 tanh 压缩所需）
     th = compute_ts("tanh(close)", {"close": [0.0, 1.0, -1.0]})
-    assert th[0] == 0.0 and abs(th[1] - math.tanh(1.0)) < 1e-15 and abs(th[2] - math.tanh(-1.0)) < 1e-15
+    assert (
+        th[0] == 0.0
+        and abs(th[1] - math.tanh(1.0)) < 1e-15
+        and abs(th[2] - math.tanh(-1.0)) < 1e-15
+    )
     thc = eval_cs("tanh(m)", {"m": {"A": 0.5, "B": -0.5}})
     assert abs(thc["A"] - math.tanh(0.5)) < 1e-15 and abs(thc["B"] + math.tanh(0.5)) < 1e-15
 
@@ -897,11 +1105,13 @@ def selftest():
     assert abs(sum(zs.values())) < 1e-12
     # 截面里用时序算子必须报错，反之亦然
     try:
-        eval_cs("ts_mean(m,3)", cs); raise AssertionError
+        eval_cs("ts_mean(m,3)", cs)
+        raise AssertionError
     except ExprError:
         pass
     try:
-        compute_ts("cross_rank(close)", {"close": c}); raise AssertionError
+        compute_ts("cross_rank(close)", {"close": c})
+        raise AssertionError
     except ExprError:
         pass
 
@@ -912,7 +1122,7 @@ def selftest():
     # 正交：y=2*x1+3*x2，残差≈0、β恢复
     x1 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     x2 = [2.0, 1.0, 3.0, 2.0, 4.0, 3.0]
-    yv = [2 * a + 3 * b for a, b in zip(x1, x2)]
+    yv = [2 * a + 3 * b for a, b in zip(x1, x2, strict=False)]
     resid, beta = orthogonalize(yv, [x1, x2])
     assert abs(beta[0] - 2.0) < 1e-9 and abs(beta[1] - 3.0) < 1e-9
     assert all(abs(r) < 1e-9 for r in resid)
@@ -942,35 +1152,47 @@ def selftest():
     k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)", {"high": H, "low": L, "close": C})
     assert k[0] is None and k[1] is None
     assert float.hex(k[2]) == float.hex((2.0 / 3.0) * 50.0 + (1.0 / 3.0) * 75.0)
-    d = compute_ts("kdj_sm(kdj_sm(kdj_rsv(high,low,close,3),3),3)",
-                   {"high": H, "low": L, "close": C})
+    d = compute_ts(
+        "kdj_sm(kdj_sm(kdj_rsv(high,low,close,3),3),3)", {"high": H, "low": L, "close": C}
+    )
     assert float.hex(d[2]) == float.hex((2.0 / 3.0) * 50.0 + (1.0 / 3.0) * k[2])
-    j = compute_ts("3.0*kdj_sm(kdj_rsv(high,low,close,3),3)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,3),3),3)",
-                   {"high": H, "low": L, "close": C})
+    j = compute_ts(
+        "3.0*kdj_sm(kdj_rsv(high,low,close,3),3)-2.0*kdj_sm(kdj_sm(kdj_rsv(high,low,close,3),3),3)",
+        {"high": H, "low": L, "close": C},
+    )
     assert float.hex(j[2]) == float.hex(3.0 * k[2] - 2.0 * d[2])
     # 平盘窗（hh==ll）RSV=50，K=(2*50+50)/3=50
-    flat = compute_ts("kdj_rsv(high,low,close,2)",
-                      {"high": [5.0, 5.0], "low": [5.0, 5.0], "close": [5.0, 5.0]})
+    flat = compute_ts(
+        "kdj_rsv(high,low,close,2)", {"high": [5.0, 5.0], "low": [5.0, 5.0], "close": [5.0, 5.0]}
+    )
     assert flat[1] == 50.0
     # KDJ 无未来：改最后一根，之前输出不变
     base_k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)", {"high": H, "low": L, "close": C})
     H2, L2, C2 = list(H), list(L), list(C)
     H2[-1], L2[-1], C2[-1] = 99.0, 1.0, 50.0
-    pert_k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)",
-                        {"high": H2, "low": L2, "close": C2})
+    pert_k = compute_ts("kdj_sm(kdj_rsv(high,low,close,3),3)", {"high": H2, "low": L2, "close": C2})
     assert all(base_k[t] == pert_k[t] for t in range(len(C) - 1))
     # 因子库每条表达式都能编译且时序可算（KDJ 条目需 high/low）
     hi = [v * 1.005 for v in c]
     lo = [v * 0.995 for v in c]
     for f in LIBRARY:
         ast = parse(f["expr"])
-        out = compute_ts(ast, {"close": c, "high": hi, "low": lo,
-                               "volume": [1000 + i for i in range(len(c))],
-                               "oi": [5000 + i * 2 for i in range(len(c))]})
+        out = compute_ts(
+            ast,
+            {
+                "close": c,
+                "high": hi,
+                "low": lo,
+                "volume": [1000 + i for i in range(len(c))],
+                "oi": [5000 + i * 2 for i in range(len(c))],
+            },
+        )
         assert len(out) == len(c)
-    print("factor_expr selftest ALL PASS（安全解析白名单/拒绝危险调用、delay-delta/窗口统计/"
-          "ts_rank-minmax-decay/corr嵌套与无未来、截面cross_rank-scale-zscore、pearson-spearman/"
-          "OLS正交恢复/IC·ICIR加权、实时离线结构性parity、KDJ固定初值递推/RSV平盘/无未来、因子库可编译 共10组）")
+    print(
+        "factor_expr selftest ALL PASS（安全解析白名单/拒绝危险调用、delay-delta/窗口统计/"
+        "ts_rank-minmax-decay/corr嵌套与无未来、截面cross_rank-scale-zscore、pearson-spearman/"
+        "OLS正交恢复/IC·ICIR加权、实时离线结构性parity、KDJ固定初值递推/RSV平盘/无未来、因子库可编译 共10组）"
+    )
     return 0
 
 

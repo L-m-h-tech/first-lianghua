@@ -18,23 +18,24 @@
 
 验证：本机 curl http://<IP>:9001/daily?symbol=RB0
 """
-import json
-import re
-import sys
-import time
+
 import argparse
+import json
 import random
+import re
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
-from urllib.parse import urlparse, parse_qs
-from urllib.error import URLError, HTTPError
 
 # ---- 限流器 ----
 _gate = threading.Lock()
 _last_ts = 0.0
 _gap = 0.9  # 基准间隔（秒）；实际等待 = gap * (0.7~1.3) 随机抖动，打散"等间隔"规律指纹
 _GAP_JITTER = (0.7, 1.3)  # 随机抖动系数范围（防新浪识别"精准等间隔爬虫"）
+
 
 def throttle():
     """全局限流：两次请求间隔 >= gap*抖动 秒。抖动化避免规律请求被 WAF 识别。"""
@@ -45,11 +46,13 @@ def throttle():
             time.sleep(wait)
         _last_ts = time.time()
 
+
 # ---- 新浪请求 ----
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Referer": "https://finance.sina.com.cn/",
 }
+
 
 def _sina_get(url, timeout=10):
     """带限流的新浪 stock2 请求，返回响应文本或 None。"""
@@ -70,6 +73,7 @@ def _sina_get(url, timeout=10):
     except Exception as e:
         return None, str(e)
 
+
 def _parse_jsonp(text):
     """从 JSONP 响应中提取 K线数组。"""
     m = re.search(r"\((\[.*\])\)", text, re.S)
@@ -77,30 +81,38 @@ def _parse_jsonp(text):
         return json.loads(m.group(1))
     return []
 
+
 def fetch_daily(symbol):
     """日线：返回 bars list 或 None。"""
-    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-           f"InnerFuturesNewService.getDailyKLine?symbol={symbol}")
+    url = (
+        f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+        f"InnerFuturesNewService.getDailyKLine?symbol={symbol}"
+    )
     text, err = _sina_get(url)
     if text is None:
         return None, err
     return _parse_jsonp(text), None
 
+
 def fetch_minute(symbol, period, lmt):
     """分钟K：返回 bars list 或 None。"""
-    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-           f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={period}")
+    url = (
+        f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+        f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={period}"
+    )
     text, err = _sina_get(url)
     if text is None:
         return None, err
     bars = _parse_jsonp(text)
     if lmt and bars:
-        bars = bars[-int(lmt):]
+        bars = bars[-int(lmt) :]
     return bars, None
+
 
 # ---- HTTP Handler ----
 _stats = {"daily": 0, "minute": 0, "fail": 0, "start": time.time()}
 _stats_lock = threading.Lock()
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -121,11 +133,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/daily":
             symbol = params.get("symbol", [""])[0].upper()
             if not symbol:
-                self._json({"error": "missing symbol"}, 400); return
+                self._json({"error": "missing symbol"}, 400)
+                return
             bars, err = fetch_daily(symbol)
-            with _stats_lock: _stats["daily"] += 1
+            with _stats_lock:
+                _stats["daily"] += 1
             if bars is None:
-                with _stats_lock: _stats["fail"] += 1
+                with _stats_lock:
+                    _stats["fail"] += 1
                 self._json({"error": err, "symbol": symbol}, 502)
             else:
                 self._json({"symbol": symbol, "count": len(bars), "bars": bars})
@@ -135,11 +150,14 @@ class Handler(BaseHTTPRequestHandler):
             period = int(params.get("period", ["30"])[0])
             lmt = int(params.get("lmt", ["0"])[0])
             if not symbol:
-                self._json({"error": "missing symbol"}, 400); return
+                self._json({"error": "missing symbol"}, 400)
+                return
             bars, err = fetch_minute(symbol, period, lmt)
-            with _stats_lock: _stats["minute"] += 1
+            with _stats_lock:
+                _stats["minute"] += 1
             if bars is None:
-                with _stats_lock: _stats["fail"] += 1
+                with _stats_lock:
+                    _stats["fail"] += 1
                 self._json({"error": err, "symbol": symbol, "period": period}, 502)
             else:
                 self._json({"symbol": symbol, "period": period, "count": len(bars), "bars": bars})
@@ -149,14 +167,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"status": "ok", "uptime_s": int(uptime), **_stats})
 
         else:
-            self._json({"error": "unknown path", "usage": "/daily?symbol=RB0 | /minute?symbol=RB0&period=30&lmt=1023 | /health"}, 404)
+            self._json(
+                {
+                    "error": "unknown path",
+                    "usage": "/daily?symbol=RB0 | /minute?symbol=RB0&period=30&lmt=1023 | /health",
+                },
+                404,
+            )
+
 
 # ---- Main ----
 def main():
     global _gap
     parser = argparse.ArgumentParser(description="新浪 stock2 采集代理服务器")
     parser.add_argument("--port", type=int, default=9001, help="监听端口（默认 9001）")
-    parser.add_argument("--gap", type=float, default=0.8, help="每请求最小间隔（秒，默认 0.8 ≈ 75次/min）")
+    parser.add_argument(
+        "--gap", type=float, default=0.8, help="每请求最小间隔（秒，默认 0.8 ≈ 75次/min）"
+    )
     args = parser.parse_args()
     _gap = args.gap
 
@@ -167,6 +194,7 @@ def main():
     except KeyboardInterrupt:
         print("\n已停止")
         server.server_close()
+
 
 if __name__ == "__main__":
     main()

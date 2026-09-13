@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """第94轮 A3 html_text 统一文本/表格提取测试：零网络、确定性（lxml 与 stdlib 双后端都验）。"""
+
 import pytest
 
 import html_text
@@ -68,14 +68,17 @@ def test_clean_text_max_len():
 
 def test_first_valid_candidate_chain():
     """A2：多候选解析链——首个通过校验的候选命中，全失败返回 None。"""
-    candidates = [("bad", lambda: {"n": 0}),
-                  ("good", lambda: {"n": 5}),
-                  ("never", lambda: {"n": 9})]
+    candidates = [
+        ("bad", lambda: {"n": 0}),
+        ("good", lambda: {"n": 5}),
+        ("never", lambda: {"n": 9}),
+    ]
     label, res = html_text.first_valid(candidates, lambda r: r["n"] > 0)
     assert label == "good" and res["n"] == 5
     label2, res2 = html_text.first_valid([("x", lambda: {"n": 0})], lambda r: r["n"] > 0)
     assert label2 is None and res2 is None
     # 异常候选被跳过
     label3, res3 = html_text.first_valid(
-        [("boom", lambda: 1 / 0), ("ok", lambda: 42)], lambda r: r == 42)
+        [("boom", lambda: 1 / 0), ("ok", lambda: 42)], lambda r: r == 42
+    )
     assert label3 == "ok" and res3 == 42

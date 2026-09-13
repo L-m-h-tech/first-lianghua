@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G24（第54轮）微结构 / 持仓 / 季节因子族实验台 tools/microstructure_lab.py。
 
 总纲 G24 长期排队的研究侧第一块（ΔOI/Amihud/特异波动/偏度/日历），与 factor_health/factor_regime/
@@ -18,6 +17,7 @@ factor_eval.spearman/quantile_buckets、factor_health.forward_map，不重造轮
 "交易者分类持仓"（商业/非商业，类 CFTC COT），本面板只有总持仓量 oi、没有分类持仓，故本轮不做、不编造，
 仅在报告里标注，待 G22 期限/OI 采集拿到分类持仓再补。
 """
+
 import argparse
 import datetime as _dt
 import json
@@ -31,18 +31,19 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import factor_eval as feval          # noqa: E402  spearman/quantile_buckets
-import factor_health as fh           # noqa: E402  forward_map/rows_by_symbol
-import panel_builder as pb           # noqa: E402  PanelStore
-import experiment_ledger as el       # noqa: E402  旁路台账
+import factor_eval as feval  # noqa: E402
+import factor_health as fh  # noqa: E402
+import panel_builder as pb  # noqa: E402
+
+import experiment_ledger as el  # noqa: E402
 
 DEFAULT_DB = os.path.join(_ROOT, "cache", "research_panel.db")
 LAB_TXT = os.path.join(_ROOT, "reports", "microstructure_lab.txt")
 LAB_JSON = os.path.join(_ROOT, "reports", "microstructure_lab.json")
 
-HORIZONS = (1, 5, 20)          # 前向持有期（交易日）
-N_Q = 5                        # 分档数
-MIN_PAIRS = 40                 # 池化对数下限（低于不给 IC，与 factor_health 一致）
+HORIZONS = (1, 5, 20)  # 前向持有期（交易日）
+N_Q = 5  # 分档数
+MIN_PAIRS = 40  # 池化对数下限（低于不给 IC，与 factor_health 一致）
 AMIHUD_WIN = 20
 IDIO_WIN = 60
 SKEW_WIN = 60
@@ -82,7 +83,13 @@ def rolling_amihud(rets, closes, vols, win=AMIHUD_WIN, min_n=None):
         lo = max(0, t - win + 1)
         acc, cnt = 0.0, 0
         for k in range(lo, t + 1):
-            if _isnum(rets[k]) and _isnum(closes[k]) and _isnum(vols[k]) and closes[k] > 0 and vols[k] > 0:
+            if (
+                _isnum(rets[k])
+                and _isnum(closes[k])
+                and _isnum(vols[k])
+                and closes[k] > 0
+                and vols[k] > 0
+            ):
                 acc += abs(rets[k]) / (closes[k] * vols[k])
                 cnt += 1
         if cnt >= min_n:
@@ -100,7 +107,7 @@ def _skew(xs):
     if var <= 1e-18:
         return 0.0
     third = sum((x - m) ** 3 for x in xs) / n
-    return third / (var ** 1.5)
+    return third / (var**1.5)
 
 
 def rolling_skew(rets, win=SKEW_WIN, min_n=None):
@@ -109,7 +116,7 @@ def rolling_skew(rets, win=SKEW_WIN, min_n=None):
     out = [None] * len(rets)
     for t in range(len(rets)):
         lo = max(0, t - win + 1)
-        xs = [x for x in rets[lo:t + 1] if _isnum(x)]
+        xs = [x for x in rets[lo : t + 1] if _isnum(x)]
         if len(xs) >= min_n:
             out[t] = _skew(xs)
     return out
@@ -140,19 +147,20 @@ def rolling_idiovol(rets, mkt, win=IDIO_WIN, min_n=None):
         xs, ys = [], []
         for k in range(lo, t + 1):
             if _isnum(rets[k]) and _isnum(mkt[k]):
-                xs.append(mkt[k]); ys.append(rets[k])
+                xs.append(mkt[k])
+                ys.append(rets[k])
         n = len(xs)
         if n < min_n:
             continue
         mx, my = sum(xs) / n, sum(ys) / n
         sxx = sum((x - mx) ** 2 for x in xs)
-        if sxx <= 1e-18:        # 市场无变化时退化为个股自身波动
+        if sxx <= 1e-18:  # 市场无变化时退化为个股自身波动
             beta = 0.0
         else:
-            sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+            sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=False))
             beta = sxy / sxx
         alpha = my - beta * mx
-        resid = [y - (alpha + beta * x) for x, y in zip(xs, ys)]
+        resid = [y - (alpha + beta * x) for x, y in zip(xs, ys, strict=False)]
         var = sum(e * e for e in resid) / n
         out[t] = math.sqrt(var) if var > 0 else 0.0
     return out
@@ -182,7 +190,9 @@ def build_factor_series(bysym):
 
 
 # =========================== 纯函数：前向检验 / 季节性 ===========================
-def factor_forward_curve(bysym, series_by_sym, fname, horizons=HORIZONS, n_q=N_Q, min_pairs=MIN_PAIRS):
+def factor_forward_curve(
+    bysym, series_by_sym, fname, horizons=HORIZONS, n_q=N_Q, min_pairs=MIN_PAIRS
+):
     """跨品种池化：因子 fname 对每个未来 H 的 (n, RankIC, Q5-Q1, 单调比例)。纯函数。"""
     per_h = {H: [] for H in horizons}
     for sym, rows0 in bysym.items():
@@ -207,8 +217,14 @@ def factor_forward_curve(bysym, series_by_sym, fname, horizons=HORIZONS, n_q=N_Q
         buckets = feval.quantile_buckets(pairs, n_q)
         q5q1 = buckets[-1][1] - buckets[0][1] if buckets[0][0] and buckets[-1][0] else None
         mono, _ = feval.monotonic_score(buckets)
-        curve[H] = {"n": len(pairs), "ic": ic, "q5q1": q5q1, "mono": mono,
-                    "q_means": [b[1] for b in buckets], "q_uprate": [b[2] for b in buckets]}
+        curve[H] = {
+            "n": len(pairs),
+            "ic": ic,
+            "q5q1": q5q1,
+            "mono": mono,
+            "q_means": [b[1] for b in buckets],
+            "q_uprate": [b[2] for b in buckets],
+        }
     return curve
 
 
@@ -230,8 +246,12 @@ def calendar_seasonality(bysym, key="month"):
     for k in sorted(bins):
         xs = sorted(bins[k])
         n = len(xs)
-        out[k] = {"n": n, "mean": sum(xs) / n, "median": xs[n // 2],
-                  "uprate": sum(1 for x in xs if x > 0) / n}
+        out[k] = {
+            "n": n,
+            "mean": sum(xs) / n,
+            "median": xs[n // 2],
+            "uprate": sum(1 for x in xs if x > 0) / n,
+        }
     return out
 
 
@@ -243,51 +263,109 @@ def _ic_str(x):
 def render(meta, results, season_m, season_w):
     L = []
     L.append("=" * 104)
-    L.append("G24 微结构/持仓/季节因子族实验台 microstructure_lab（纯离线读 G21 面板，只研究不改权重、不接 main）")
-    L.append("品种=%d，样本 %s~%s；因子全部 PIT 尾窗；前向 H=%s 日，池化 RankIC + 五档 Q5-Q1（n≥%d 才给IC）"
-             % (meta["n_sym"], meta["d0"], meta["d1"], "/".join(map(str, HORIZONS)), MIN_PAIRS))
+    L.append(
+        "G24 微结构/持仓/季节因子族实验台 microstructure_lab（纯离线读 G21 面板，只研究不改权重、不接 main）"
+    )
+    L.append(
+        "品种=%d，样本 %s~%s；因子全部 PIT 尾窗；前向 H=%s 日，池化 RankIC + 五档 Q5-Q1（n≥%d 才给IC）"
+        % (meta["n_sym"], meta["d0"], meta["d1"], "/".join(map(str, HORIZONS)), MIN_PAIRS)
+    )
     L.append("-" * 104)
-    L.append("【一】连续因子前向检验（跨品种池化；|IC|≥0.05 才算有弱信号、≥0.10 才算较稳，与既有研究同门槛）")
-    L.append("  %-18s %5s %8s %10s %8s | %5s %8s %10s %8s | %5s %8s %10s %8s"
-             % ("因子", "H", "RankIC", "Q5-Q1", "单调度", "H", "RankIC", "Q5-Q1", "单调度",
-                "H", "RankIC", "Q5-Q1", "单调度"))
+    L.append(
+        "【一】连续因子前向检验（跨品种池化；|IC|≥0.05 才算有弱信号、≥0.10 才算较稳，与既有研究同门槛）"
+    )
+    L.append(
+        "  %-18s %5s %8s %10s %8s | %5s %8s %10s %8s | %5s %8s %10s %8s"
+        % (
+            "因子",
+            "H",
+            "RankIC",
+            "Q5-Q1",
+            "单调度",
+            "H",
+            "RankIC",
+            "Q5-Q1",
+            "单调度",
+            "H",
+            "RankIC",
+            "Q5-Q1",
+            "单调度",
+        )
+    )
     for fkey, fname, _hint in FACTORS:
         cur = results[fkey]
         cells = []
         for H in HORIZONS:
             c = cur[H]
-            cells.append("%5d %8s %10s %8s"
-                         % (H, _ic_str(c["ic"]),
-                            ("%+.2f%%" % (c["q5q1"] * 100)) if _isnum(c["q5q1"]) else "  --  ",
-                            ("%.2f" % c["mono"]) if _isnum(c["mono"]) else " -- "))
+            cells.append(
+                "%5d %8s %10s %8s"
+                % (
+                    H,
+                    _ic_str(c["ic"]),
+                    ("%+.2f%%" % (c["q5q1"] * 100)) if _isnum(c["q5q1"]) else "  --  ",
+                    ("%.2f" % c["mono"]) if _isnum(c["mono"]) else " -- ",
+                )
+            )
         L.append("  %-18s %s" % (fname, " | ".join(cells)))
-    L.append("  读法：RankIC 跨品种方向秩相关（正=因子越大未来涨越多）；Q5-Q1=最高档-最低档平均前向收益；"
-             "单调度=五档均值相邻递增比例（1=完全单调）。Amihud 已乘%.0e仅为可读、不影响秩。" % AMIHUD_SCALE)
+    L.append(
+        "  读法：RankIC 跨品种方向秩相关（正=因子越大未来涨越多）；Q5-Q1=最高档-最低档平均前向收益；"
+        "单调度=五档均值相邻递增比例（1=完全单调）。Amihud 已乘%.0e仅为可读、不影响秩。"
+        % AMIHUD_SCALE
+    )
     L.append("-" * 104)
     L.append("【二】日历季节性（池化日收益；均值/上涨占比，商品经典'旺季/淡季'，样本短勿外推）")
     wname = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    mname = ["", "1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"]
+    mname = [
+        "",
+        "1月",
+        "2月",
+        "3月",
+        "4月",
+        "5月",
+        "6月",
+        "7月",
+        "8月",
+        "9月",
+        "10月",
+        "11月",
+        "12月",
+    ]
     row = []
     for m in range(1, 13):
         s = season_m.get(m)
-        row.append("%s %+.2f%%/%.0f%%" % (mname[m], s["mean"] * 100, s["uprate"] * 100) if s else "%s --" % mname[m])
+        row.append(
+            "%s %+.2f%%/%.0f%%" % (mname[m], s["mean"] * 100, s["uprate"] * 100)
+            if s
+            else "%s --" % mname[m]
+        )
     L.append("  按月：" + "  ".join(row))
     roww = []
     for w in range(5):
         s = season_w.get(w)
-        roww.append("%s %+.2f%%/%.0f%%(n%d)" % (wname[w], s["mean"] * 100, s["uprate"] * 100, s["n"]) if s else "")
+        roww.append(
+            "%s %+.2f%%/%.0f%%(n%d)" % (wname[w], s["mean"] * 100, s["uprate"] * 100, s["n"])
+            if s
+            else ""
+        )
     L.append("  按周：" + "  ".join(x for x in roww if x))
     # 最强/最弱月
     months = [(m, s["mean"]) for m, s in season_m.items() if s["n"] >= 30]
     if months:
-        hi = max(months, key=lambda t: t[1]); lo = min(months, key=lambda t: t[1])
-        L.append("  最强月=%s(%+.2f%%)，最弱月=%s(%+.2f%%)（仅历史描述、非未来保证）"
-                 % (mname[hi[0]], hi[1] * 100, mname[lo[0]], lo[1] * 100))
+        hi = max(months, key=lambda t: t[1])
+        lo = min(months, key=lambda t: t[1])
+        L.append(
+            "  最强月=%s(%+.2f%%)，最弱月=%s(%+.2f%%)（仅历史描述、非未来保证）"
+            % (mname[hi[0]], hi[1] * 100, mname[lo[0]], lo[1] * 100)
+        )
     L.append("-" * 104)
-    L.append("【三】数据缺口（诚实边界）：HP/SP 套保/投机压力需'交易者分类持仓'(类CFTC COT)，本面板只有总 OI、"
-             "无分类持仓，本轮不做；微结构因子为日频、无法替代逐笔/盘口（精确流动性与滑点待 G14 一档快照自采）。")
-    L.append("诚实边界：面板为主连比例复权日频、固定面板有幸存者偏差；Amihud 用 c*v 估成交额（单位不统一、"
-             "仅横截面/时序秩可比）；未计手续费/滑点/保证金/换月；research 结论不进综合分、不挂影子、不自动上线。")
+    L.append(
+        "【三】数据缺口（诚实边界）：HP/SP 套保/投机压力需'交易者分类持仓'(类CFTC COT)，本面板只有总 OI、"
+        "无分类持仓，本轮不做；微结构因子为日频、无法替代逐笔/盘口（精确流动性与滑点待 G14 一档快照自采）。"
+    )
+    L.append(
+        "诚实边界：面板为主连比例复权日频、固定面板有幸存者偏差；Amihud 用 c*v 估成交额（单位不统一、"
+        "仅横截面/时序秩可比）；未计手续费/滑点/保证金/换月；research 结论不进综合分、不挂影子、不自动上线。"
+    )
     return "\n".join(L)
 
 
@@ -303,21 +381,29 @@ def run(db_path=DEFAULT_DB, txt_path=LAB_TXT, json_path=LAB_JSON, verbose=True):
     season_m = calendar_seasonality(bysym, "month")
     season_w = calendar_seasonality(bysym, "weekday")
     all_dates = sorted(r["date"] for r in rows)
-    meta = {"n_sym": len(syms), "d0": all_dates[0] if all_dates else None,
-            "d1": all_dates[-1] if all_dates else None, "n_rows": len(rows),
-            "horizons": list(HORIZONS), "n_q": N_Q, "amihud_scale": AMIHUD_SCALE,
-            "windows": {"amihud": AMIHUD_WIN, "idiovol": IDIO_WIN, "skew": SKEW_WIN}}
+    meta = {
+        "n_sym": len(syms),
+        "d0": all_dates[0] if all_dates else None,
+        "d1": all_dates[-1] if all_dates else None,
+        "n_rows": len(rows),
+        "horizons": list(HORIZONS),
+        "n_q": N_Q,
+        "amihud_scale": AMIHUD_SCALE,
+        "windows": {"amihud": AMIHUD_WIN, "idiovol": IDIO_WIN, "skew": SKEW_WIN},
+    }
     text = render(meta, results, season_m, season_w)
     if verbose:
         print(text)
     os.makedirs(os.path.dirname(txt_path), exist_ok=True)
     with open(txt_path, "w", encoding="utf-8", newline="\n") as fp:
         fp.write(text + "\n")
-    payload = {"meta": meta,
-               "factors": {fkey: results[fkey] for fkey, _, _ in FACTORS},
-               "factor_names": {fkey: fname for fkey, fname, _ in FACTORS},
-               "season_month": {str(k): v for k, v in season_m.items()},
-               "season_weekday": {str(k): v for k, v in season_w.items()}}
+    payload = {
+        "meta": meta,
+        "factors": {fkey: results[fkey] for fkey, _, _ in FACTORS},
+        "factor_names": {fkey: fname for fkey, fname, _ in FACTORS},
+        "season_month": {str(k): v for k, v in season_m.items()},
+        "season_weekday": {str(k): v for k, v in season_w.items()},
+    }
     with open(json_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, allow_nan=False, indent=1)
     # 旁路台账（登记失败绝不影响产物）
@@ -327,12 +413,18 @@ def run(db_path=DEFAULT_DB, txt_path=LAB_TXT, json_path=LAB_JSON, verbose=True):
             brief[fkey] = {("ic_h%d" % H): results[fkey][H]["ic"] for H in HORIZONS}
         el.safe_record(
             "microstructure_lab",
-            {"horizons": list(HORIZONS), "n_q": N_Q,
-             "windows": meta["windows"], "panel_db": os.path.basename(db_path)},
+            {
+                "horizons": list(HORIZONS),
+                "n_q": N_Q,
+                "windows": meta["windows"],
+                "panel_db": os.path.basename(db_path),
+            },
             {"n_sym": len(syms), "n_rows": len(rows), **brief},
-            inputs=[db_path], artifacts=[txt_path, json_path],
+            inputs=[db_path],
+            artifacts=[txt_path, json_path],
             conclusion="G24微结构/持仓/季节因子族前向检验（%d品种%s~%s）：doi/amihud/idiovol/skew 池化RankIC与季节表，research不进分"
-                       % (len(syms), meta["d0"], meta["d1"]))
+            % (len(syms), meta["d0"], meta["d1"]),
+        )
     except Exception:
         pass
     return payload
@@ -349,17 +441,26 @@ def _load_all(store, syms):
 def _toy_bysym(seed=7):
     """两品种、约 220 日：价格几何随机、OI 趋势、量价齐全；返回 bysym（rows 已带 date/c/v/oi/ret1d）。"""
     import random
+
     rnd = random.Random(seed)
     bysym = {}
     for sym, drift in (("AA", 0.0006), ("BB", -0.0003)):
         rows, c, oi = [], 100.0, 10000.0
         for t in range(220):
             r = drift + rnd.gauss(0, 0.01)
-            c *= (1 + r)
-            oi *= (1 + 0.001 * math.sin(t / 12.0) + rnd.gauss(0, 0.002))
+            c *= 1 + r
+            oi *= 1 + 0.001 * math.sin(t / 12.0) + rnd.gauss(0, 0.002)
             d = _dt.date(2025, 1, 1) + _dt.timedelta(days=t)
-            rows.append({"sym": sym, "date": d.isoformat(), "c": c, "v": 1e5 + rnd.random() * 1e4,
-                         "oi": oi, "ret1d": r})
+            rows.append(
+                {
+                    "sym": sym,
+                    "date": d.isoformat(),
+                    "c": c,
+                    "v": 1e5 + rnd.random() * 1e4,
+                    "oi": oi,
+                    "ret1d": r,
+                }
+            )
         bysym[sym] = rows
     return bysym
 
@@ -369,13 +470,13 @@ def selftest():
     pc = pct_change([100.0, 110.0, 121.0], 1)
     assert pc[0] is None and abs(pc[1] - 0.10) < 1e-12 and abs(pc[2] - 0.10) < 1e-12
     pc5 = pct_change([1.0, 2.0], 5)
-    assert pc5[0] is None and pc5[1] is None           # 窗口不足
-    assert pct_change([0.0, 1.0], 1)[1] is None         # 基数非正安全
+    assert pc5[0] is None and pc5[1] is None  # 窗口不足
+    assert pct_change([0.0, 1.0], 1)[1] is None  # 基数非正安全
     # 2) rolling_amihud：恒定 |r|/notional 时等于该常数；零成交额点跳过
     am = rolling_amihud([0.01, 0.01, 0.01], [1000.0] * 3, [100.0] * 3, win=3, min_n=3)
     assert abs(am[2] - 0.01 / 1e5) < 1e-12
     am0 = rolling_amihud([0.01, 0.01], [1000.0, 1000.0], [0.0, 0.0], win=2, min_n=1)
-    assert am0[1] is None                               # 成交额全0 → 无有效点
+    assert am0[1] is None  # 成交额全0 → 无有效点
     # 3) 偏度：对称≈0、右尾为正、左尾为负
     sym_seq = [-1.0, -0.5, 0.0, 0.5, 1.0] * 6
     assert abs(_skew(sym_seq)) < 1e-9
@@ -390,7 +491,7 @@ def selftest():
     assert iv0[-1] is not None and iv0[-1] < 1e-12
     noisy = [2.0 * m + 0.004 * (1 if i % 2 else -1) for i, m in enumerate(mkt)]
     iv1 = rolling_idiovol(noisy, mkt, win=120, min_n=60)
-    assert iv1[-1] is not None and iv1[-1] > 0.003       # 私有噪声被保留为残差波动
+    assert iv1[-1] is not None and iv1[-1] > 0.003  # 私有噪声被保留为残差波动
     assert rolling_idiovol(pure, [None] * 120, win=120, min_n=1)[-1] is None  # 市场全缺
     # 5) 端到端：build 五因子键齐、长度对齐、PIT（前段为 None）
     bysym = _toy_bysym()
@@ -422,14 +523,23 @@ def selftest():
     sw = calendar_seasonality(bysym, "weekday")
     assert set(sw) <= set(range(7)) and all(0 <= v["uprate"] <= 1 for v in sw.values())
     # 8) render 端到端不崩、含三板块标题
-    meta = {"n_sym": 2, "d0": "2025-01-01", "d1": "2025-08-08", "n_rows": 440,
-            "horizons": list(HORIZONS), "n_q": N_Q, "amihud_scale": AMIHUD_SCALE,
-            "windows": {"amihud": 20, "idiovol": 60, "skew": 60}}
+    meta = {
+        "n_sym": 2,
+        "d0": "2025-01-01",
+        "d1": "2025-08-08",
+        "n_rows": 440,
+        "horizons": list(HORIZONS),
+        "n_q": N_Q,
+        "amihud_scale": AMIHUD_SCALE,
+        "windows": {"amihud": 20, "idiovol": 60, "skew": 60},
+    }
     res = {fkey: factor_forward_curve(bysym, series, fkey, min_pairs=20) for fkey, _, _ in FACTORS}
     txt = render(meta, res, sm, sw)
     assert "【一】" in txt and "【二】" in txt and "【三】" in txt
-    print("microstructure_lab selftest ALL PASS（OI变化/Amihud非流动/滚动偏度/市场模型特异波动PIT/"
-          "前向RankIC-Q5Q1单调/日历季节/端到端 共8组）")
+    print(
+        "microstructure_lab selftest ALL PASS（OI变化/Amihud非流动/滚动偏度/市场模型特异波动PIT/"
+        "前向RankIC-Q5Q1单调/日历季节/端到端 共8组）"
+    )
     return 0
 
 

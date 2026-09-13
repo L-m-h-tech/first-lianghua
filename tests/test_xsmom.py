@@ -1,10 +1,8 @@
-# -*- coding: utf-8 -*-
 """G7（第31轮）截面动量多空 XSMOM 零网络确定性测试。
 
 与时序动量（test_tsmom）区分：这里检验"每个调仓日跨品种排序、多最强空最弱"的
 市场中性组合构造、非重叠调仓、分档/加权/绩效/成本/板块/裁决门，全部手算可核、无网络。
 """
-import math
 
 import xsmom_eval as xe
 
@@ -28,7 +26,7 @@ def test_quantile_members_partition():
     assert [m["fv"] for m in bands[-1]] == [16, 17, 18, 19]
     # 升序：档均因子单调
     means = [sum(m["fv"] for m in b) / len(b) for b in bands]
-    assert all(b > a for a, b in zip(means, means[1:]))
+    assert all(b > a for a, b in zip(means, means[1:], strict=False))
 
 
 def test_weighting_equal_ivol_and_degrade():
@@ -38,8 +36,10 @@ def test_weighting_equal_ivol_and_degrade():
     iv = xe._weighted_fwd(members, "f", "ivol")
     assert abs(iv - (0.8 * 0.10 + 0.2 * 0.20)) < 1e-12 and iv < 0.15
     # 波动率全缺失 -> 安全退回等权，不抛
-    assert abs(xe._weighted_fwd([{"f": 1.0, "vol": None}, {"f": 3.0, "vol": None}],
-                                "f", "ivol") - 2.0) < 1e-12
+    assert (
+        abs(xe._weighted_fwd([{"f": 1.0, "vol": None}, {"f": 3.0, "vol": None}], "f", "ivol") - 2.0)
+        < 1e-12
+    )
 
 
 # --------------------------- 3) 截面组合：手算多空 ---------------------------
@@ -51,10 +51,13 @@ def _hand_panel(n_q=3):
         row = {}
         for k in range(6):
             row["S%d" % k] = {
-                "sym": "S%d" % k, "sector": "黑色" if k < 3 else "有色",
-                "z20": 0.1 * (k + 1), "ret20": 0.1 * (k + 1),
+                "sym": "S%d" % k,
+                "sector": "黑色" if k < 3 else "有色",
+                "z20": 0.1 * (k + 1),
+                "ret20": 0.1 * (k + 1),
                 "vol20": 0.01 + 0.001 * k,
-                "fwd20": 0.01 * (k + 1) + 0.005 * di}   # d2 整体上移 0.005
+                "fwd20": 0.01 * (k + 1) + 0.005 * di,
+            }  # d2 整体上移 0.005
         by[d] = row
     return dates, by
 
@@ -62,7 +65,7 @@ def _hand_panel(n_q=3):
 def test_cross_section_long_short_handcalc():
     dates, by = _hand_panel()
     pers = xe.cross_section_periods(dates, by, "z20", 20, 20, 3, 6, "equal", 20)
-    assert len(pers) == 2                      # 非重叠：d1、d2 各一期
+    assert len(pers) == 2  # 非重叠：d1、d2 各一期
     p = pers[0]
     # 3档每档2个：Q1=(.01,.02)均.015；Q3=(.05,.06)均.055 -> ls=.04
     assert len(p["bands_mean"]) == 3
@@ -70,7 +73,7 @@ def test_cross_section_long_short_handcalc():
     assert abs(p["bands_mean"][-1] - 0.055) < 1e-12
     assert abs(p["ls"] - 0.04) < 1e-12
     assert abs(p["long"] - 0.055) < 1e-12 and abs(p["short_abs"] - 0.015) < 1e-12
-    assert abs(p["short_pnl"] + 0.015) < 1e-12   # 做空收益=-最弱档绝对涨幅
+    assert abs(p["short_pnl"] + 0.015) < 1e-12  # 做空收益=-最弱档绝对涨幅
     assert p["long_syms"] == ["S4", "S5"] and p["short_syms"] == ["S0", "S1"]
     # d2 整体上移 0.005：多空价差不变（市场 beta 被对冲），但 mkt 基准上移
     assert abs(pers[1]["ls"] - 0.04) < 1e-12
@@ -89,8 +92,14 @@ def test_cross_section_ivol_and_insufficient():
     dates8 = ["g1"]
     by8 = {"g1": {}}
     for k in range(8):
-        by8["g1"]["S%d" % k] = {"sym": "S%d" % k, "sector": "X", "z20": float(k),
-                                "ret20": float(k), "vol20": 0.01, "fwd20": 0.01 * k}
+        by8["g1"]["S%d" % k] = {
+            "sym": "S%d" % k,
+            "sector": "X",
+            "z20": float(k),
+            "ret20": float(k),
+            "vol20": 0.01,
+            "fwd20": 0.01 * k,
+        }
     by8["g1"]["S7"]["z20"] = None
     p2 = xe.cross_section_periods(dates8, by8, "z20", 20, 20, 3, 6, "equal", 20)
     assert p2[0]["n"] == 7
@@ -99,9 +108,20 @@ def test_cross_section_ivol_and_insufficient():
 def test_nonoverlap_step():
     # 30 个连续日、step=20：只在 di=0、di=20 调仓，期与期不重叠
     dates = ["d%03d" % i for i in range(30)]
-    by = {d: {"S%d" % k: {"sym": "S%d" % k, "sector": "X", "z20": float(k),
-                          "ret20": float(k), "vol20": 0.01, "fwd20": 0.01 * k}
-             for k in range(6)} for d in dates}
+    by = {
+        d: {
+            "S%d" % k: {
+                "sym": "S%d" % k,
+                "sector": "X",
+                "z20": float(k),
+                "ret20": float(k),
+                "vol20": 0.01,
+                "fwd20": 0.01 * k,
+            }
+            for k in range(6)
+        }
+        for d in dates
+    }
     pers = xe.cross_section_periods(dates, by, "z20", 20, 20, 3, 6, "equal", 20)
     assert [p["date"] for p in pers] == ["d000", "d020"]
 
@@ -109,7 +129,7 @@ def test_nonoverlap_step():
 # --------------------------- 4) 绩效/成本/分档 ---------------------------
 def test_perf_stats_handcalc():
     pers = [{"ls": 0.04}, {"ls": 0.02}]
-    p = xe.perf_stats(pers, 20, 0.001, "ls")     # 两腿成本 2*0.001=0.002/期
+    p = xe.perf_stats(pers, 20, 0.001, "ls")  # 两腿成本 2*0.001=0.002/期
     assert abs(p["gross_mean"] - 0.03) < 1e-12
     assert abs(p["net"][0] - 0.038) < 1e-12 and abs(p["net"][1] - 0.018) < 1e-12
     assert abs(p["net_mean"] - 0.028) < 1e-12 and p["win"] == 1.0
@@ -127,8 +147,10 @@ def test_equity_drawdown():
 
 
 def test_bands_profile_monotonic():
-    pers = [{"bands_mean": [0.01 * q for q in range(1, 6)]},
-            {"bands_mean": [0.01 * q - 0.002 for q in range(1, 6)]}]
+    pers = [
+        {"bands_mean": [0.01 * q for q in range(1, 6)]},
+        {"bands_mean": [0.01 * q - 0.002 for q in range(1, 6)]},
+    ]
     bp = xe.bands_profile(pers, 5)
     assert bp["mono"] == 1.0 and bp["spread"] > 0 and bp["col_rank_ic"] > 0.99
 
@@ -143,8 +165,10 @@ def test_split_is_oos_ordered():
 # --------------------------- 5) 板块 ---------------------------
 def test_sector_breakdown_and_internal():
     # 期1：多有色空黑色；期2：两腿都是有色（不含黑色）。
-    pers = [{"sec_long": {"有色": 1.0}, "sec_short": {"黑色": 1.0}, "ls": 0.03},
-            {"sec_long": {"有色": 1.0}, "sec_short": {"有色": 1.0}, "ls": 0.01}]
+    pers = [
+        {"sec_long": {"有色": 1.0}, "sec_short": {"黑色": 1.0}, "ls": 0.03},
+        {"sec_long": {"有色": 1.0}, "sec_short": {"有色": 1.0}, "ls": 0.01},
+    ]
     exp, loso = xe.sector_breakdown(pers)
     # 两期多头都含有色(long=1.0)；空头黑色0.5/有色0.5 -> 有色net=+0.5、黑色net=-0.5
     assert abs(exp["有色"]["net"] - 0.5) < 1e-12 and abs(exp["黑色"]["net"] + 0.5) < 1e-12
@@ -159,9 +183,14 @@ def test_sector_breakdown_and_internal():
         row = {}
         for s in range(12):
             sec = "A" if s < 6 else "B"
-            row["V%02d" % s] = {"sym": "V%02d" % s, "sector": sec, "z20": float(s),
-                                "ret20": float(s), "vol20": 0.01,
-                                "fwd20": 0.01 * (s - 6)}   # 严格随因子递增
+            row["V%02d" % s] = {
+                "sym": "V%02d" % s,
+                "sector": sec,
+                "z20": float(s),
+                "ret20": float(s),
+                "vol20": 0.01,
+                "fwd20": 0.01 * (s - 6),
+            }  # 严格随因子递增
         by[d] = row
     internal = xe.sector_internal(dates, by, "z20", 20, 20, 3, 6, 20)
     assert set(internal) == {"A", "B"}
@@ -170,8 +199,17 @@ def test_sector_breakdown_and_internal():
 
 # --------------------------- 6) 裁决门 ---------------------------
 def _good_perf():
-    return {"n": 40, "gross_mean": 0.01, "net_mean": 0.009, "net_t": 2.3,
-            "win": 0.6, "net_cum": 0.3, "annual": 0.1, "sharpe": 1.1, "max_dd": 0.05}
+    return {
+        "n": 40,
+        "gross_mean": 0.01,
+        "net_mean": 0.009,
+        "net_t": 2.3,
+        "win": 0.6,
+        "net_cum": 0.3,
+        "annual": 0.1,
+        "sharpe": 1.1,
+        "max_dd": 0.05,
+    }
 
 
 def _good_bands():
@@ -179,8 +217,17 @@ def _good_bands():
 
 
 def test_gate_pass_and_each_veto():
-    ok, why = xe.gate_verdict(_good_perf(), _good_perf(), _good_bands(),
-                              0.01, 0.01, {"有色": {"net": 0.2}}, 1.5, 0.75, 0.6)
+    ok, why = xe.gate_verdict(
+        _good_perf(),
+        _good_perf(),
+        _good_bands(),
+        0.01,
+        0.01,
+        {"有色": {"net": 0.2}},
+        1.5,
+        0.75,
+        0.6,
+    )
     assert ok and not why
     # t 不足否决
     bad = dict(_good_perf(), net_t=0.6)
@@ -188,19 +235,33 @@ def test_gate_pass_and_each_veto():
     assert not ok1 and any("t=" in w for w in why1)
     # OOS 转负否决
     oos_bad = dict(_good_perf(), net_mean=-0.01)
-    ok2, why2 = xe.gate_verdict(_good_perf(), oos_bad, _good_bands(), 0.01, 0.01, {}, 1.5, 0.75, 0.6)
+    ok2, why2 = xe.gate_verdict(
+        _good_perf(), oos_bad, _good_bands(), 0.01, 0.01, {}, 1.5, 0.75, 0.6
+    )
     assert not ok2 and any("OOS" in w for w in why2)
     # 分档不单调否决
     bad_bands = dict(_good_bands(), mono=0.25, spread=-0.01)
-    ok3, why3 = xe.gate_verdict(_good_perf(), _good_perf(), bad_bands, 0.01, 0.01, {}, 1.5, 0.75, 0.6)
+    ok3, why3 = xe.gate_verdict(
+        _good_perf(), _good_perf(), bad_bands, 0.01, 0.01, {}, 1.5, 0.75, 0.6
+    )
     assert not ok3 and any("分档" in w for w in why3)
     # 两腿皆亏否决
-    ok4, why4 = xe.gate_verdict(_good_perf(), _good_perf(), _good_bands(),
-                                -0.01, -0.01, {}, 1.5, 0.75, 0.6)
+    ok4, why4 = xe.gate_verdict(
+        _good_perf(), _good_perf(), _good_bands(), -0.01, -0.01, {}, 1.5, 0.75, 0.6
+    )
     assert not ok4 and any("腿" in w for w in why4)
     # 单一板块偏置否决
-    ok5, why5 = xe.gate_verdict(_good_perf(), _good_perf(), _good_bands(), 0.01, 0.01,
-                                {"能化": {"net": 0.85}}, 1.5, 0.75, 0.6)
+    ok5, why5 = xe.gate_verdict(
+        _good_perf(),
+        _good_perf(),
+        _good_bands(),
+        0.01,
+        0.01,
+        {"能化": {"net": 0.85}},
+        1.5,
+        0.75,
+        0.6,
+    )
     assert not ok5 and any("板块偏置" in w for w in why5)
     # 无主组合否决
     ok6, why6 = xe.gate_verdict(None, None, _good_bands(), 0.01, 0.01, {}, 1.5, 0.75, 0.6)
@@ -209,8 +270,17 @@ def test_gate_pass_and_each_veto():
 
 # --------------------------- 7) 单品种面板暖机/无未来 ---------------------------
 def _bars(closes):
-    return [{"d": "2025-%02d-%02d" % (i // 28 % 12 + 1, i % 28 + 1),
-             "o": c, "h": c + 1, "l": c - 1, "c": c, "v": 1000} for i, c in enumerate(closes)]
+    return [
+        {
+            "d": "2025-%02d-%02d" % (i // 28 % 12 + 1, i % 28 + 1),
+            "o": c,
+            "h": c + 1,
+            "l": c - 1,
+            "c": c,
+            "v": 1000,
+        }
+        for i, c in enumerate(closes)
+    ]
 
 
 def test_build_symbol_points_warmup_no_future():
@@ -239,8 +309,25 @@ def test_synthetic_trend_panel_positive():
     assert pf["gross_mean"] > 0 and pf["net_t"] > 0
     assert bp["mono"] == 1.0 and bp["spread"] > 0
     text, sidecar, verdict = xe.build_report(
-        pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 16, 6,
-        0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal")
+        pts,
+        [],
+        dates,
+        by,
+        (20, 60),
+        (5, 20),
+        60,
+        20,
+        5,
+        16,
+        6,
+        0.3,
+        1.5,
+        0.75,
+        0.6,
+        0.0003,
+        320,
+        "equal",
+    )
     assert "XSMOM" in text and verdict["ok"] is True
     assert sidecar["n_symbols"] == 20 and sidecar["grid"]
 
@@ -250,8 +337,25 @@ def test_build_report_empty_safe():
     pts = xe._synthetic_panel("trend", n_sym=20, n_days=120)
     dates, by = xe.build_panel(pts)
     text, _sc, verdict = xe.build_report(
-        pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 999, 6,
-        0.3, 1.5, 0.75, 0.6, 0.0003, 120, "equal")
+        pts,
+        [],
+        dates,
+        by,
+        (20, 60),
+        (5, 20),
+        60,
+        20,
+        5,
+        999,
+        6,
+        0.3,
+        1.5,
+        0.75,
+        0.6,
+        0.0003,
+        120,
+        "equal",
+    )
     assert "无可用调仓期" in text and verdict["ok"] is False
 
 
@@ -262,19 +366,28 @@ def _scope_panel():
     by = {"g1": {}}
     for k in range(12):
         sec = "有色" if k < 6 else "能化"
-        by["g1"]["V%02d" % k] = {"sym": "V%02d" % k, "sector": sec, "z60": float(k),
-                                 "ret60": float(k), "vol60": 0.01, "fwd20": 0.01 * k}
+        by["g1"]["V%02d" % k] = {
+            "sym": "V%02d" % k,
+            "sector": sec,
+            "z60": float(k),
+            "ret60": float(k),
+            "vol60": 0.01,
+            "fwd20": 0.01 * k,
+        }
     return dates, by
 
 
 def test_sector_scope_and_long_excess_handcalc():
     dates, by = _scope_panel()
     # 板块池：只在有色6个内分3档（每档2），成员全部为有色
-    p = xe.cross_section_periods(dates, by, "z60", 20, 60, 3, 6, "equal", 20,
-                                 sector_scope=("有色",))
+    p = xe.cross_section_periods(
+        dates, by, "z60", 20, 60, 3, 6, "equal", 20, sector_scope=("有色",)
+    )
     assert len(p) == 1 and p[0]["n"] == 6
-    assert all(s in ("V00", "V01", "V02", "V03", "V04", "V05")
-               for s in p[0]["long_syms"] + p[0]["short_syms"])
+    assert all(
+        s in ("V00", "V01", "V02", "V03", "V04", "V05")
+        for s in p[0]["long_syms"] + p[0]["short_syms"]
+    )
     # top=V04,V05(.04,.05)均.045；bot=V00,V01(.00,.01)均.005；池内mkt=有色6均=.025
     assert abs(p[0]["long"] - 0.045) < 1e-12
     assert abs(p[0]["short_abs"] - 0.005) < 1e-12
@@ -288,8 +401,9 @@ def test_sector_scope_and_long_excess_handcalc():
 
 def test_leg_cost_one_vs_two():
     dates, by = _scope_panel()
-    p = xe.cross_section_periods(dates, by, "z60", 20, 60, 3, 6, "equal", 20,
-                                 sector_scope=("有色",))
+    p = xe.cross_section_periods(
+        dates, by, "z60", 20, 60, 3, 6, "equal", 20, sector_scope=("有色",)
+    )
     # lex=多头超额单腿扣1次往返；ls=多空两腿扣2次
     pf_lex = xe.perf_stats(p, 20, 0.0003, "long_excess")
     assert abs(pf_lex["net_mean"] - (0.02 - 0.0003)) < 1e-12
@@ -302,33 +416,47 @@ def test_leg_cost_one_vs_two():
 def test_truncate_dates():
     seq = list(range(10))
     assert xe.truncate_dates(seq, 3) == [7, 8, 9]
-    assert xe.truncate_dates(seq, 0) == seq          # 0=不截断
-    assert xe.truncate_dates(seq, 99) == seq         # 超长=原样
-    assert seq == list(range(10))                   # 不改原序列
+    assert xe.truncate_dates(seq, 0) == seq  # 0=不截断
+    assert xe.truncate_dates(seq, 99) == seq  # 超长=原样
+    assert seq == list(range(10))  # 不改原序列
 
 
 def _toy_perf(t, m=0.01, n=40):
-    return {"n": n, "gross_mean": m, "net_mean": m, "net_t": t, "win": 0.6,
-            "net_cum": 0.2, "annual": 0.1, "sharpe": 1.0, "max_dd": 0.05,
-            "gross": [], "net": []}
+    return {
+        "n": n,
+        "gross_mean": m,
+        "net_mean": m,
+        "net_t": t,
+        "win": 0.6,
+        "net_cum": 0.2,
+        "annual": 0.1,
+        "sharpe": 1.0,
+        "max_dd": 0.05,
+        "gross": [],
+        "net": [],
+    }
 
 
 def test_robust_verdict_branches():
     # 两窗都 t 达标、无衰减、长窗样本量足够多 -> 稳健
-    ok, why = xe.robust_verdict({"windows": {"近": _toy_perf(2.0, n=40), "长": _toy_perf(1.8, n=100)}},
-                                1.5, 0.5)
+    ok, why = xe.robust_verdict(
+        {"windows": {"近": _toy_perf(2.0, n=40), "长": _toy_perf(1.8, n=100)}}, 1.5, 0.5
+    )
     assert ok and not why
     # 长窗 t 比短窗衰减超容差 -> 不稳健
-    ok1, why1 = xe.robust_verdict({"windows": {"近": _toy_perf(2.2, n=40), "长": _toy_perf(1.0, n=100)}},
-                                  1.5, 0.5)
+    ok1, why1 = xe.robust_verdict(
+        {"windows": {"近": _toy_perf(2.2, n=40), "长": _toy_perf(1.0, n=100)}}, 1.5, 0.5
+    )
     assert not ok1 and any("衰减" in w for w in why1)
     # 一窗为负 -> 不稳健
-    ok2, why2 = xe.robust_verdict({"windows": {"近": _toy_perf(2.0, n=40), "长": _toy_perf(2.0, -0.01, 100)}},
-                                  1.5, 0.5)
+    ok2, why2 = xe.robust_verdict(
+        {"windows": {"近": _toy_perf(2.0, n=40), "长": _toy_perf(2.0, -0.01, 100)}}, 1.5, 0.5
+    )
     assert not ok2 and any("为负" in w for w in why2)
     # 长窗期数没比短窗多（板块上市晚、两窗同源小样本）-> 即便两窗 t 都高也不稳健
-    oks, whys = xe.robust_verdict({"windows": {"近": _toy_perf(2.01, 0.027, 25), "长": _toy_perf(2.01, 0.027, 25)}},
-                                  1.5, 0.5)
+    oks, whys = xe.robust_verdict(
+        {"windows": {"近": _toy_perf(2.01, 0.027, 25), "长": _toy_perf(2.01, 0.027, 25)}}, 1.5, 0.5
+    )
     assert not oks and any("同源" in w for w in whys)
     # 窗口不足2个 -> 不稳健
     ok3, why3 = xe.robust_verdict({"windows": {"近": _toy_perf(2.0), "长": None}}, 1.5, 0.5)
@@ -340,8 +468,9 @@ def test_conditional_scan_structure():
     dates, by = xe.build_panel(pts)
     short = xe.truncate_dates(dates, 160)
     cands = [("基线", None, "ls"), ("板块0", ("板块0",), "ls"), ("多头超额", None, "lex")]
-    scan = xe.conditional_scan([("近", (short, by)), ("长", (dates, by))],
-                               "z60", 60, 20, 5, 16, 0.0003, cands)
+    scan = xe.conditional_scan(
+        [("近", (short, by)), ("长", (dates, by))], "z60", 60, 20, 5, 16, 0.0003, cands
+    )
     assert list(scan) == ["基线", "板块0", "多头超额"]
     # 板块0只有5个品种、分5档需≥10 -> 样本不足 None；其余两窗都有 perf
     assert scan["板块0"]["windows"]["近"] is None and scan["板块0"]["windows"]["长"] is None
@@ -355,14 +484,54 @@ def test_build_report_conditional_chapter():
     cands = [("全市场·多空", None, "ls"), ("全市场·多头超额", None, "lex")]
     # 带 robust_panel -> 出第五章、sidecar.conditional 齐全
     text, sc, _ = xe.build_report(
-        pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 16, 6,
-        0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal",
-        robust_panel=(dates, by), candidates=cands, cond_min=16,
-        decay_tol=0.5, main_days=160, main_scope=None, main_leg="ls")
+        pts,
+        [],
+        dates,
+        by,
+        (20, 60),
+        (5, 20),
+        60,
+        20,
+        5,
+        16,
+        6,
+        0.3,
+        1.5,
+        0.75,
+        0.6,
+        0.0003,
+        320,
+        "equal",
+        robust_panel=(dates, by),
+        candidates=cands,
+        cond_min=16,
+        decay_tol=0.5,
+        main_days=160,
+        main_scope=None,
+        main_leg="ls",
+    )
     assert "五、条件化" in text and "双样本稳健" in text
     assert set(sc["conditional"]) == {"全市场·多空", "全市场·多头超额"}
     # 主组合 --leg lex：二章标题标注腿模式，且净口径走多头超额（单腿）
     text_lex, _, _ = xe.build_report(
-        pts, [], dates, by, (20, 60), (5, 20), 60, 20, 5, 16, 6,
-        0.3, 1.5, 0.75, 0.6, 0.0003, 320, "equal", main_leg="lex")
+        pts,
+        [],
+        dates,
+        by,
+        (20, 60),
+        (5, 20),
+        60,
+        20,
+        5,
+        16,
+        6,
+        0.3,
+        1.5,
+        0.75,
+        0.6,
+        0.0003,
+        320,
+        "equal",
+        main_leg="lex",
+    )
     assert "腿=多头超额" in text_lex

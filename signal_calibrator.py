@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """WP-F2（P1-2）A3：历史信号胜率校准器（meta-labeling 零依赖版）。
 
 思路（López de Prado meta-labeling 的轻量落地）：
@@ -17,6 +16,7 @@
 
 可合成断言的纯函数：canonical_factor / dominant_factor / bayes_winrate / mult_from_winrate。
 """
+
 import config
 
 # 分组层级名（报告展示用）
@@ -104,9 +104,19 @@ def _band_of_score(score):
 
 
 def _empty_result():
-    return {"calibrated": False, "mult": 1.0, "winrate": None, "raw_winrate": None,
-            "n": 0, "hits": 0, "avg_ret": None, "level": "", "band": "",
-            "factor": FACTOR_FALLBACK, "note": ""}
+    return {
+        "calibrated": False,
+        "mult": 1.0,
+        "winrate": None,
+        "raw_winrate": None,
+        "n": 0,
+        "hits": 0,
+        "avg_ret": None,
+        "level": "",
+        "band": "",
+        "factor": FACTOR_FALLBACK,
+        "note": "",
+    }
 
 
 class SignalCalibrator:
@@ -178,9 +188,12 @@ class SignalCalibrator:
         if not agg or agg[0] < self.min_n:
             return None
         n, hits, sum_ret = agg
-        return {"n": n, "hits": hits,
-                "avg_ret": sum_ret / n if n else None,
-                "raw_winrate": hits / n if n else 0.0}
+        return {
+            "n": n,
+            "hits": hits,
+            "avg_ret": sum_ret / n if n else None,
+            "raw_winrate": hits / n if n else 0.0,
+        }
 
     def lookup(self, score, direction_int=None, parts=None):
         """对一条当前信号返回校准信息（含 mult 乘子）。逐级回退，样本不足返回未校准。"""
@@ -210,10 +223,18 @@ class SignalCalibrator:
             if agg is None:
                 continue
             wr = bayes_winrate(agg["hits"], agg["n"])
-            res.update({"calibrated": True, "winrate": wr,
-                        "raw_winrate": agg["raw_winrate"], "n": agg["n"],
-                        "hits": agg["hits"], "avg_ret": agg["avg_ret"],
-                        "level": level, "mult": mult_from_winrate(wr)})
+            res.update(
+                {
+                    "calibrated": True,
+                    "winrate": wr,
+                    "raw_winrate": agg["raw_winrate"],
+                    "n": agg["n"],
+                    "hits": agg["hits"],
+                    "avg_ret": agg["avg_ret"],
+                    "level": level,
+                    "mult": mult_from_winrate(wr),
+                }
+            )
             res["note"] = self.format_note(res, direction_int)
             return res
         return res  # 全部层级样本不足：mult=1.0、不标注
@@ -231,12 +252,21 @@ class SignalCalibrator:
         if not info or not info.get("calibrated"):
             return ""
         d_txt = DIR_TEXT.get(direction_int, "")
-        bits = [x for x in (d_txt, info.get("band"),
-                            info.get("factor") if info.get("level") == LV_FACTOR else None) if x]
+        bits = [
+            x
+            for x in (
+                d_txt,
+                info.get("band"),
+                info.get("factor") if info.get("level") == LV_FACTOR else None,
+            )
+            if x
+        ]
         scope = "·".join(bits) if bits else "全局"
         wr = info["winrate"] * 100
-        return ("历史同类(%s)胜率%.1f%%(n=%d,平滑前%.1f%%)→sizing乘子%.2f（影子，不改变当前建议）"
-                % (scope, wr, info["n"], info["raw_winrate"] * 100, info["mult"]))
+        return (
+            "历史同类(%s)胜率%.1f%%(n=%d,平滑前%.1f%%)→sizing乘子%.2f（影子，不改变当前建议）"
+            % (scope, wr, info["n"], info["raw_winrate"] * 100, info["mult"])
+        )
 
     # ---------- 报告用汇总 ----------
     def band_table(self):
@@ -249,11 +279,19 @@ class SignalCalibrator:
                     continue
                 n, hits, sum_ret = agg
                 wr = bayes_winrate(hits, n)
-                out.append({"dir": d, "dir_text": DIR_TEXT.get(d, ""), "band": band,
-                            "n": n, "hits": hits, "winrate": wr,
-                            "avg_ret": sum_ret / n if n else 0.0,
-                            "mult": mult_from_winrate(wr) if n >= self.min_n else None,
-                            "enough": n >= self.min_n})
+                out.append(
+                    {
+                        "dir": d,
+                        "dir_text": DIR_TEXT.get(d, ""),
+                        "band": band,
+                        "n": n,
+                        "hits": hits,
+                        "winrate": wr,
+                        "avg_ret": sum_ret / n if n else 0.0,
+                        "mult": mult_from_winrate(wr) if n >= self.min_n else None,
+                        "enough": n >= self.min_n,
+                    }
+                )
         return out
 
 
@@ -264,6 +302,7 @@ def _safe_json(text):
     if not text:
         return {}
     import json
+
     try:
         v = json.loads(text)
         return v if isinstance(v, dict) else {}

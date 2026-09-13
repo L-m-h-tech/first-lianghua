@@ -1,38 +1,60 @@
-# -*- coding: utf-8 -*-
 """第26轮 G4 回测严谨性回归（零网络、确定性）：
 - next_open 成交严格晚信号一根、close 旧口径逐值等价、末根信号不虚构、锁板顺延、反手；
 - 冲击成本分项；bootstrap 区间可复现/有序/退化/样本不足；分位、IS/OOS、历史百分位、sidecar；
 - storage 第12张表 backtest_runs 与 archive_run 纵向留档。
 """
+
 import json
-import os
 from types import SimpleNamespace
 
 import backtest
 
-
 # ---------- 合成 prepared 夹具 ----------
+
 
 def _prepared(closes, opens, scores, highs=None, lows=None):
     n = len(closes)
     highs = highs or list(closes)
     lows = lows or list(closes)
-    bars = [{"d": f"2026-01-{i+1:02d}", "o": opens[i], "h": highs[i],
-             "l": lows[i], "c": closes[i]} for i in range(n)]
+    bars = [
+        {"d": f"2026-01-{i + 1:02d}", "o": opens[i], "h": highs[i], "l": lows[i], "c": closes[i]}
+        for i in range(n)
+    ]
     series = [{"i": i, "ind": {}, "score": scores[i]} for i in range(n)]
-    return {"name": "测试", "code": "RB0", "sym": "RB", "bars": bars,
-            "closes": list(closes), "opens": list(opens), "highs": list(highs),
-            "lows": list(lows), "series": series, "roll_count": 0}
+    return {
+        "name": "测试",
+        "code": "RB0",
+        "sym": "RB",
+        "bars": bars,
+        "closes": list(closes),
+        "opens": list(opens),
+        "highs": list(highs),
+        "lows": list(lows),
+        "series": series,
+        "roll_count": 0,
+    }
 
 
 def _run(prepared, fill_mode="close", impact=0.0, limit_move=None, hold=3, entry=2.0):
     return backtest.simulate_prepared(
-        "测试", "RB0", prepared, hold, entry, fee_rate=0.0, slip_rate=0.0,
-        limit_move=limit_move, collect_signals=False, fee_table={},
-        use_real_fees=False, fill_mode=fill_mode, impact_rate=impact)
+        "测试",
+        "RB0",
+        prepared,
+        hold,
+        entry,
+        fee_rate=0.0,
+        slip_rate=0.0,
+        limit_move=limit_move,
+        collect_signals=False,
+        fee_table={},
+        use_real_fees=False,
+        fill_mode=fill_mode,
+        impact_rate=impact,
+    )
 
 
 # ---------- 一、成交时点 ----------
+
 
 def test_close_fill_enters_at_signal_close():
     closes = [100, 101, 102, 103, 104, 105, 106, 107]
@@ -41,7 +63,7 @@ def test_close_fill_enters_at_signal_close():
     assert len(r["trades"]) == 1
     t = r["trades"][0]
     assert t["entry_date"] == "2026-01-01" and t["exit_date"] == "2026-01-04"
-    assert abs(t["gross_ret"] - (103 / 100 - 1)) < 1e-12   # i0收盘进、i3(持有3根)收盘出
+    assert abs(t["gross_ret"] - (103 / 100 - 1)) < 1e-12  # i0收盘进、i3(持有3根)收盘出
     assert t["hold"] == 3 and t["exit"] == "到期"
 
 
@@ -61,7 +83,7 @@ def test_next_open_fill_one_bar_later():
 def test_next_open_last_bar_signal_not_filled():
     closes = [100.0] * 8
     opens = [100.0] * 8
-    scores = [0, 0, 0, 0, 0, 0, 0, 3.0]   # 仅末根出信号
+    scores = [0, 0, 0, 0, 0, 0, 0, 3.0]  # 仅末根出信号
     r = _run(_prepared(closes, opens, scores), fill_mode="next_open")
     assert r["trades"] == [] and r["unfilled_entry"] == 1
     # close 口径下末根信号当根成交、随即样本末平仓（hold=0），不丢弃
@@ -103,6 +125,7 @@ def test_close_path_equivalent_when_impact_zero():
 
 # ---------- 二、冲击成本 ----------
 
+
 def test_impact_cost_split_and_round_trip():
     closes = [100, 101, 102, 103, 104, 105, 106, 107]
     scores = [3.0, 0, 0, 0, 0, 0, 0, 0]
@@ -110,13 +133,14 @@ def test_impact_cost_split_and_round_trip():
     r1 = _run(_prepared(closes, closes, scores), impact=0.0002)
     t0, t1 = r0["trades"][0], r1["trades"][0]
     assert t0["impact_cost"] == 0.0
-    assert abs(t1["impact_cost"] - 0.0004) < 1e-12           # 往返两次
+    assert abs(t1["impact_cost"] - 0.0004) < 1e-12  # 往返两次
     assert abs(t1["cost"] - (t1["fee_cost"] + t1["slip_cost"] + 0.0004)) < 1e-12
     assert abs(t1["ret"] - (t1["gross_ret"] - t1["cost"])) < 1e-12
     assert t0["ret"] == t0["gross_ret"]
 
 
 # ---------- 三、bootstrap / 分位 ----------
+
 
 def test_quantile_known_values():
     v = [1.0, 2.0, 3.0, 4.0]
@@ -128,12 +152,32 @@ def test_quantile_known_values():
 
 
 def test_bootstrap_deterministic_and_ordered():
-    rets = [0.01, -0.02, 0.03, -0.005, 0.02, -0.01, 0.015, 0.008, -0.012,
-            0.02, 0.004, -0.009, 0.011, -0.006, 0.007, 0.003, -0.011,
-            0.009, 0.005, -0.004, 0.013]
+    rets = [
+        0.01,
+        -0.02,
+        0.03,
+        -0.005,
+        0.02,
+        -0.01,
+        0.015,
+        0.008,
+        -0.012,
+        0.02,
+        0.004,
+        -0.009,
+        0.011,
+        -0.006,
+        0.007,
+        0.003,
+        -0.011,
+        0.009,
+        0.005,
+        -0.004,
+        0.013,
+    ]
     b1 = backtest.bootstrap_trade_stats(rets, 400, seed=7, min_trades=20)
     b2 = backtest.bootstrap_trade_stats(rets, 400, seed=7, min_trades=20)
-    assert b1 == b2                                        # 固定种子可复现
+    assert b1 == b2  # 固定种子可复现
     assert b1["cum_p5"] <= b1["cum_median"] <= b1["cum_p95"]
     assert 0 <= b1["dd_p5"] <= b1["dd_median"] <= b1["dd_p95"]
     assert b1["n"] == 21 and b1["n_boot"] == 400
@@ -141,17 +185,18 @@ def test_bootstrap_deterministic_and_ordered():
 
 def test_bootstrap_constant_collapses():
     b = backtest.bootstrap_trade_stats([0.01] * 30, 200, seed=1, min_trades=20)
-    expect = 1.01 ** 30 - 1
+    expect = 1.01**30 - 1
     assert abs(b["cum_p5"] - expect) < 1e-9 and abs(b["cum_p95"] - expect) < 1e-9
     assert b["dd_p5"] == 0.0
 
 
 def test_bootstrap_guards():
     assert backtest.bootstrap_trade_stats([0.01] * 5, 100, min_trades=20) is None  # 样本不足
-    assert backtest.bootstrap_trade_stats([0.01] * 30, 0, min_trades=20) is None   # 关闭
+    assert backtest.bootstrap_trade_stats([0.01] * 30, 0, min_trades=20) is None  # 关闭
 
 
 # ---------- 四、IS/OOS、百分位、sidecar ----------
+
 
 def test_split_is_oos_order_and_ratio():
     trades = [{"exit_date": f"2026-01-{i:02d}", "ret": i * 0.001} for i in range(10, 0, -1)]
@@ -184,14 +229,24 @@ def test_load_validation_sidecar_bad_paths(tmp_path):
 
 # ---------- 五、storage 第12张表 + archive_run ----------
 
+
 def test_backtest_runs_table_and_history(tmp_db):
     counts = tmp_db.table_counts()
     assert "backtest_runs" in counts and counts["backtest_runs"] == 0
-    rid = tmp_db.insert_backtest_run({"run_ts": "2026-09-02 18:00:00", "kind": "daily",
-                                      "fill_mode": "close", "n_trades": 12,
-                                      "cumulative": 0.05, "max_dd": 0.02,
-                                      "sharpe": 0.4, "win_rate": 0.5,
-                                      "params": {"hold": 10}, "metrics": {"n": 12}})
+    rid = tmp_db.insert_backtest_run(
+        {
+            "run_ts": "2026-09-02 18:00:00",
+            "kind": "daily",
+            "fill_mode": "close",
+            "n_trades": 12,
+            "cumulative": 0.05,
+            "max_dd": 0.02,
+            "sharpe": 0.4,
+            "win_rate": 0.5,
+            "params": {"hold": 10},
+            "metrics": {"n": 12},
+        }
+    )
     assert rid == 1
     hist = tmp_db.backtest_run_history("daily")
     assert len(hist) == 1 and hist[0]["fill_mode"] == "close"
@@ -199,15 +254,28 @@ def test_backtest_runs_table_and_history(tmp_db):
 
 
 def _fake_args(**kw):
-    base = dict(days=250, hold=10, entry=2.0, fill="close", slip_rate=1e-4,
-                impact_rate=0.0, fee_rate=5e-5, no_real_fees=True, no_cost=False,
-                oos_ratio=0.0, no_limit_filter=True, no_stable=True, bootstrap=0)
+    base = dict(
+        days=250,
+        hold=10,
+        entry=2.0,
+        fill="close",
+        slip_rate=1e-4,
+        impact_rate=0.0,
+        fee_rate=5e-5,
+        no_real_fees=True,
+        no_cost=False,
+        oos_ratio=0.0,
+        no_limit_filter=True,
+        no_stable=True,
+        bootstrap=0,
+    )
     base.update(kw)
     return SimpleNamespace(**base)
 
 
 class _KeepOpen:
     """archive_run 用完会 close 自建连接；测试复用同一 tmp_db，close 改为 no-op。"""
+
     def __init__(self, db):
         self._db = db
 
@@ -228,7 +296,7 @@ def test_archive_run_sequence_and_percentile(tmp_db):
     m2 = backtest.metrics_from_returns([0.02, 0.01], 10)
     info2 = backtest.archive_run(args, results, [], m2, db_factory=factory)
     assert info2["seq"] == 2 and info2["total"] == 2
-    assert abs(info2["percentile"] - 1.0) < 1e-12     # 第二次累计最高，好于100%
+    assert abs(info2["percentile"] - 1.0) < 1e-12  # 第二次累计最高，好于100%
     hist = tmp_db.backtest_run_history("daily")
     assert len(hist) == 2
 
@@ -236,6 +304,7 @@ def test_archive_run_sequence_and_percentile(tmp_db):
 def test_archive_run_db_failure_soft_degrade():
     def boom():
         raise RuntimeError("db unavailable")
+
     args = _fake_args()
     info = backtest.archive_run(args, [], [], None, db_factory=boom)
-    assert info is None       # 留档失败绝不拖垮回测
+    assert info is None  # 留档失败绝不拖垮回测

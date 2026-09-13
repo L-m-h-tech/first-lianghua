@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """信查期货 commission.xlsx → 同时更新 futures_fees.csv + futures_margins.csv。
 自动检测：若两个表的 as_of 已是最新（基于 xlsx 文件修改日期），则跳过直接退出；否则运行一次后停止。
 
@@ -8,12 +7,12 @@
   python tools/build_tables_from_xcqihuo.py --force               # 强制重新生成
   python tools/build_tables_from_xcqihuo.py --xlsx "新路径.xlsx"  # 用指定 xlsx
 """
-import sys
-import os
-import re
-import csv
-import shutil
+
 import argparse
+import csv
+import re
+import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,12 +24,17 @@ MARGINS_CSV = ROOT / "data" / "futures_margins.csv"
 DEFAULT_XLSX = Path(r"C:\Users\Lenovo\Desktop\commission.xlsx")
 
 EX_MAP = {
-    "上海期货交易所": "SHFE", "大连商品交易所": "DCE", "郑州商品交易所": "CZCE",
-    "中国金融期货交易所": "CFFEX", "上海国际能源交易中心": "INE", "广州期货交易所": "GFEX",
+    "上海期货交易所": "SHFE",
+    "大连商品交易所": "DCE",
+    "郑州商品交易所": "CZCE",
+    "中国金融期货交易所": "CFFEX",
+    "上海国际能源交易中心": "INE",
+    "广州期货交易所": "GFEX",
 }
 
 
 # ── 工具函数 ──
+
 
 def xlsx_date_str(path: Path) -> str:
     """用 xlsx 文件修改时间生成日期字符串 (YYYYMMDD)，作为对比基准。"""
@@ -42,7 +46,7 @@ def csv_as_of(csv_path: Path) -> str:
     fees 表 as_of 在第 12 列(index 11)；margins 表 as_of 在第 8 列(index 7)。
     用表头定位 as_of 列位置，避免取错（margins 表末列是 note）。"""
     try:
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(csv_path, encoding="utf-8-sig", newline="") as f:
             reader = csv.reader(f)
             header = next(reader)
             if "as_of" not in header:
@@ -91,8 +95,12 @@ def infer_mult(price, margin_pct, amt):
 # ── 转换逻辑 ──
 
 EX_CN_MAP = {
-    "上海期货交易所": "SHFE", "大连商品交易所": "DCE", "郑州商品交易所": "CZCE",
-    "中国金融期货交易所": "CFFEX", "上海国际能源交易中心": "INE", "广州期货交易所": "GFEX",
+    "上海期货交易所": "SHFE",
+    "大连商品交易所": "DCE",
+    "郑州商品交易所": "CZCE",
+    "中国金融期货交易所": "CFFEX",
+    "上海国际能源交易中心": "INE",
+    "广州期货交易所": "GFEX",
 }
 
 
@@ -132,21 +140,36 @@ def parse_rows(xlsx_path: str, add_one: bool):
             c_lot = round(c_lot + 0.01, 4)
         if add_one and t_lot is not None and t_lot > 0:
             t_lot = round(t_lot + 0.01, 4)
-        fee_rows.append({
-            "sym": code, "name": name, "exchange": exchange,
-            "account_flag": "投机", "multiplier": str(mult),
-            "open_amt_rate": str(o_rate or 0.0), "open_per_lot": str(o_lot or 0.0),
-            "close_amt_rate": str(c_rate or 0.0), "close_per_lot": str(c_lot or 0.0),
-            "today_amt_rate": str(t_rate or 0.0), "today_per_lot": str(t_lot or 0.0),
-            "as_of": date,
-        })
-        margin_rows.append({
-            "sym": code, "name": name, "exchange": exchange,
-            "broker_margin": f"{broker_margin:.4f}", "exchange_margin": f"{broker_margin:.4f}",
-            "limit_basic": "0", "multiplier": str(mult), "as_of": date,
-            "source": "交易所标准保证金(信查期货,commission.xlsx)",
-            "note": "信查期货 commission.xlsx 手续费表同期提取；买/卖保证金率=broker_margin",
-        })
+        fee_rows.append(
+            {
+                "sym": code,
+                "name": name,
+                "exchange": exchange,
+                "account_flag": "投机",
+                "multiplier": str(mult),
+                "open_amt_rate": str(o_rate or 0.0),
+                "open_per_lot": str(o_lot or 0.0),
+                "close_amt_rate": str(c_rate or 0.0),
+                "close_per_lot": str(c_lot or 0.0),
+                "today_amt_rate": str(t_rate or 0.0),
+                "today_per_lot": str(t_lot or 0.0),
+                "as_of": date,
+            }
+        )
+        margin_rows.append(
+            {
+                "sym": code,
+                "name": name,
+                "exchange": exchange,
+                "broker_margin": f"{broker_margin:.4f}",
+                "exchange_margin": f"{broker_margin:.4f}",
+                "limit_basic": "0",
+                "multiplier": str(mult),
+                "as_of": date,
+                "source": "交易所标准保证金(信查期货,commission.xlsx)",
+                "note": "信查期货 commission.xlsx 手续费表同期提取；买/卖保证金率=broker_margin",
+            }
+        )
     wb.close()
     return fee_rows, margin_rows
 
@@ -167,8 +190,11 @@ def write_csv(rows, fields, csv_path: Path):
 
 # ── 主逻辑 ──
 
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="信查 commission.xlsx → fees + margins CSV（增量检测，最新跳过）")
+    parser = argparse.ArgumentParser(
+        description="信查 commission.xlsx → fees + margins CSV（增量检测，最新跳过）"
+    )
     parser.add_argument("--xlsx", type=Path, default=DEFAULT_XLSX, help="commission.xlsx 路径")
     parser.add_argument("--force", action="store_true", help="强制重新生成（忽略日期检测）")
     parser.add_argument("--preview", action="store_true", help="只打印预览，不写文件")
@@ -193,17 +219,40 @@ def main(argv=None):
     if args.preview:
         print(f"\n--- fees ({len(fee_rows)} 行) ---")
         for r in fee_rows[:6]:
-            print(f"  {r['sym']}: 开{r['open_per_lot']}(R{r['open_amt_rate']})  乘{r['multiplier']}  ex={r['exchange']}")
+            print(
+                f"  {r['sym']}: 开{r['open_per_lot']}(R{r['open_amt_rate']})  乘{r['multiplier']}  ex={r['exchange']}"
+            )
         print(f"\n--- margins ({len(margin_rows)} 行) ---")
         for r in margin_rows[:6]:
             print(f"  {r['sym']}: {r['broker_margin']}  乘{r['multiplier']}")
         return 0
 
-    fee_fields = ["sym", "name", "exchange", "account_flag", "multiplier",
-                  "open_amt_rate", "open_per_lot", "close_amt_rate", "close_per_lot",
-                  "today_amt_rate", "today_per_lot", "as_of"]
-    margin_fields = ["sym", "name", "exchange", "broker_margin", "exchange_margin",
-                     "limit_basic", "multiplier", "as_of", "source", "note"]
+    fee_fields = [
+        "sym",
+        "name",
+        "exchange",
+        "account_flag",
+        "multiplier",
+        "open_amt_rate",
+        "open_per_lot",
+        "close_amt_rate",
+        "close_per_lot",
+        "today_amt_rate",
+        "today_per_lot",
+        "as_of",
+    ]
+    margin_fields = [
+        "sym",
+        "name",
+        "exchange",
+        "broker_margin",
+        "exchange_margin",
+        "limit_basic",
+        "multiplier",
+        "as_of",
+        "source",
+        "note",
+    ]
 
     print("生成手续费表...")
     write_csv(fee_rows, fee_fields, FEES_CSV)

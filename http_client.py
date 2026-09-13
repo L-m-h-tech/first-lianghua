@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """全局 HTTP 连接池（P0-5）：全项目共用一个 requests.Session，
 复用 TCP/TLS 连接（此前每个请求都新建连接，64 品种 × 多数据源每轮握手开销大）。
 
@@ -20,6 +19,7 @@
 - A6 dev 缓存/重放：env FUTURES_MONITOR_DEV_CACHE=1 时按 (源,url,日期) 落
   cache/http_replay/，同键命中直接重放不发请求（调试/复现解析问题用，默认关）。
 """
+
 import base64
 import hashlib
 import json
@@ -39,22 +39,25 @@ SESSION = requests.Session()
 _ADAPTER = HTTPAdapter(pool_connections=12, pool_maxsize=32, max_retries=0)
 SESSION.mount("https://", _ADAPTER)
 SESSION.mount("http://", HTTPAdapter(pool_connections=6, pool_maxsize=16, max_retries=0))
-SESSION.headers.update({"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                        "Connection": "keep-alive"})
+SESSION.headers.update(
+    {"User-Agent": config.HEADERS_COMMON["User-Agent"], "Connection": "keep-alive"}
+)
 
 _LOCK = threading.Lock()
 
 # ---------------- A4：每源独立会话 + cookie 持久化 ----------------
 
-_SESSIONS = {}                 # source -> requests.Session
-_COOKIE_FILE = getattr(config, "HTTP_COOKIE_JAR", os.path.join(config.BASE_DIR, "cache", "cookies.json"))
-_PERSIST_DEBOUNCE = 30.0       # cookie 落盘节流（秒），避免每请求写盘
+_SESSIONS = {}  # source -> requests.Session
+_COOKIE_FILE = getattr(
+    config, "HTTP_COOKIE_JAR", os.path.join(config.BASE_DIR, "cache", "cookies.json")
+)
+_PERSIST_DEBOUNCE = 30.0  # cookie 落盘节流（秒），避免每请求写盘
 _LAST_PERSIST = [0.0]
 
 
 def _load_persisted_cookies():
     try:
-        with open(_COOKIE_FILE, "r", encoding="utf-8") as f:
+        with open(_COOKIE_FILE, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
@@ -92,8 +95,9 @@ def get_session(source="__global__"):
             sess = requests.Session()
             sess.mount("https://", _ADAPTER)
             sess.mount("http://", HTTPAdapter(pool_connections=4, pool_maxsize=8, max_retries=0))
-            sess.headers.update({"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                                 "Connection": "keep-alive"})
+            sess.headers.update(
+                {"User-Agent": config.HEADERS_COMMON["User-Agent"], "Connection": "keep-alive"}
+            )
             saved = _load_persisted_cookies().get(source)
             if saved:
                 try:
@@ -111,10 +115,10 @@ def get_session(source="__global__"):
 # curl_cffi 缺失/会话创建失败时静默回退普通 requests（行为与旧版一致，由调用方按挑战页降级）。
 try:
     from curl_cffi import requests as _curl_requests
-except Exception:                       # pragma: no cover - 本机已装，防御性回退
+except Exception:  # pragma: no cover - 本机已装，防御性回退
     _curl_requests = None
 
-_CURL_SESSIONS = {}                     # "source|impersonate" -> curl_cffi.Session
+_CURL_SESSIONS = {}  # "source|impersonate" -> curl_cffi.Session
 
 
 def _curl_session(source=None, impersonate="chrome"):
@@ -135,7 +139,7 @@ def _curl_session(source=None, impersonate="chrome"):
 
 # ---------------- A5：请求级限流退避（对标 scrapling AutoThrottle / blocked detection） ----------------
 
-_THROTTLE = {}                 # host -> {"fail": 连续失败, "backoff_until": monotonic, "last": 单调时间}
+_THROTTLE = {}  # host -> {"fail": 连续失败, "backoff_until": monotonic, "last": 单调时间}
 _RETRYABLE = {429, 503}
 THROTTLE_DISABLED = not getattr(config, "HTTP_THROTTLE_ENABLED", True)
 
@@ -168,11 +172,16 @@ def _record_result(host, status, retry_after, now=None):
         st["last"] = now
         if status in _RETRYABLE or (retry_after is not None and int(retry_after) > 0):
             st["fail"] += 1
-            backoff = float(retry_after) if retry_after is not None and str(retry_after).strip().isdigit() \
-                else min(getattr(config, "HTTP_THROTTLE_BACKOFF0", 5.0) * (2 ** (st["fail"] - 1)),
-                         getattr(config, "HTTP_THROTTLE_MAX", 120.0))
+            backoff = (
+                float(retry_after)
+                if retry_after is not None and str(retry_after).strip().isdigit()
+                else min(
+                    getattr(config, "HTTP_THROTTLE_BACKOFF0", 5.0) * (2 ** (st["fail"] - 1)),
+                    getattr(config, "HTTP_THROTTLE_MAX", 120.0),
+                )
+            )
             # 抖动 ±20%，防止多进程/多线程同步打点
-            backoff *= (1.0 + ((hash(host) % 20) - 10) / 100.0)
+            backoff *= 1.0 + ((hash(host) % 20) - 10) / 100.0
             st["backoff_until"] = now + max(backoff, 1.0)
         else:
             st["fail"] = max(0, st["fail"] - 1)
@@ -201,7 +210,7 @@ def dev_cache_enabled():
 
 
 def _dev_key(method, url, source):
-    return hashlib.sha1(f"{source}|{method}|{url}".encode("utf-8")).hexdigest()[:20]
+    return hashlib.sha1(f"{source}|{method}|{url}".encode()).hexdigest()[:20]
 
 
 def _dev_replay(method, url, source):
@@ -210,7 +219,7 @@ def _dev_replay(method, url, source):
     day = datetime.now().strftime("%Y%m%d")
     path = os.path.join(_DEV_DIR, day, _dev_key(method, url, source) + ".json")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             blob = json.load(f)
         resp = requests.models.Response()
         resp.status_code = blob["status"]
@@ -230,9 +239,12 @@ def _dev_store(method, url, source, resp):
     d = os.path.join(_DEV_DIR, day)
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, _dev_key(method, url, source) + ".json")
-    blob = {"status": resp.status_code, "encoding": getattr(resp, "encoding", None) or "utf-8",
-            "headers": {k: v for k, v in (resp.headers or {}).items()},
-            "content": base64.b64encode(resp.content).decode("ascii")}
+    blob = {
+        "status": resp.status_code,
+        "encoding": getattr(resp, "encoding", None) or "utf-8",
+        "headers": {k: v for k, v in (resp.headers or {}).items()},
+        "content": base64.b64encode(resp.content).decode("ascii"),
+    }
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(blob, f)
@@ -263,7 +275,9 @@ class _Http:
             sess = get_session(source)
         resp = sess.request(method, url, **kwargs)
         # A5：登记结果（429/503/Retry-After → 指数退避；成功恢复）
-        _record_result(host, resp.status_code, resp.headers.get("Retry-After") if resp.headers else None)
+        _record_result(
+            host, resp.status_code, resp.headers.get("Retry-After") if resp.headers else None
+        )
         # A4：cookie 节流落盘
         _persist_cookies()
         # A6：写缓存（供下次重放）
@@ -272,19 +286,31 @@ class _Http:
 
     @staticmethod
     def get(url, **kwargs):
-        return _Http._request("GET", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
+        return _Http._request(
+            "GET", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs
+        )
 
     @staticmethod
     def post(url, **kwargs):
-        return _Http._request("POST", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
+        return _Http._request(
+            "POST", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs
+        )
 
     @staticmethod
     def put(url, **kwargs):
-        return _Http._request("PUT", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
+        return _Http._request(
+            "PUT", url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs
+        )
 
     @staticmethod
     def request(method, url, **kwargs):
-        return _Http._request(method.upper(), url, kwargs.pop("source", None), kwargs.pop("impersonate", None), **kwargs)
+        return _Http._request(
+            method.upper(),
+            url,
+            kwargs.pop("source", None),
+            kwargs.pop("impersonate", None),
+            **kwargs,
+        )
 
 
 http = _Http()

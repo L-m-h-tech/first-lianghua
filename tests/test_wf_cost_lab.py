@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
 """G27②③（第45轮）wf_cost_lab 零网络/零DB 确定性测试。
 
 只测纯函数层（统计/成本曲面/break-even/WF稳定度/换手容量/成稿），真实回放 run_symbol 读分钟库、
 属真实冒烟（不进 pytest）。曲面通过注入假 runner 复现，不依赖 intraday_backtest/storage。"""
-import math
 
 import pytest
-
 import wf_cost_lab as W
 
 
@@ -36,13 +33,14 @@ def _linear_runner(per_trade_gross=0.002):
     def runner(fee, slip):
         r = per_trade_gross - 2 * fee - 2 * slip
         return [{"net": r, "gross": per_trade_gross} for _ in range(50)]
+
     return runner
 
 
 def test_cost_surface_monotone_and_base_locator():
     surf = W.build_cost_surface(_linear_runner(), (0.0, 5e-5, 1e-3), (0.0, 1e-4, 1e-3))
     mat = W.surface_matrix(surf)
-    assert mat[0][0] > mat[-1][-1]            # 零成本最优、高成本最差
+    assert mat[0][0] > mat[-1][-1]  # 零成本最优、高成本最差
     # 沿 fee、沿 slip 都单调不增
     si = surf["base"]["si"]
     col = [mat[i][si] for i in range(3)]
@@ -74,8 +72,14 @@ def test_nearest_idx():
 
 # ---------- ② WF 稳定度 ----------
 def _seg(chosen, oos=0.1, is_=0.2, beat=True):
-    return {"chosen": chosen, "is_sharpe": is_, "oos_sharpe": oos, "oos_best": oos + 0.1,
-            "oos_median": 0.0, "beat_median": beat}
+    return {
+        "chosen": chosen,
+        "is_sharpe": is_,
+        "oos_sharpe": oos,
+        "oos_best": oos + 0.1,
+        "oos_median": 0.0,
+        "beat_median": beat,
+    }
 
 
 def test_wf_stability_stable():
@@ -128,9 +132,9 @@ def test_capacity_numbers():
     cap = W.estimate_turnover_capacity(bars, trades, 10.0, participation_cap=0.10, days_year=243)
     assert cap["n_days"] == 2 and cap["n_trades"] == 2
     assert cap["trades_per_day"] == pytest.approx(1.0)
-    assert cap["mkt_daily_notional"] == pytest.approx(1_000_000.0)   # 10根×100手×100价×10乘
+    assert cap["mkt_daily_notional"] == pytest.approx(1_000_000.0)  # 10根×100手×100价×10乘
     assert cap["notional_per_lot"] == pytest.approx(1000.0)
-    assert cap["max_lots_per_trade"] == pytest.approx(100.0)         # 10%参与率
+    assert cap["max_lots_per_trade"] == pytest.approx(100.0)  # 10%参与率
     assert cap["annual_turnover_lots_1lot"] == pytest.approx(243.0)
 
 
@@ -154,10 +158,22 @@ def _fake_result():
     st = W.wf_stability([_seg(0) for _ in range(5)], ["e1/s1/t1", "e2/s2/t2"])
     cap = W.estimate_turnover_capacity(_bars(), [{"entry_px": 100.0}] * 2, 10.0)
     be = W.breakeven_cost(surf)
-    return {"sym": "RB", "name": "螺纹", "period": 30, "bars": 1000, "n_days": 80,
-            "n_combos": 18, "wf_train": 20, "wf_test": 10, "stability": st,
-            "best_param": "e1/s1/t1", "surface": surf, "breakeven": be,
-            "base_cell": surf["rows"][1]["cells"][1], "capacity": cap}
+    return {
+        "sym": "RB",
+        "name": "螺纹",
+        "period": 30,
+        "bars": 1000,
+        "n_days": 80,
+        "n_combos": 18,
+        "wf_train": 20,
+        "wf_test": 10,
+        "stability": st,
+        "best_param": "e1/s1/t1",
+        "surface": surf,
+        "breakeven": be,
+        "base_cell": surf["rows"][1]["cells"][1],
+        "capacity": cap,
+    }
 
 
 def test_render_symbol_and_full_report():
@@ -174,6 +190,7 @@ def test_render_symbol_and_full_report():
 
 def test_json_payload_no_nan():
     import json
+
     pay = W.build_json_payload([_fake_result()])
     assert pay["n_symbols"] == 1
     json.dumps(pay, allow_nan=False)  # 不含 NaN/Infinity

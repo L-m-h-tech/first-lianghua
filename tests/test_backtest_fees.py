@@ -1,12 +1,18 @@
-# -*- coding: utf-8 -*-
 """真实手续费叠加、固定费折算、绩效统计与分档回归（第9/10轮，纯函数）。"""
+
 import backtest
 
 
 def _fee(mult=10, **kw):
-    row = {"multiplier": mult, "open_amt_rate": 0.0, "open_per_lot": 0.0,
-           "close_amt_rate": 0.0, "close_per_lot": 0.0,
-           "today_amt_rate": 0.0, "today_per_lot": 0.0}
+    row = {
+        "multiplier": mult,
+        "open_amt_rate": 0.0,
+        "open_per_lot": 0.0,
+        "close_amt_rate": 0.0,
+        "close_per_lot": 0.0,
+        "today_amt_rate": 0.0,
+        "today_per_lot": 0.0,
+    }
     row.update(kw)
     return row
 
@@ -40,7 +46,7 @@ def test_metrics_from_returns():
 
 def test_metrics_sharpe_zero_when_constant():
     m = backtest.metrics_from_returns([0.01, 0.01], 1)
-    assert m["sharpe"] == 0.0          # 无波动不除零
+    assert m["sharpe"] == 0.0  # 无波动不除零
 
 
 def test_score_band():
@@ -51,10 +57,12 @@ def test_score_band():
 
 
 def test_technical_score_sign_and_resonance():
-    up = backtest.technical_score({"ret5": 0.02, "ret20": 0.03, "ma10": 100,
-                                   "close": 102, "tech": {"resonance_score": 0.5}})
-    down = backtest.technical_score({"ret5": -0.02, "ret20": -0.03, "ma10": 100,
-                                     "close": 98, "tech": {"resonance_score": -0.5}})
+    up = backtest.technical_score(
+        {"ret5": 0.02, "ret20": 0.03, "ma10": 100, "close": 102, "tech": {"resonance_score": 0.5}}
+    )
+    down = backtest.technical_score(
+        {"ret5": -0.02, "ret20": -0.03, "ma10": 100, "close": 98, "tech": {"resonance_score": -0.5}}
+    )
     assert up > 0 and down < 0
     # 共振分被加进去
     base = backtest.technical_score({"ret5": 0, "ret20": 0, "tech": {}})

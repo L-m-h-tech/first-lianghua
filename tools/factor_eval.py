@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""WP-F2（P1-2）B2：因子 IC 评估（研究侧离线工具，不进常驻链路、不自动改任何权重）。
 
 回答的问题：analyzer 九个因子（新闻消息面/原油联动/机构动向/日线动量/技术共振/分钟共振/
@@ -27,6 +26,7 @@ r"""WP-F2（P1-2）B2：因子 IC 评估（研究侧离线工具，不进常驻�
   D:\Python\python.exe tools\factor_eval.py --days 9999     # 全量历史
   D:\Python\python.exe tools\factor_eval.py --selftest      # 零网络合成断言
 """
+
 import argparse
 import math
 import os
@@ -55,7 +55,7 @@ def pearson(xs, ys):
     if n != len(ys) or n < 2:
         return 0.0
     mx, my = sum(xs) / n, sum(ys) / n
-    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=False))
     sxx = sum((x - mx) ** 2 for x in xs)
     syy = sum((y - my) ** 2 for y in ys)
     if sxx <= 1e-15 or syy <= 1e-15:
@@ -100,8 +100,9 @@ def quantile_buckets(pairs, n_q):
             continue
         ys = [t[1] for t in seg]
         xs = [t[0] for t in seg]
-        out.append([len(seg), sum(ys) / len(ys),
-                    sum(1 for v in ys if v > 0) / len(ys), sum(xs) / len(xs)])
+        out.append(
+            [len(seg), sum(ys) / len(ys), sum(1 for v in ys if v > 0) / len(ys), sum(xs) / len(xs)]
+        )
     return out
 
 
@@ -110,7 +111,7 @@ def monotonic_score(buckets):
     ys = [b[1] for b in buckets if b[0] > 0]
     if len(ys) < 2:
         return 0.0, 0.0
-    inc = sum(1 for a, b in zip(ys, ys[1:]) if b >= a)
+    inc = sum(1 for a, b in zip(ys, ys[1:], strict=False) if b >= a)
     return inc / (len(ys) - 1), ys[-1] - ys[0]
 
 
@@ -185,10 +186,11 @@ def load_samples(db, horizons, days):
     for r in rows:
         try:
             import json
+
             parts = r.get("parts_json")
             parts = json.loads(parts) if isinstance(parts, str) else (parts or {})
             d = int(r["direction_int"])
-            ret = float(r["ret"])              # 方向收益（已乘方向）
+            ret = float(r["ret"])  # 方向收益（已乘方向）
             h = int(r["horizon_min"])
             month = (r.get("eval_ts") or "")[:7]
         except (TypeError, ValueError):
@@ -202,8 +204,9 @@ def load_samples(db, horizons, days):
                 continue
             fac = _canon(k)
             factors.add(fac)
-            data[h][fac].append({"x_meta": fv * d, "x_raw": fv,
-                                 "y_meta": ret, "y_raw": ret * d, "month": month})
+            data[h][fac].append(
+                {"x_meta": fv * d, "x_raw": fv, "y_meta": ret, "y_raw": ret * d, "month": month}
+            )
     return data, sorted(factors)
 
 
@@ -221,10 +224,19 @@ def eval_factor(samples, n_q):
     for s in samples:
         by_month[s["month"]].append((s["x_meta"], s["y_meta"]))
     mic = monthly_ic(by_month)
-    return {"n": n, "ic": ic, "rank_ic": ric, "raw_rank_ic": raw_ric,
-            "buckets": buckets, "mono": mono, "spread": spread,
-            "monthly_ic": mic, "icir": icir(mic), "n_months": len(mic),
-            "by_month": by_month}
+    return {
+        "n": n,
+        "ic": ic,
+        "rank_ic": ric,
+        "raw_rank_ic": raw_ric,
+        "buckets": buckets,
+        "mono": mono,
+        "spread": spread,
+        "monthly_ic": mic,
+        "icir": icir(mic),
+        "n_months": len(mic),
+        "by_month": by_month,
+    }
 
 
 def evaluate_all(data, factors, horizons, n_q):
@@ -246,16 +258,22 @@ def factor_metrics_json(metrics, factors, horizons, main_h, days=None):
             if not m:
                 continue
             by_h[str(h)] = {
-                "n": m["n"], "ic": m["ic"], "rank_ic": m["rank_ic"],
-                "raw_rank_ic": m["raw_rank_ic"], "icir": m["icir"],
-                "mono": m["mono"], "spread": m["spread"],
+                "n": m["n"],
+                "ic": m["ic"],
+                "rank_ic": m["rank_ic"],
+                "raw_rank_ic": m["raw_rank_ic"],
+                "icir": m["icir"],
+                "mono": m["mono"],
+                "spread": m["spread"],
                 "buckets": [[b[0], b[1], b[2], b[3]] for b in m["buckets"]],
                 "monthly_ic": [[a, b, c] for a, b, c in m["monthly_ic"]],
                 "n_months": m["n_months"],
             }
         facs.append({"name": fac, "by_h": by_h})
     return {
-        "generated_at": _now(), "days": days, "main_h": main_h,
+        "generated_at": _now(),
+        "days": days,
+        "main_h": main_h,
         "horizons": list(horizons),
         "horizon_labels": {str(h): HORIZON_LABEL.get(h, str(h)) for h in horizons},
         "factors": facs,
@@ -267,7 +285,9 @@ def build_report(data, factors, horizons, n_q, min_sample, days, metrics=None):
     L.append("=" * 100)
     L.append(" 因子 IC 评估报告（WP-F2 B2）  近%d天样本  生成于 %s" % (days, _now()))
     L.append("=" * 100)
-    L.append("口径：主看 meta RankIC=Spearman(因子值×信号方向, 方向收益)，>0=因子越支持信号后续越赚；")
+    L.append(
+        "口径：主看 meta RankIC=Spearman(因子值×信号方向, 方向收益)，>0=因子越支持信号后续越赚；"
+    )
     L.append("      参考 原始RankIC=Spearman(因子原值, 远期绝对方向收益)；ICIR=月度IC的mean/std；")
     L.append("      分档=沿方向强度分%d档看平均方向收益单调性；纯自有DB、零网络、纯标准库。" % n_q)
     L.append("")
@@ -293,21 +313,36 @@ def build_report(data, factors, horizons, n_q, min_sample, days, metrics=None):
     # 2) 主周期（120m）逐因子明细 + 分档
     main_h = 120 if 120 in horizons else horizons[0]
     L.append("二、主周期（%s）逐因子明细与分档单调性" % HORIZON_LABEL.get(main_h, main_h))
-    L.append(" %-10s %5s %8s %8s %8s %6s %10s %7s  各档平均方向收益(%%)/胜率(%%)" %
-             ("因子", "n", "IC", "RankIC", "原始RIC", "ICIR", "多空价差", "单调"))
+    L.append(
+        " %-10s %5s %8s %8s %8s %6s %10s %7s  各档平均方向收益(%%)/胜率(%%)"
+        % ("因子", "n", "IC", "RankIC", "原始RIC", "ICIR", "多空价差", "单调")
+    )
     for fac in factors:
         m = metrics[(fac, main_h)]
         if m["n"] == 0:
             continue
         btxt = " | ".join("%.2f/%.0f" % (b[1] * 100, b[2] * 100) for b in m["buckets"])
-        L.append(" %-10s %5d %+8.3f %+8.3f %+8.3f %+6.2f %+9.3f%% %5.0f%%  %s"
-                 % (fac, m["n"], m["ic"], m["rank_ic"], m["raw_rank_ic"], m["icir"],
-                    m["spread"] * 100, m["mono"] * 100, btxt))
+        L.append(
+            " %-10s %5d %+8.3f %+8.3f %+8.3f %+6.2f %+9.3f%% %5.0f%%  %s"
+            % (
+                fac,
+                m["n"],
+                m["ic"],
+                m["rank_ic"],
+                m["raw_rank_ic"],
+                m["icir"],
+                m["spread"] * 100,
+                m["mono"] * 100,
+                btxt,
+            )
+        )
     L.append("")
 
     # 3) walk-forward（主周期）
-    L.append("三、walk-forward 滚动验证（主周期%s；之前所有月=IS，当月=OOS）"
-             % HORIZON_LABEL.get(main_h, main_h))
+    L.append(
+        "三、walk-forward 滚动验证（主周期%s；之前所有月=IS，当月=OOS）"
+        % HORIZON_LABEL.get(main_h, main_h)
+    )
     wf_any = False
     for fac in factors:
         m = metrics.get((fac, main_h))
@@ -319,8 +354,10 @@ def build_report(data, factors, horizons, n_q, min_sample, days, metrics=None):
         wf_any = True
         is_mean = sum(r[1] for r in rows) / len(rows)
         oos_mean = sum(r[2] for r in rows) / len(rows)
-        L.append(" %-10s IS_RankIC均值%+.3f | OOS均值%+.3f | IS/OOS同号率%.0f%%（%d个OOS月）"
-                 % (fac, is_mean, oos_mean, same_rate * 100, len(rows)))
+        L.append(
+            " %-10s IS_RankIC均值%+.3f | OOS均值%+.3f | IS/OOS同号率%.0f%%（%d个OOS月）"
+            % (fac, is_mean, oos_mean, same_rate * 100, len(rows))
+        )
     if not wf_any:
         L.append(" 可用于 walk-forward 的月份不足（样本积累中）。")
     L.append("")
@@ -335,16 +372,23 @@ def build_report(data, factors, horizons, n_q, min_sample, days, metrics=None):
         if lo is None:
             L.append(" %-10s %s" % (fac, note))
         else:
-            L.append(" %-10s 建议 %.2f× ~ %.2f× 当前权重；%s（RankIC=%+.3f、单调%.0f%%、n=%d、%d个月）"
-                     % (fac, lo, hi, note, m["rank_ic"], m["mono"] * 100, m["n"], m["n_months"]))
+            L.append(
+                " %-10s 建议 %.2f× ~ %.2f× 当前权重；%s（RankIC=%+.3f、单调%.0f%%、n=%d、%d个月）"
+                % (fac, lo, hi, note, m["rank_ic"], m["mono"] * 100, m["n"], m["n_months"])
+            )
     L.append("")
-    L.append("诚实边界：方向收益为信号方向×后续涨跌幅，样本来自实盘监控积累（存在品种/时段分布偏差）；")
-    L.append("IC 对非线性/交互效应不敏感；样本量小的因子结论会随积累变化，本报告不构成投资建议、不改任何线上参数。")
+    L.append(
+        "诚实边界：方向收益为信号方向×后续涨跌幅，样本来自实盘监控积累（存在品种/时段分布偏差）；"
+    )
+    L.append(
+        "IC 对非线性/交互效应不敏感；样本量小的因子结论会随积累变化，本报告不构成投资建议、不改任何线上参数。"
+    )
     return "\n".join(L) + "\n"
 
 
 def _now():
     from datetime import datetime
+
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -360,6 +404,7 @@ def run(argv=None):
     if args.selftest:
         return selftest()
     import storage
+
     horizons = tuple(int(x) for x in args.horizons.split(",") if x.strip())
     db = storage.MonitorDB()
     try:
@@ -369,19 +414,23 @@ def run(argv=None):
     total = sum(len(v) for h in data for v in data[h].values())
     main_h = 120 if 120 in horizons else horizons[0]
     metrics = evaluate_all(data, factors, horizons, args.quantiles)
-    text = build_report(data, factors, horizons, args.quantiles, args.min_sample,
-                        args.days, metrics=metrics)
+    text = build_report(
+        data, factors, horizons, args.quantiles, args.min_sample, args.days, metrics=metrics
+    )
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8-sig") as f:
         f.write(text)
     # P1-3：结构化 JSON sidecar（图表看板消费；纯数值/列表，defaultdict 已剥离）
     import json as _json
+
     sidecar = factor_metrics_json(metrics, factors, horizons, main_h, days=args.days)
     with open(config.FACTOR_EVAL_JSON, "w", encoding="utf-8") as fj:
         fj.write(_json.dumps(sidecar, ensure_ascii=False, indent=1))
     print(text)
-    print("因子数 %d，配对样本点 %d；报告已写入 %s；图表 JSON 已写入 %s"
-          % (len(factors), total, args.out, config.FACTOR_EVAL_JSON))
+    print(
+        "因子数 %d，配对样本点 %d；报告已写入 %s；图表 JSON 已写入 %s"
+        % (len(factors), total, args.out, config.FACTOR_EVAL_JSON)
+    )
     return 0
 
 
@@ -395,6 +444,7 @@ def selftest():
     assert abs(spearman(xs, list(reversed(xs))) + 1.0) < 1e-9
     # 2) 确定性无关（交替）-> RankIC≈0
     import random
+
     random.seed(7)
     x2 = list(range(200))
     y2 = [((i * 37) % 7) - 3 for i in x2]  # 与序号无单调关系的周期序列
@@ -417,8 +467,7 @@ def selftest():
     # 7) walk-forward 同号率：构造持续正相关月度数据
     by_month = {}
     for mi, mname in enumerate(["2026-01", "2026-02", "2026-03", "2026-04"]):
-        by_month[mname] = [(float(k), float(k) * (1 if mi % 2 == 0 else 1) + mi)
-                           for k in range(20)]
+        by_month[mname] = [(float(k), float(k) * (1 if mi % 2 == 0 else 1) + mi) for k in range(20)]
     rows, rate = walk_forward(by_month)
     assert rows and rate == 1.0, (rows, rate)
     # 8) 建议区间：强正单调 -> 上调区间
@@ -426,7 +475,10 @@ def selftest():
     assert lo >= 1.1
     lo2, _, _ = suggest_band(0.0, 1.0, 100, 30)
     assert lo2 < 0.9
-    print("factor_eval selftest ALL PASS（单调RankIC=1、无关RankIC=%.3f、并列秩、分档/ICIR/WF 均通过）" % r)
+    print(
+        "factor_eval selftest ALL PASS（单调RankIC=1、无关RankIC=%.3f、并列秩、分档/ICIR/WF 均通过）"
+        % r
+    )
     return 0
 
 

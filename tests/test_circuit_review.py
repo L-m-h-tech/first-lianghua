@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """第50轮 G5④ 熔断阈值历史校准台 tools/circuit_review.py 的零网络/零DB 单测（只测纯函数与渲染）。"""
+
 import os
 import sys
 
@@ -11,8 +11,9 @@ for p in (_ROOT, _TOOLS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import circuit_breaker as cb          # noqa: E402
-import circuit_review as cr           # noqa: E402
+import circuit_review as cr  # noqa: E402
+
+import circuit_breaker as cb  # noqa: E402
 
 
 def test_loss_and_forward_compound():
@@ -71,7 +72,7 @@ def test_sweep_monotone_and_share_bounded():
     dates = ["d%d" % i for i in range(len(daily))]
     sw = cr.sweep_halt(dates, daily, grid=(0.01, 0.02, 0.03), horizons=(1, 5))
     ntrig = [r["n_trigger"] for r in sw]
-    assert ntrig == sorted(ntrig, reverse=True)          # 阈值越高触发越少
+    assert ntrig == sorted(ntrig, reverse=True)  # 阈值越高触发越少
     assert all(0.0 <= r["share"] <= 1.0 for r in sw)
     assert sw[0]["dates"] and all(isinstance(x, str) for x in sw[0]["dates"])
 
@@ -99,8 +100,14 @@ def test_render_contains_sections_and_numbers():
     base[25] = -0.032
     dates = ["2025-%02d-%02d" % ((i // 28) + 1, (i % 28) + 1) for i in range(len(base))]
     per = {m: cr.analyze_method(dates, base, horizons=cr.HORIZONS) for m in cr.METHODS}
-    meta = {"n_universe": 61, "n_all": 64, "date_first": dates[0], "date_last": dates[-1],
-            "n_mat": 504, "n_proxy": len(base)}
+    meta = {
+        "n_universe": 61,
+        "n_all": 64,
+        "date_first": dates[0],
+        "date_last": dates[-1],
+        "n_mat": 504,
+        "n_proxy": len(base),
+    }
     txt = cr.render(meta, per)
     for kw in ("【一】", "【二】", "【三】", "warn", "halt", "delever", "条件", "基准", "诚实边界"):
         assert kw in txt

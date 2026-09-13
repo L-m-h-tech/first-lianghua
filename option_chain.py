@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第11轮 WP-A：新浪商品期权完整T型报价链 + PCR（认沽/认购比），零新增运行时依赖。
 
 接口（2026-09-01 对五大交易所57个期权品种全部实测通过）：
@@ -22,6 +21,7 @@
 已知数据源缺口（2026-09-01 实测）：新浪T链未提供 INE 低硫燃料油(LU)期权（各月份/参数组合均空），
 该品种自动降级为"无链模式"（期权分析照常，仅缺PCR/全链），后续轮次用交易所期权日行情补备用源。
 """
+
 import re
 import threading
 import time
@@ -31,18 +31,24 @@ import config
 from http_client import http
 from utils import LOG
 
-_CHAIN_URL = ("http://stock.finance.sina.com.cn/futures/api/openapi.php/"
-              "OptionService.getOptionData?type=futures"
-              "&product=%s&exchange=%s&pinzhong=%s")
+_CHAIN_URL = (
+    "http://stock.finance.sina.com.cn/futures/api/openapi.php/"
+    "OptionService.getOptionData?type=futures"
+    "&product=%s&exchange=%s&pinzhong=%s"
+)
 # 第110轮（2026-09-10）：逐腿成交量快照（新浪单腿快照，可批量，字段第8位=当日成交量）。
 # 实测：https://hq.sinajs.cn/etag.php?list=P_OP_m2611C2900,P_OP_m2611P2900 返回
 #   var hq_str_P_OP_m2611C2900="买量,买价,最新价,卖价,卖量,持仓量,,行权价,买量?,买价?,卖价?,成交量,..."；
 # 与 T 链不同，此快照不提供"全部腿"列表（需按合约代码逐腿请求），故只对已抓取的链腿按代码批量补齐成交量。
 _VOL_URL = "https://hq.sinajs.cn/etag.php?list=%s"
-_CHAIN_HEADERS = {"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                  "Referer": "https://stock.finance.sina.com.cn/"}
-_VOL_HEADERS = {"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                "Referer": "https://finance.sina.com.cn/"}
+_CHAIN_HEADERS = {
+    "User-Agent": config.HEADERS_COMMON["User-Agent"],
+    "Referer": "https://stock.finance.sina.com.cn/",
+}
+_VOL_HEADERS = {
+    "User-Agent": config.HEADERS_COMMON["User-Agent"],
+    "Referer": "https://finance.sina.com.cn/",
+}
 # 合约代码：字母(品种) + 3~4位年月 + C/P + 数字行权价，如 cu2610C100000、m2609P2500、MA610C2500
 _LEG_RE = re.compile(r"^([a-z]+)(\d{3,4})([CP])(\d+)$", re.IGNORECASE)
 # 快照字段：0买量,1买价,2最新价,3卖价,4卖量,5持仓量,6涨跌?,7行权价,8买量2,9买价2,10卖价2,11成交量,...
@@ -77,16 +83,24 @@ def parse_leg(row, cp):
     m = _LEG_RE.match(code)
     if not m:
         return None
-    strike = _to_float(m.group(4))                 # 行权价一律以代码为准
-    if len(row) >= 9:                              # 带独立行权价位时与代码交叉校验
+    strike = _to_float(m.group(4))  # 行权价一律以代码为准
+    if len(row) >= 9:  # 带独立行权价位时与代码交叉校验
         ks = _to_float(row[7])
         if ks > 0:
             strike = ks
-    return {"code": code, "cp": cp, "strike": strike,
-            "bid_vol": _to_float(row[0]), "bid": _to_float(row[1]),
-            "last": _to_float(row[2]), "ask": _to_float(row[3]),
-            "ask_vol": _to_float(row[4]), "oi": _to_float(row[5]),
-            "chg_pct": _to_float(row[6]), "vol": 0.0}   # vol：当日成交量（P_OP_快照补，默认0）
+    return {
+        "code": code,
+        "cp": cp,
+        "strike": strike,
+        "bid_vol": _to_float(row[0]),
+        "bid": _to_float(row[1]),
+        "last": _to_float(row[2]),
+        "ask": _to_float(row[3]),
+        "ask_vol": _to_float(row[4]),
+        "oi": _to_float(row[5]),
+        "chg_pct": _to_float(row[6]),
+        "vol": 0.0,
+    }  # vol：当日成交量（P_OP_快照补，默认0）
 
 
 def pcr_sentiment(pcr):
@@ -132,18 +146,32 @@ def build_summary(sym, ex, yy, mm, calls, puts, vol_map=None):
     call_bid_vol = sum(x["bid_vol"] for x in calls) + sum(x["bid_vol"] for x in puts)
     call_ask_vol = sum(x["ask_vol"] for x in calls) + sum(x["ask_vol"] for x in puts)
     label = "%02d%02d" % (int(yy), int(mm))
-    chain = {"sym": sym, "ex": ex, "yy": int(yy), "mm": int(mm), "label": label,
-             "calls": calls, "puts": puts,
-             "n_call": len(calls), "n_put": len(puts),
-             "call_oi": call_oi, "put_oi": put_oi,
-             "pcr_oi": pcr_oi, "pcr": pcr_oi,          # pcr=持仓量PCR主口径，兼容分析器取值
-             "call_vol": call_vol, "put_vol": put_vol,
-             "pcr_vol": pcr_vol,          # 第110轮：成交量PCR（P_OP_批量快照补逐腿成交量，缺失=None）
-             "max_call_oi_strike": _max_oi_strike(calls),
-             "max_put_oi_strike": _max_oi_strike(puts),
-             "bid_vol": call_bid_vol, "ask_vol": call_ask_vol,
-             "atm_strike": None, "atm_distance_pct": None,
-             "pcr_pct": None, "updated": time.strftime("%H:%M:%S")}
+    chain = {
+        "sym": sym,
+        "ex": ex,
+        "yy": int(yy),
+        "mm": int(mm),
+        "label": label,
+        "calls": calls,
+        "puts": puts,
+        "n_call": len(calls),
+        "n_put": len(puts),
+        "call_oi": call_oi,
+        "put_oi": put_oi,
+        "pcr_oi": pcr_oi,
+        "pcr": pcr_oi,  # pcr=持仓量PCR主口径，兼容分析器取值
+        "call_vol": call_vol,
+        "put_vol": put_vol,
+        "pcr_vol": pcr_vol,  # 第110轮：成交量PCR（P_OP_批量快照补逐腿成交量，缺失=None）
+        "max_call_oi_strike": _max_oi_strike(calls),
+        "max_put_oi_strike": _max_oi_strike(puts),
+        "bid_vol": call_bid_vol,
+        "ask_vol": call_ask_vol,
+        "atm_strike": None,
+        "atm_distance_pct": None,
+        "pcr_pct": None,
+        "updated": time.strftime("%H:%M:%S"),
+    }
     chain["sentiment"] = pcr_sentiment(pcr_oi)
     return chain
 
@@ -182,7 +210,7 @@ def fetch_chain(sym, ex, yy, mm, timeout=None, with_vol=None):
         if codes:
             # 单批最多 30 腿（新浪快照单次批量上限实测稳定在 30 上下），超出按批次拆分
             for i in range(0, len(codes), 30):
-                batch = fetch_leg_volumes(codes[i:i + 30], timeout=timeout)
+                batch = fetch_leg_volumes(codes[i : i + 30], timeout=timeout)
                 if vol_map is None:
                     vol_map = {}
                 vol_map.update(batch)
@@ -297,8 +325,10 @@ class OptionChainCache:
                     stale.append((sym, ex, yy, mm))
         if stale:
             with ThreadPoolExecutor(max_workers=min(workers, len(stale))) as pool:
-                futs = {pool.submit(self._load, sym, ex, yy, mm): (sym, yy, mm)
-                        for sym, ex, yy, mm in stale}
+                futs = {
+                    pool.submit(self._load, sym, ex, yy, mm): (sym, yy, mm)
+                    for sym, ex, yy, mm in stale
+                }
                 for fut in as_completed(futs):
                     sym, yy, mm = futs[fut]
                     try:

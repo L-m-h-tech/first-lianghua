@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """P1-7 主动告警：本机声音 + 可选 Webhook。
 
 设计目标：
@@ -11,6 +10,7 @@
     Windows 环境变量 FUTURES_MONITOR_WEBHOOK 设置为机器人 Webhook 后重启程序；
     也可直接改 config.ALERT_WEBHOOK_URL。
 """
+
 import json
 import threading
 import time
@@ -48,7 +48,7 @@ class AlertManager:
         self._signal_state = {}
         self._strategy_state = set()
         self._lock = threading.Lock()
-        self._cycle_events = None      # 非 None 时，一轮内的事件先聚合，避免多信号同时轰炸
+        self._cycle_events = None  # 非 None 时，一轮内的事件先聚合，避免多信号同时轰炸
 
     def _allow(self, key, cooldown_sec):
         now = time.time()
@@ -71,9 +71,13 @@ class AlertManager:
             emerg = getattr(state, "emergency_note", "")
             if emerg:
                 em = getattr(state, "last_emergency", {}) or {}
-                self.emit("紧急轮动", emerg, level="emergency",
-                          key="emergency:%s" % em.get("src", "common"),
-                          cooldown=config.ALERT_EMERGENCY_COOLDOWN_SEC)
+                self.emit(
+                    "紧急轮动",
+                    emerg,
+                    level="emergency",
+                    key="emergency:%s" % em.get("src", "common"),
+                    cooldown=config.ALERT_EMERGENCY_COOLDOWN_SEC,
+                )
 
             for row in sorted(fut_rows or [], key=lambda r: -abs(r.get("score", 0.0))):
                 self._observe_future(row)
@@ -91,18 +95,20 @@ class AlertManager:
         direction = 1 if score > 0 else (-1 if score < 0 else 0)
         # WP-F1 A2：独立风控闸门否决时单独提醒（与跨档信号相互独立，自带冷却限流）
         _risk = row.get("risk") or {}
-        if (config.RISK_GATE_ENABLED and config.RISK_GATE_ALERT
-                and _risk.get("level") == "veto"):
-            self.emit("风控闸门否决",
-                      "%s 综合分%+.1f 被风控建议暂缓：%s"
-                      % (name, score, "；".join(_risk.get("veto", []))),
-                      level="strong", key="risk-veto:%s" % name,
-                      cooldown=config.ALERT_SIGNAL_COOLDOWN_SEC)
+        if config.RISK_GATE_ENABLED and config.RISK_GATE_ALERT and _risk.get("level") == "veto":
+            self.emit(
+                "风控闸门否决",
+                "%s 综合分%+.1f 被风控建议暂缓：%s"
+                % (name, score, "；".join(_risk.get("veto", []))),
+                level="strong",
+                key="risk-veto:%s" % name,
+                cooldown=config.ALERT_SIGNAL_COOLDOWN_SEC,
+            )
         prev = self._signal_state.get(name)
         trigger = False
         if band >= 2:
             if prev is None:
-                trigger = band >= 3       # 程序刚启动时只提醒强信号，避免64品种基线刷屏
+                trigger = band >= 3  # 程序刚启动时只提醒强信号，避免64品种基线刷屏
             else:
                 prev_dir, prev_band = prev
                 trigger = direction != prev_dir or band > prev_band
@@ -125,18 +131,22 @@ class AlertManager:
         flow = row.get("flow") or {}
         flow_line = ""
         if flow.get("pattern"):
-            flow_line = f"\n量仓: {flow['pattern']}，持仓{flow.get('oi_pct', 0)*100:+.2f}%，量比{flow.get('volume_ratio', 1):.2f}"
+            flow_line = f"\n量仓: {flow['pattern']}，持仓{flow.get('oi_pct', 0) * 100:+.2f}%，量比{flow.get('volume_ratio', 1):.2f}"
         content = (
-            f"{name} {row.get('label','')}，综合分 {score:+.1f}\n"
+            f"{name} {row.get('label', '')}，综合分 {score:+.1f}\n"
             f"方向: {side} {contract}，最新价 {fmt_px(row.get('price', 0))}\n"
             f"止损 {fmt_px(row.get('stop', 0))} / 目标 {fmt_px(row.get('target', 0))}\n"
             f"因子: {parts}{flow_line}\n"
-            f"建议: {row.get('advice','')}"
+            f"建议: {row.get('advice', '')}"
         )
         # key 带方向和分档：重复同向同档冷却，跨档升级/多空翻转即使在冷却内也要提醒。
-        self.emit(title, content, level=level,
-                  key="signal:%s:%d:%d" % (name, direction, band),
-                  cooldown=cooldown)
+        self.emit(
+            title,
+            content,
+            level=level,
+            key="signal:%s:%d:%d" % (name, direction, band),
+            cooldown=cooldown,
+        )
 
     def _observe_strategies(self, strat_rows):
         current = set()
@@ -151,11 +161,15 @@ class AlertManager:
                 continue
             content = (
                 f"{variety} {name} 通过全部严格检查\n"
-                f"{s.get('verdict','')}\n{s.get('pos_note','')}"
+                f"{s.get('verdict', '')}\n{s.get('pos_note', '')}"
             )
-            self.emit("期权策略触发", content, level="option",
-                      key="strategy:%s" % key_name,
-                      cooldown=config.ALERT_SIGNAL_COOLDOWN_SEC)
+            self.emit(
+                "期权策略触发",
+                content,
+                level="option",
+                key="strategy:%s" % key_name,
+                cooldown=config.ALERT_SIGNAL_COOLDOWN_SEC,
+            )
         self._strategy_state = current
 
     def emit(self, title, content, level="info", key=None, cooldown=0):
@@ -166,9 +180,9 @@ class AlertManager:
         if self._cycle_events is not None:
             self._cycle_events.append(event)
             return
-        threading.Thread(target=self._dispatch,
-                         args=(title, event["content"], level),
-                         daemon=True, name="alert").start()
+        threading.Thread(
+            target=self._dispatch, args=(title, event["content"], level), daemon=True, name="alert"
+        ).start()
 
     def _flush_cycle_events(self, events):
         if not events:
@@ -182,8 +196,9 @@ class AlertManager:
             for i, e in enumerate(events, 1):
                 blocks.append(f"【{i}.{e['title']}】\n{e['content']}")
             content = "\n\n".join(blocks)[:3500]
-        threading.Thread(target=self._dispatch, args=(title, content, top["level"]),
-                         daemon=True, name="alert").start()
+        threading.Thread(
+            target=self._dispatch, args=(title, content, top["level"]), daemon=True, name="alert"
+        ).start()
 
     def _dispatch(self, title, content, level):
         try:
@@ -236,17 +251,18 @@ class AlertManager:
         if kind == "feishu":
             payload = {"msg_type": "text", "content": {"text": text}}
             r = http.post(url, json=payload, timeout=config.ALERT_WEBHOOK_TIMEOUT)
-        elif kind == "dingtalk":
-            payload = {"msgtype": "text", "text": {"content": text}}
-            r = http.post(url, json=payload, timeout=config.ALERT_WEBHOOK_TIMEOUT)
-        elif kind == "wecom":
+        elif kind == "dingtalk" or kind == "wecom":
             payload = {"msgtype": "text", "text": {"content": text}}
             r = http.post(url, json=payload, timeout=config.ALERT_WEBHOOK_TIMEOUT)
         elif kind == "serverchan":
             data = urllib.parse.urlencode({"title": title, "desp": content})
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            r = http.post(url, data=data.encode("utf-8"), headers=headers,
-                          timeout=config.ALERT_WEBHOOK_TIMEOUT)
+            r = http.post(
+                url,
+                data=data.encode("utf-8"),
+                headers=headers,
+                timeout=config.ALERT_WEBHOOK_TIMEOUT,
+            )
         else:
             payload = {"title": title, "content": content, "text": text}
             r = http.post(url, json=payload, timeout=config.ALERT_WEBHOOK_TIMEOUT)
@@ -259,6 +275,8 @@ class AlertManager:
                 code = body.get("code", 0)
                 errcode = body.get("errcode", 0)
                 if code not in (0, None) or errcode not in (0, None):
-                    LOG.warning("Webhook返回业务异常: %s", json.dumps(body, ensure_ascii=False)[:200])
+                    LOG.warning(
+                        "Webhook返回业务异常: %s", json.dumps(body, ensure_ascii=False)[:200]
+                    )
         except Exception:
             pass

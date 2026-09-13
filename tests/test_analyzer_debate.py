@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """综合分评级边界 + 多空双面论证卡回归（analyzer，纯函数零网络）。"""
+
 import analyzer
 
 
@@ -27,8 +27,7 @@ def test_direction_text():
 
 
 def test_debate_splits_bull_bear():
-    row = {"score": 5.0, "chg": 0.01,
-           "parts": {"消息面": 1.5, "日线动量": 2.0, "技术共振": -0.8}}
+    row = {"score": 5.0, "chg": 0.01, "parts": {"消息面": 1.5, "日线动量": 2.0, "技术共振": -0.8}}
     d = analyzer.build_debate(row)
     bull_txt = " ".join(d["bull"])
     bear_txt = " ".join(d["bear"])
@@ -46,9 +45,12 @@ def test_debate_verdict_levels():
 
 def test_debate_dedup_fundamental_and_flow():
     # parts 里的“基本面/量仓资金”与专门分支同源，去重不重复列
-    row = {"score": 3.0, "parts": {"基本面": 1.0, "量仓资金": 0.5},
-           "fundamental": {"score": 1.0},
-           "flow": {"score": 0.5, "pattern": "增仓上行"}}
+    row = {
+        "score": 3.0,
+        "parts": {"基本面": 1.0, "量仓资金": 0.5},
+        "fundamental": {"score": 1.0},
+        "flow": {"score": 0.5, "pattern": "增仓上行"},
+    }
     d = analyzer.build_debate(row)
     joined = " ".join(d["bull"])
     assert joined.count("基本面") == 1
@@ -56,9 +58,13 @@ def test_debate_dedup_fundamental_and_flow():
 
 
 def test_debate_flow_inst_hv():
-    row = {"score": -7.0, "chg": -0.01,
-           "flow": {"score": -0.6, "pattern": "增仓下行"},
-           "inst_ratio": -0.3, "hv_percentile": 0.9}
+    row = {
+        "score": -7.0,
+        "chg": -0.01,
+        "flow": {"score": -0.6, "pattern": "增仓下行"},
+        "inst_ratio": -0.3,
+        "hv_percentile": 0.9,
+    }
     d = analyzer.build_debate(row)
     bear = " ".join(d["bear"])
     assert "增仓下行" in bear and "机构净空" in bear and "波动分位" in bear

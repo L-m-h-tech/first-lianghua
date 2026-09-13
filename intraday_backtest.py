@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """日内/平今回测（第15轮 WP-D1/D2，零新增第三方依赖）。
 
 数据：storage.minute_bars 自采库（新浪主连1/5/15/30/60分钟，常驻积累；单周期约1023根），
@@ -31,25 +30,26 @@
   D:\\Python\\python.exe intraday_backtest.py --codes RB --period 5 --aggregate-from 1
   D:\\Python\\python.exe intraday_backtest.py --all --period 30 --no-cost --no-limit-filter
 """
+
 import argparse
 import csv
 import math
 import os
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import config
-import futures_data
-from futures_data import (_sma_series, _ema_series, _rsi_series, _kdj_series,
-                          clip, _sample_std)
-from backtest import load_fee_schedule, side_fee, ratio_adjusted_bars
-import trade_calendar
-from utils import now_str
 import storage
+import trade_calendar
+from backtest import load_fee_schedule, ratio_adjusted_bars, side_fee
+from futures_data import _ema_series, _kdj_series, _sample_std, _sma_series, clip
+from utils import now_str
 
-DISCLAIMER = ("本回测仅回放分钟技术面，使用常驻自采的有限窗口分钟K线，bar内成交按vnpy式保守假设，"
-              "涨跌停为前收×常态幅度的近似；不构成投资建议，据此操作风险自负。")
+DISCLAIMER = (
+    "本回测仅回放分钟技术面，使用常驻自采的有限窗口分钟K线，bar内成交按vnpy式保守假设，"
+    "涨跌停为前收×常态幅度的近似；不构成投资建议，据此操作风险自负。"
+)
 
 
 # ------------------------- 交易日归属（与 utils.trade_owner_date / report._owner_of_ts 同口径） -------------------------
@@ -77,8 +77,7 @@ def build_owner_meta(bars):
         if o not in seg_last:
             order.append(o)
         seg_last[o] = bars[i]["c"]
-    prev_seg_close = {o: (seg_last[order[k - 1]] if k > 0 else None)
-                      for k, o in enumerate(order)}
+    prev_seg_close = {o: (seg_last[order[k - 1]] if k > 0 else None) for k, o in enumerate(order)}
     bases = [prev_seg_close[o] for o in owners]
     return owners, bases
 
@@ -96,13 +95,20 @@ def load_minute_bars(db, sym, period, lookback, aggregate_from):
     period, aggregate_from = int(period), int(aggregate_from or 0)
     if aggregate_from and aggregate_from != period and period % aggregate_from == 0:
         import intraday_bars
-        raw = db.minute_bars_for_sym(sym, aggregate_from, limit=lookback * (period // aggregate_from) + 4)
+
+        raw = db.minute_bars_for_sym(
+            sym, aggregate_from, limit=lookback * (period // aggregate_from) + 4
+        )
         # 第130轮相位对齐升级：时段锚点分桶（09:00/10:30/13:30/21:00），替换旧"仅1m且 minute%period"
         # 的取模裁剪——窗口起点不在边界时旧法整段漂移一根，60m 的 10:30/13:30 边界取模也判不出；
         # 锚点模式对 5/15/30/60m 全周期生效，段头/段尾不足整桶丢弃（不编造半根），
         # 聚合相位与交易所原生粗周期一致，跨周期交叉验证（--aggregate-from 1）因此可信。
-        merged = intraday_bars.aggregate_bars(raw, aggregate_from, period // aggregate_from,
-                                              session_starts=intraday_bars.SESSION_STARTS)
+        merged = intraday_bars.aggregate_bars(
+            raw,
+            aggregate_from,
+            period // aggregate_from,
+            session_starts=intraday_bars.SESSION_STARTS,
+        )
         src = f"{aggregate_from}m时段锚点对齐后聚合到{period}m"
     else:
         merged = db.minute_bars_for_sym(sym, period, limit=lookback)
@@ -111,9 +117,18 @@ def load_minute_bars(db, sym, period, lookback, aggregate_from):
     for b in merged[-lookback:]:
         try:
             dtv = _to_dt(b["dt"])
-            out.append({"dt": dtv, "d": dtv, "contract": b.get("contract", ""),
-                        "o": float(b["o"]), "h": float(b["h"]), "l": float(b["l"]),
-                        "c": float(b["c"]), "v": float(b.get("v") or 0.0)})
+            out.append(
+                {
+                    "dt": dtv,
+                    "d": dtv,
+                    "contract": b.get("contract", ""),
+                    "o": float(b["o"]),
+                    "h": float(b["h"]),
+                    "l": float(b["l"]),
+                    "c": float(b["c"]),
+                    "v": float(b.get("v") or 0.0),
+                }
+            )
         except (KeyError, TypeError, ValueError):
             continue
     return out, src
@@ -130,11 +145,11 @@ def resolve_items(codes_arg, limit=0):
             tok = tok.strip()
             if not tok:
                 continue
-            if tok in config.VARIETIES:                       # 中文名
+            if tok in config.VARIETIES:  # 中文名
                 m = config.VARIETIES[tok]
                 items.append((m["sym"], m["code"], tok))
                 continue
-            sym = tok.upper().rstrip("0")                    # RB / RB0
+            sym = tok.upper().rstrip("0")  # RB / RB0
             if sym in by_sym:
                 name, m = by_sym[sym]
                 items.append((sym, m["code"], name))
@@ -153,9 +168,9 @@ def atr_at(highs, lows, closes, period):
         return None
     trs = []
     for k in range(n - period, n):
-        trs.append(max(highs[k] - lows[k],
-                       abs(highs[k] - closes[k - 1]),
-                       abs(lows[k] - closes[k - 1])))
+        trs.append(
+            max(highs[k] - lows[k], abs(highs[k] - closes[k - 1]), abs(lows[k] - closes[k - 1]))
+        )
     return sum(trs) / len(trs)
 
 
@@ -172,9 +187,9 @@ def prepare_series(bars, window):
         m = i - lo + 1
         if m < warm:
             continue
-        c = closes[lo:i + 1]
-        h = highs[lo:i + 1]
-        l = lows[lo:i + 1]
+        c = closes[lo : i + 1]
+        h = highs[lo : i + 1]
+        l = lows[lo : i + 1]
         mm = len(c)
         ma5 = _sma_series(c, 5)[-1]
         ma10 = _sma_series(c, 10)[-1]
@@ -190,14 +205,28 @@ def prepare_series(bars, window):
         r5 = c[-1] / c[-6] - 1.0 if mm >= 6 and c[-6] > 0 else 0.0
         r20 = c[-1] / c[-21] - 1.0 if mm >= 21 and c[-21] > 0 else 0.0
         k_last, d_last = kk[-1], dd[-1]
-        sv = _majority([ma5 and c[-1] > ma5, r5 > 0, k_last is not None and d_last is not None and k_last > d_last],
-                       [ma5 and c[-1] < ma5, r5 < 0, k_last is not None and d_last is not None and k_last < d_last])
-        mv = _majority([ma20 and c[-1] > ma20, dif >= dea],
-                       [ma20 and c[-1] < ma20, dif < dea])
-        lv = _majority([ma60 and c[-1] > ma60, ma20 and ma60 and ma20 > ma60],
-                       [ma60 and c[-1] < ma60, ma20 and ma60 and ma20 < ma60])
-        resonance = clip((sv + mv + lv) / 3.0 * config.TECH_RESONANCE_MAX,
-                         -config.TECH_RESONANCE_MAX, config.TECH_RESONANCE_MAX)
+        sv = _majority(
+            [
+                ma5 and c[-1] > ma5,
+                r5 > 0,
+                k_last is not None and d_last is not None and k_last > d_last,
+            ],
+            [
+                ma5 and c[-1] < ma5,
+                r5 < 0,
+                k_last is not None and d_last is not None and k_last < d_last,
+            ],
+        )
+        mv = _majority([ma20 and c[-1] > ma20, dif >= dea], [ma20 and c[-1] < ma20, dif < dea])
+        lv = _majority(
+            [ma60 and c[-1] > ma60, ma20 and ma60 and ma20 > ma60],
+            [ma60 and c[-1] < ma60, ma20 and ma60 and ma20 < ma60],
+        )
+        resonance = clip(
+            (sv + mv + lv) / 3.0 * config.TECH_RESONANCE_MAX,
+            -config.TECH_RESONANCE_MAX,
+            config.TECH_RESONANCE_MAX,
+        )
         rets = [c[k] / c[k - 1] - 1.0 for k in range(1, mm) if c[k - 1] > 0]
         sd = _sample_std(rets[-60:]) if len(rets) >= 20 else 0.0
         score = resonance * 1.6
@@ -231,9 +260,25 @@ def locked_at(bar, base, move, eps, buying):
 
 
 # ------------------------- vnpy式逐bar撮合 -------------------------
-def simulate(sym, bars, prepared, owners, bases, entry_th, stop_atr, target_atr,
-             flat_eod, max_bars, slip, fee_row, use_real_fees, fee_rate,
-             use_limit, limit_move, limit_eps):
+def simulate(
+    sym,
+    bars,
+    prepared,
+    owners,
+    bases,
+    entry_th,
+    stop_atr,
+    target_atr,
+    flat_eod,
+    max_bars,
+    slip,
+    fee_row,
+    use_real_fees,
+    fee_rate,
+    use_limit,
+    limit_move,
+    limit_eps,
+):
     closes, highs, lows, scores, atrs = prepared
     n = len(bars)
     mult = float(fee_row["multiplier"]) if (use_real_fees and fee_row) else 0.0
@@ -252,28 +297,48 @@ def simulate(sym, bars, prepared, owners, bases, entry_th, stop_atr, target_atr,
             _, hypo_yuan = side_fee(fee_row, px, "close")
             fee_mode = "真实费率表"
         else:
-            ofr, ofee, cfr, cfee, hypo_yuan, fee_mode = fee_rate, 0.0, fee_rate, 0.0, 0.0, "兜底比例"
+            ofr, ofee, cfr, cfee, hypo_yuan, fee_mode = (
+                fee_rate,
+                0.0,
+                fee_rate,
+                0.0,
+                0.0,
+                "兜底比例",
+            )
         gross = d * (px / pos["entry_px"] - 1.0)
         net = gross - ofr - cfr
         pnl_yuan = d * (px - pos["entry_px"]) * mult - ofee - cfee if mult > 0 else None
-        trades.append({
-            "sym": sym, "contract": bars[i].get("contract", ""),
-            "dir": "多" if d > 0 else "空",
-            "entry_dt": pos["entry_dt"].strftime("%Y-%m-%d %H:%M"),
-            "exit_dt": bars[i]["dt"].strftime("%Y-%m-%d %H:%M"),
-            "entry_owner": pos["entry_owner"].strftime("%Y-%m-%d"),
-            "exit_owner": owners[i].strftime("%Y-%m-%d"),
-            "leg": "平今" if leg == "today" else "平昨",
-            "hold_bars": i - pos["entry_i"],
-            "hold_min": round((bars[i]["dt"] - pos["entry_dt"]).total_seconds() / 60.0, 1),
-            "entry_px": pos["entry_px"], "exit_px": px,
-            "gross": gross, "open_fee_rate": ofr, "close_fee_rate": cfr,
-            "slip_rate": slip, "net": net,
-            "fee_open_yuan": ofee, "fee_close_yuan": cfee,
-            "hypo_close_yuan": hypo_yuan, "today_save_yuan": (hypo_yuan - cfee),
-            "pnl_yuan": pnl_yuan, "multiplier": mult, "fee_mode": fee_mode,
-            "entry_score": pos["score"], "blocked_exits": pos["block"],
-            "reason": reason})
+        trades.append(
+            {
+                "sym": sym,
+                "contract": bars[i].get("contract", ""),
+                "dir": "多" if d > 0 else "空",
+                "entry_dt": pos["entry_dt"].strftime("%Y-%m-%d %H:%M"),
+                "exit_dt": bars[i]["dt"].strftime("%Y-%m-%d %H:%M"),
+                "entry_owner": pos["entry_owner"].strftime("%Y-%m-%d"),
+                "exit_owner": owners[i].strftime("%Y-%m-%d"),
+                "leg": "平今" if leg == "today" else "平昨",
+                "hold_bars": i - pos["entry_i"],
+                "hold_min": round((bars[i]["dt"] - pos["entry_dt"]).total_seconds() / 60.0, 1),
+                "entry_px": pos["entry_px"],
+                "exit_px": px,
+                "gross": gross,
+                "open_fee_rate": ofr,
+                "close_fee_rate": cfr,
+                "slip_rate": slip,
+                "net": net,
+                "fee_open_yuan": ofee,
+                "fee_close_yuan": cfee,
+                "hypo_close_yuan": hypo_yuan,
+                "today_save_yuan": (hypo_yuan - cfee),
+                "pnl_yuan": pnl_yuan,
+                "multiplier": mult,
+                "fee_mode": fee_mode,
+                "entry_score": pos["score"],
+                "blocked_exits": pos["block"],
+                "reason": reason,
+            }
+        )
         pos = None
 
     for i in range(n):
@@ -289,10 +354,19 @@ def simulate(sym, bars, prepared, owners, bases, entry_th, stop_atr, target_atr,
                 else:
                     px = bar["o"] * (1.0 + d * slip)
                     atr = atrs[pending[2]] or px * 0.002
-                    pos = {"dir": d, "entry_i": i, "entry_dt": bar["dt"], "entry_px": px,
-                           "entry_owner": owners[i], "atr": atr, "hold": 0, "block": 0,
-                           "stop": px - d * stop_atr * atr,
-                           "target": px + d * target_atr * atr, "score": pending[3]}
+                    pos = {
+                        "dir": d,
+                        "entry_i": i,
+                        "entry_dt": bar["dt"],
+                        "entry_px": px,
+                        "entry_owner": owners[i],
+                        "atr": atr,
+                        "hold": 0,
+                        "block": 0,
+                        "stop": px - d * stop_atr * atr,
+                        "target": px + d * target_atr * atr,
+                        "score": pending[3],
+                    }
                     pending = None
                     # 入场当根不做止损/止盈（vnpy约定）；但若该根已是本交易日最后一根，
                     # 日内模式必须立即按收盘价强平，不能把刚开的仓带到下一交易日。
@@ -374,7 +448,7 @@ def simulate(sym, bars, prepared, owners, bases, entry_th, stop_atr, target_atr,
         if sig != 0 and atrs[i] is not None and atrs[i] > 0:
             pending = ("entry", sig, i, scores[i])
 
-    if pos is not None:                                          # 兜底平掉残留持仓
+    if pos is not None:  # 兜底平掉残留持仓
         close_trade(n - 1, bars[n - 1]["c"], "样本末强平")
     return trades, blocked_entry, blocked_exit
 
@@ -397,10 +471,17 @@ def stats_of(rets):
         peak = max(peak, equity)
         max_dd = max(max_dd, 1.0 - equity / peak)
     std = statistics.stdev(rets) if n >= 2 else 0.0
-    return {"n": n, "win_rate": len(wins) / n, "avg": avg,
-            "avg_win": avg_win, "avg_loss": avg_loss,
-            "pl_ratio": (avg_win / abs(avg_loss)) if avg_loss < 0 else None,
-            "cumulative": equity - 1.0, "max_dd": max_dd, "std": std}
+    return {
+        "n": n,
+        "win_rate": len(wins) / n,
+        "avg": avg,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "pl_ratio": (avg_win / abs(avg_loss)) if avg_loss < 0 else None,
+        "cumulative": equity - 1.0,
+        "max_dd": max_dd,
+        "std": std,
+    }
 
 
 def ann_sharpe(stat, bars_total, trade_days, avg_hold_bars):
@@ -430,13 +511,30 @@ def run_symbol(item, args, fee_table):
     prepared = prepare_series(bars, args.sig_window)
     owners, bases = build_owner_meta(bars)
     fee_row = fee_table.get(sym) if args.real_fees else None
-    move = args.limit_move if args.limit_move is not None else config.FUTURES_LIMIT_MOVE.get(
-        sym, config.INTRADAY_BT_LIMIT_MOVE)
+    move = (
+        args.limit_move
+        if args.limit_move is not None
+        else config.FUTURES_LIMIT_MOVE.get(sym, config.INTRADAY_BT_LIMIT_MOVE)
+    )
     trades, be, bx = simulate(
-        sym, bars, prepared, owners, bases, args.entry, args.stop_atr, args.target_atr,
-        args.flat_eod, args.max_bars, args.slip_rate,
-        fee_row, args.real_fees, args.fee_rate,
-        args.use_limit, move, config.INTRADAY_BT_LIMIT_TICK_EPS)
+        sym,
+        bars,
+        prepared,
+        owners,
+        bases,
+        args.entry,
+        args.stop_atr,
+        args.target_atr,
+        args.flat_eod,
+        args.max_bars,
+        args.slip_rate,
+        fee_row,
+        args.real_fees,
+        args.fee_rate,
+        args.use_limit,
+        move,
+        config.INTRADAY_BT_LIMIT_TICK_EPS,
+    )
     # 参数稳定性网格（信号序列复用，只重跑状态机）
     stability = []
     if not args.no_stable:
@@ -444,28 +542,60 @@ def run_symbol(item, args, fee_table):
             for s in config.INTRADAY_BT_STABLE_STOPS:
                 for t in config.INTRADAY_BT_STABLE_TARGETS:
                     tt, _, _ = simulate(
-                        sym, bars, prepared, owners, bases, e, s, t,
-                        args.flat_eod, args.max_bars, args.slip_rate,
-                        fee_row, args.real_fees, args.fee_rate,
-                        args.use_limit, move, config.INTRADAY_BT_LIMIT_TICK_EPS)
+                        sym,
+                        bars,
+                        prepared,
+                        owners,
+                        bases,
+                        e,
+                        s,
+                        t,
+                        args.flat_eod,
+                        args.max_bars,
+                        args.slip_rate,
+                        fee_row,
+                        args.real_fees,
+                        args.fee_rate,
+                        args.use_limit,
+                        move,
+                        config.INTRADAY_BT_LIMIT_TICK_EPS,
+                    )
                     st = stats_of([x["net"] for x in tt])
-                    stability.append({"entry": e, "stop": s, "target": t,
-                                      "n": st["n"] if st else 0,
-                                      "wr": st["win_rate"] if st else None,
-                                      "avg": st["avg"] if st else None,
-                                      "cum": st["cumulative"] if st else None})
+                    stability.append(
+                        {
+                            "entry": e,
+                            "stop": s,
+                            "target": t,
+                            "n": st["n"] if st else 0,
+                            "wr": st["win_rate"] if st else None,
+                            "avg": st["avg"] if st else None,
+                            "cum": st["cumulative"] if st else None,
+                        }
+                    )
     net_stat = stats_of([t["net"] for t in trades])
     gross_stat = stats_of([t["gross"] for t in trades])
     days = len(set(owners))
-    avg_hold = (statistics.mean([t["hold_bars"] for t in trades]) if trades else 0.0)
-    result = {"sym": sym, "code": code, "name": name, "src": src, "bars": len(bars),
-              "days": days, "roll_count": roll_count, "trades": trades,
-              "net": net_stat, "gross": gross_stat,
-              "sharpe": ann_sharpe(net_stat, len(bars), days, avg_hold) if avg_hold else 0.0,
-              "blocked_entry": be, "blocked_exit": bx,
-              "first": bars[0]["dt"].strftime("%Y-%m-%d %H:%M"),
-              "last": bars[-1]["dt"].strftime("%Y-%m-%d %H:%M"),
-              "limit_move": move, "stability": stability, "avg_hold_bars": avg_hold}
+    avg_hold = statistics.mean([t["hold_bars"] for t in trades]) if trades else 0.0
+    result = {
+        "sym": sym,
+        "code": code,
+        "name": name,
+        "src": src,
+        "bars": len(bars),
+        "days": days,
+        "roll_count": roll_count,
+        "trades": trades,
+        "net": net_stat,
+        "gross": gross_stat,
+        "sharpe": ann_sharpe(net_stat, len(bars), days, avg_hold) if avg_hold else 0.0,
+        "blocked_entry": be,
+        "blocked_exit": bx,
+        "first": bars[0]["dt"].strftime("%Y-%m-%d %H:%M"),
+        "last": bars[-1]["dt"].strftime("%Y-%m-%d %H:%M"),
+        "limit_move": move,
+        "stability": stability,
+        "avg_hold_bars": avg_hold,
+    }
     return sym, result, None
 
 
@@ -478,7 +608,11 @@ def _group_stats(trades, pred):
 def build_report(results, errors, args):
     L = []
     L.append("=" * 112)
-    mode = "日内模式(当日强平/不隔夜/平仓走平今)" if args.flat_eod else "摆动模式(允许跨交易日/同日开平走平今)"
+    mode = (
+        "日内模式(当日强平/不隔夜/平仓走平今)"
+        if args.flat_eod
+        else "摆动模式(允许跨交易日/同日开平走平今)"
+    )
     span = ""
     if results:
         spans = sorted(r["first"] for r in results)
@@ -487,13 +621,22 @@ def build_report(results, errors, args):
     L.append(f" 日内/平今回测报告（第15轮 WP-D1/D2）  生成于 {now_str()}")
     L.append("=" * 112)
     L.append(f" 回放周期: {args.period}分钟  |  模式: {mode}  |  数据窗口: {span or '—'}")
-    L.append(f" 信号: 分钟三周期共振+波动标准化动量，入场阈值±{args.entry}；"
-             f"离场: {args.stop_atr}×ATR止损 / {args.target_atr}×ATR止盈 / 反向信号"
-             + ("" if args.flat_eod else f" / 最长{args.max_bars}根bar"))
-    cost_txt = "零成本(无费无滑点)" if args.no_cost else (
-        f"真实券商投机费率表+单边滑点{args.slip_rate*1e4:.1f}‱(万{args.slip_rate*1e4:.1f})")
-    L.append(f" 成本: {cost_txt}  |  锁板过滤: {'关闭' if not args.use_limit else '开启(前收×常态涨跌停,整根封死才拦截)'}  |  "
-             f"信号窗口{args.sig_window}根/预热{config.INTRADAY_BT_WARMUP}根")
+    L.append(
+        f" 信号: 分钟三周期共振+波动标准化动量，入场阈值±{args.entry}；"
+        f"离场: {args.stop_atr}×ATR止损 / {args.target_atr}×ATR止盈 / 反向信号"
+        + ("" if args.flat_eod else f" / 最长{args.max_bars}根bar")
+    )
+    cost_txt = (
+        "零成本(无费无滑点)"
+        if args.no_cost
+        else (
+            f"真实券商投机费率表+单边滑点{args.slip_rate * 1e4:.1f}‱(万{args.slip_rate * 1e4:.1f})"
+        )
+    )
+    L.append(
+        f" 成本: {cost_txt}  |  锁板过滤: {'关闭' if not args.use_limit else '开启(前收×常态涨跌停,整根封死才拦截)'}  |  "
+        f"信号窗口{args.sig_window}根/预热{config.INTRADAY_BT_WARMUP}根"
+    )
     L.append("")
 
     ok = [r for r in results if r and r["trades"]]
@@ -503,46 +646,88 @@ def build_report(results, errors, args):
     agg_net = stats_of([t["net"] for t in all_trades])
     agg_gross = stats_of([t["gross"] for t in all_trades])
     L.append("【一、全品种汇总】（净=毛-开/平手续费率-双边滑点；累计=逐笔顺序复利）")
-    L.append(" " + _t("品种", 8) + _t("名称", 10) + _t("bar数", 7) + _t("交易日", 7)
-             + _t("交易数", 7) + _t("胜率", 8) + _t("均毛", 9) + _t("均费", 9)
-             + _t("均净", 9) + _t("累计净", 10) + _t("笔夏普年", 9) + _t("今/昨", 8)
-             + _t("锁板拦", 7))
+    L.append(
+        " "
+        + _t("品种", 8)
+        + _t("名称", 10)
+        + _t("bar数", 7)
+        + _t("交易日", 7)
+        + _t("交易数", 7)
+        + _t("胜率", 8)
+        + _t("均毛", 9)
+        + _t("均费", 9)
+        + _t("均净", 9)
+        + _t("累计净", 10)
+        + _t("笔夏普年", 9)
+        + _t("今/昨", 8)
+        + _t("锁板拦", 7)
+    )
     for r in sorted(results, key=lambda x: -(x["net"]["avg"] if x["net"] else -9)):
         if not r["net"]:
-            L.append(" " + _t(r["sym"], 8) + _t(r["name"], 10) + _t(str(r["bars"]), 7)
-                     + _t(str(r["days"]), 7) + _t("0", 7) + "无成交样本")
+            L.append(
+                " "
+                + _t(r["sym"], 8)
+                + _t(r["name"], 10)
+                + _t(str(r["bars"]), 7)
+                + _t(str(r["days"]), 7)
+                + _t("0", 7)
+                + "无成交样本"
+            )
             continue
         today_n = sum(1 for t in r["trades"] if t["leg"] == "平今")
         fee_avg = r["gross"]["avg"] - r["net"]["avg"]
-        L.append(" " + _t(r["sym"], 8) + _t(r["name"], 10) + _t(str(r["bars"]), 7)
-                 + _t(str(r["days"]), 7) + _t(str(r["net"]["n"]), 7)
-                 + _t(f"{r['net']['win_rate']*100:.1f}%", 8)
-                 + _t(_pct(r["gross"]["avg"]), 9) + _t(_pct(fee_avg), 9)
-                 + _t(_pct(r["net"]["avg"]), 9) + _t(_pct(r["net"]["cumulative"]), 10)
-                 + _t(f"{r['sharpe']:.2f}", 9)
-                 + _t(f"{today_n}/{r['net']['n']-today_n}", 8)
-                 + _t(str(r["blocked_entry"] + r["blocked_exit"]), 7))
+        L.append(
+            " "
+            + _t(r["sym"], 8)
+            + _t(r["name"], 10)
+            + _t(str(r["bars"]), 7)
+            + _t(str(r["days"]), 7)
+            + _t(str(r["net"]["n"]), 7)
+            + _t(f"{r['net']['win_rate'] * 100:.1f}%", 8)
+            + _t(_pct(r["gross"]["avg"]), 9)
+            + _t(_pct(fee_avg), 9)
+            + _t(_pct(r["net"]["avg"]), 9)
+            + _t(_pct(r["net"]["cumulative"]), 10)
+            + _t(f"{r['sharpe']:.2f}", 9)
+            + _t(f"{today_n}/{r['net']['n'] - today_n}", 8)
+            + _t(str(r["blocked_entry"] + r["blocked_exit"]), 7)
+        )
     L.append("")
     if agg_net:
-        L.append(" 全市场等权拼接：毛均收 %s，净均收 %s，净胜率 %.1f%%，净累计 %s，净最大回撤 %s；"
-                 "盈亏比 %s；无成交品种 %d 个；错误 %d 个"
-                 % (_pct(agg_gross["avg"]), _pct(agg_net["avg"]), agg_net["win_rate"] * 100,
-                    _pct(agg_net["cumulative"]), _pct(agg_net["max_dd"]),
-                    ("--" if agg_net["pl_ratio"] is None else f"{agg_net['pl_ratio']:.2f}"),
-                    len(no_trade), len(errors)))
+        L.append(
+            " 全市场等权拼接：毛均收 %s，净均收 %s，净胜率 %.1f%%，净累计 %s，净最大回撤 %s；"
+            "盈亏比 %s；无成交品种 %d 个；错误 %d 个"
+            % (
+                _pct(agg_gross["avg"]),
+                _pct(agg_net["avg"]),
+                agg_net["win_rate"] * 100,
+                _pct(agg_net["cumulative"]),
+                _pct(agg_net["max_dd"]),
+                ("--" if agg_net["pl_ratio"] is None else f"{agg_net['pl_ratio']:.2f}"),
+                len(no_trade),
+                len(errors),
+            )
+        )
     L.append("")
 
     # ---- 多空分组 ----
     L.append("【二、方向/平仓路径分组】")
-    for label, pred in (("多头", lambda t: t["dir"] == "多"),
-                        ("空头", lambda t: t["dir"] == "空"),
-                        ("平今(同日开平)", lambda t: t["leg"] == "平今"),
-                        ("平昨(跨交易日)", lambda t: t["leg"] == "平昨")):
+    for label, pred in (
+        ("多头", lambda t: t["dir"] == "多"),
+        ("空头", lambda t: t["dir"] == "空"),
+        ("平今(同日开平)", lambda t: t["leg"] == "平今"),
+        ("平昨(跨交易日)", lambda t: t["leg"] == "平昨"),
+    ):
         sub, st = _group_stats(all_trades, pred)
         if st:
-            L.append(" " + _t(label, 16) + _t(f"样本{st['n']}", 9)
-                     + _t(f"胜率{st['win_rate']*100:.1f}%", 10) + _t(f"均净{_pct(st['avg'])}", 11)
-                     + _t(f"累计{_pct(st['cumulative'])}", 11))
+            L.append(
+                " "
+                + _t(label, 16)
+                + _t(f"样本{st['n']}", 9)
+                + _t(f"胜率{st['win_rate'] * 100:.1f}%", 10)
+                + _t(f"均净{_pct(st['avg'])}", 11)
+                + _t(f"累计{_pct(st['cumulative'])}", 11)
+            )
         else:
             L.append(" " + _t(label, 16) + "无样本")
     # 平今费用对照（人民币）
@@ -551,13 +736,17 @@ def build_report(results, errors, args):
         real_close = sum(t["fee_close_yuan"] for t in today_trades)
         hypo_close = sum(t["hypo_close_yuan"] for t in today_trades)
         save = sum(t["today_save_yuan"] for t in today_trades)
-        L.append(" 平今路径费用对照（每手人民币，全部平今单合计）：实际平仓费 %.1f 元；"
-                 "若按平昨费率将为 %.1f 元；平今优惠(>0为节省/<0为加收)合计 %.1f 元"
-                 % (real_close, hypo_close, save))
+        L.append(
+            " 平今路径费用对照（每手人民币，全部平今单合计）：实际平仓费 %.1f 元；"
+            "若按平昨费率将为 %.1f 元；平今优惠(>0为节省/<0为加收)合计 %.1f 元"
+            % (real_close, hypo_close, save)
+        )
     yuan_pnl = [t["pnl_yuan"] for t in all_trades if t["pnl_yuan"] is not None]
     if yuan_pnl:
-        L.append(" 每手人民币盈亏：合计 %.1f 元/手、单笔均值 %.1f 元/手（乘数取自真实费率表 multiplier）"
-                 % (sum(yuan_pnl), statistics.mean(yuan_pnl)))
+        L.append(
+            " 每手人民币盈亏：合计 %.1f 元/手、单笔均值 %.1f 元/手（乘数取自真实费率表 multiplier）"
+            % (sum(yuan_pnl), statistics.mean(yuan_pnl))
+        )
     L.append("")
 
     # ---- 退出原因 ----
@@ -567,9 +756,16 @@ def build_report(results, errors, args):
         reasons.setdefault(t["reason"], []).append(t)
     for reason, sub in sorted(reasons.items(), key=lambda kv: -len(kv[1])):
         st = stats_of([t["net"] for t in sub])
-        L.append(" " + _t(reason, 16) + _t(f"{len(sub)}笔", 8)
-                 + (_t(f"胜率{st['win_rate']*100:.1f}%", 10) + _t(f"均净{_pct(st['avg'])}", 11)
-                    if st else ""))
+        L.append(
+            " "
+            + _t(reason, 16)
+            + _t(f"{len(sub)}笔", 8)
+            + (
+                _t(f"胜率{st['win_rate'] * 100:.1f}%", 10) + _t(f"均净{_pct(st['avg'])}", 11)
+                if st
+                else ""
+            )
+        )
     be = sum(r["blocked_entry"] for r in results)
     bx = sum(r["blocked_exit"] for r in results)
     L.append(f" 锁板/零量拦截：入场放弃 {be} 次，离场顺延 {bx} 次（保守假设，实盘以盘口为准）")
@@ -577,14 +773,24 @@ def build_report(results, errors, args):
 
     # ---- 参数稳定性 ----
     if not args.no_stable:
-        L.append("【四、参数稳定性】（入场阈值×止损ATR×止盈ATR；全市场交易等权拼接，检验主参数是否孤峰）")
+        L.append(
+            "【四、参数稳定性】（入场阈值×止损ATR×止盈ATR；全市场交易等权拼接，检验主参数是否孤峰）"
+        )
         grid = {}
         for r in results:
             for cell in r["stability"]:
                 k = (cell["entry"], cell["stop"], cell["target"])
                 grid.setdefault(k, []).append(cell)
-        L.append(" " + _t("入场", 6) + _t("止损×ATR", 9) + _t("止盈×ATR", 9)
-                 + _t("总交易", 8) + _t("胜率", 8) + _t("均净", 10) + _t("累计净", 10))
+        L.append(
+            " "
+            + _t("入场", 6)
+            + _t("止损×ATR", 9)
+            + _t("止盈×ATR", 9)
+            + _t("总交易", 8)
+            + _t("胜率", 8)
+            + _t("均净", 10)
+            + _t("累计净", 10)
+        )
         rows = []
         for k, cells in grid.items():
             rets = [c["avg"] for c in cells if c["avg"] is not None]
@@ -598,11 +804,26 @@ def build_report(results, errors, args):
                     cum *= 1.0 + c["cum"]
             rows.append((k, n_total, wr, avg, cum - 1.0))
         for (e, s, t), n_total, wr, avg, cum in sorted(rows, key=lambda x: -(x[3] or -9)):
-            mark = "  <=主参数" if (abs(e - args.entry) < 1e-9 and abs(s - args.stop_atr) < 1e-9
-                                   and abs(t - args.target_atr) < 1e-9) else ""
-            L.append(" " + _t(str(e), 6) + _t(str(s), 9) + _t(str(t), 9)
-                     + _t(str(n_total), 8) + _t(f"{wr*100:.1f}%", 8)
-                     + _t(_pct(avg), 10) + _t(_pct(cum), 10) + mark)
+            mark = (
+                "  <=主参数"
+                if (
+                    abs(e - args.entry) < 1e-9
+                    and abs(s - args.stop_atr) < 1e-9
+                    and abs(t - args.target_atr) < 1e-9
+                )
+                else ""
+            )
+            L.append(
+                " "
+                + _t(str(e), 6)
+                + _t(str(s), 9)
+                + _t(str(t), 9)
+                + _t(str(n_total), 8)
+                + _t(f"{wr * 100:.1f}%", 8)
+                + _t(_pct(avg), 10)
+                + _t(_pct(cum), 10)
+                + mark
+            )
         L.append("")
 
     L.append("-" * 112)
@@ -618,11 +839,36 @@ def _t(x, w):
     return s + " " * max(1, w - sum(2 if ord(ch) > 127 else 1 for ch in s))
 
 
-CSV_FIELDS = ["sym", "name", "contract", "dir", "entry_dt", "exit_dt", "entry_owner",
-              "exit_owner", "leg", "hold_bars", "hold_min", "entry_px", "exit_px",
-              "gross", "open_fee_rate", "close_fee_rate", "slip_rate", "net",
-              "fee_open_yuan", "fee_close_yuan", "hypo_close_yuan", "today_save_yuan",
-              "pnl_yuan", "multiplier", "fee_mode", "entry_score", "blocked_exits", "reason"]
+CSV_FIELDS = [
+    "sym",
+    "name",
+    "contract",
+    "dir",
+    "entry_dt",
+    "exit_dt",
+    "entry_owner",
+    "exit_owner",
+    "leg",
+    "hold_bars",
+    "hold_min",
+    "entry_px",
+    "exit_px",
+    "gross",
+    "open_fee_rate",
+    "close_fee_rate",
+    "slip_rate",
+    "net",
+    "fee_open_yuan",
+    "fee_close_yuan",
+    "hypo_close_yuan",
+    "today_save_yuan",
+    "pnl_yuan",
+    "multiplier",
+    "fee_mode",
+    "entry_score",
+    "blocked_exits",
+    "reason",
+]
 
 
 def write_trades_csv(results, path):
@@ -639,19 +885,30 @@ def write_trades_csv(results, path):
 # ------------------------- CLI -------------------------
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="分钟K线日内/平今回测（自采minute_bars库驱动）")
-    p.add_argument("--codes", default="", help="品种代码逗号分隔，如 RB,MA 或 RB0；留空且无--all时默认重点品种")
+    p.add_argument(
+        "--codes", default="", help="品种代码逗号分隔，如 RB,MA 或 RB0；留空且无--all时默认重点品种"
+    )
     p.add_argument("--all", action="store_true", help="全64品种")
     p.add_argument("--limit", type=int, default=0)
-    p.add_argument("--period", type=int, default=config.INTRADAY_BT_PERIOD, choices=(1, 5, 15, 30, 60))
-    p.add_argument("--aggregate-from", type=int, default=0, choices=(0, 1, 5, 15, 30),
-                   help="从更细分钟周期现场聚合到--period（如 --period 5 --aggregate-from 1）")
+    p.add_argument(
+        "--period", type=int, default=config.INTRADAY_BT_PERIOD, choices=(1, 5, 15, 30, 60)
+    )
+    p.add_argument(
+        "--aggregate-from",
+        type=int,
+        default=0,
+        choices=(0, 1, 5, 15, 30),
+        help="从更细分钟周期现场聚合到--period（如 --period 5 --aggregate-from 1）",
+    )
     p.add_argument("--lookback", type=int, default=config.INTRADAY_BT_LOOKBACK)
     p.add_argument("--sig-window", type=int, default=config.INTRADAY_BT_SIG_WINDOW)
     p.add_argument("--entry", type=float, default=config.INTRADAY_BT_ENTRY)
     p.add_argument("--stop-atr", type=float, default=config.INTRADAY_BT_STOP_ATR)
     p.add_argument("--target-atr", type=float, default=config.INTRADAY_BT_TARGET_ATR)
     p.add_argument("--max-bars", type=int, default=config.INTRADAY_BT_MAX_BARS)
-    p.add_argument("--swing", action="store_true", help="摆动模式：允许跨交易日持仓（默认日内强平）")
+    p.add_argument(
+        "--swing", action="store_true", help="摆动模式：允许跨交易日持仓（默认日内强平）"
+    )
     p.add_argument("--fee-rate", type=float, default=config.INTRADAY_BT_FEE_RATE)
     p.add_argument("--slip-rate", type=float, default=config.INTRADAY_BT_SLIP_RATE)
     p.add_argument("--fees-file", default=config.FUTURES_FEES_FILE)
@@ -676,8 +933,10 @@ def main(argv=None):
         args.real_fees = False
     # 不给 --codes 时默认全品种；支持 RB/RB0/中文名
     items = resolve_items(args.codes, args.limit)
-    print(f"日内/平今回测：{len(items)}个品种，{args.period}分钟，"
-          f"{'日内' if args.flat_eod else '摆动'}模式，真实费率{len(fee_table)}个品种")
+    print(
+        f"日内/平今回测：{len(items)}个品种，{args.period}分钟，"
+        f"{'日内' if args.flat_eod else '摆动'}模式，真实费率{len(fee_table)}个品种"
+    )
 
     results, errors = [], []
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
@@ -690,8 +949,10 @@ def main(argv=None):
             else:
                 results.append(result)
                 ntr = len(result["trades"])
-                print(f"  [完成] {sym} {result['name']}: {result['bars']}根bar/"
-                      f"{result['days']}个交易日, {ntr}笔交易, 换月修正{result['roll_count']}处")
+                print(
+                    f"  [完成] {sym} {result['name']}: {result['bars']}根bar/"
+                    f"{result['days']}个交易日, {ntr}笔交易, 换月修正{result['roll_count']}处"
+                )
     results.sort(key=lambda r: r["sym"])
 
     report = build_report(results, errors, args)

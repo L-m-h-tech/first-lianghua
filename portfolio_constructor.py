@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G26（第40轮）组合构建器 portfolio_constructor.py：把"一批候选品种 + 各自历史日收益"
 变成"一篮子目标权重"的纯标准库、零网络、**风险型**（不预测预期收益）权重分配层。
 
@@ -16,6 +15,7 @@ r"""G26（第40轮）组合构建器 portfolio_constructor.py：把"一批候选
   - 长仓二次规划用投影梯度（FISTA 式加速 + capped-simplex 投影），凸问题收敛到全局解；
   - ERC 用乘性定点更新（Spinu/Chaves 式），正定协方差下收敛。
 """
+
 import math
 
 # 独立默认值（不依赖 config，便于零环境自测；tools/portfolio_lab 用 config.PC_* 覆盖）
@@ -201,7 +201,9 @@ def risk_parity(C, cap=None, tol=1e-4, max_iter=300):
         if mk > _EPS and max(abs(k[i] / mk - 1.0) for i in range(n)) < tol:
             break
         g = [sw[i] - 1.0 / w[i] for i in range(n)]
-        H = [[C[i][j] + (1.0 / (w[i] * w[i]) if i == j else 0.0) for j in range(n)] for i in range(n)]
+        H = [
+            [C[i][j] + (1.0 / (w[i] * w[i]) if i == j else 0.0) for j in range(n)] for i in range(n)
+        ]
         d = _gauss_solve(H, g)
         if d is None:
             break
@@ -249,7 +251,7 @@ def quadratic_long_only(C, linear=None, cap=None, tol=1e-5, max_iter=2000):
     best, best_val = x[:], obj(x)
     prev = x[:]
     for k in range(max_iter):
-        gy = [a - b for a, b in zip(_matvec(C, y), q)]
+        gy = [a - b for a, b in zip(_matvec(C, y), q, strict=False)]
         xn = project_capped_simplex([y[i] - step * gy[i] for i in range(n)], cap or 1.0)
         tn = 0.5 * (1 + math.sqrt(1 + 4 * t * t))
         y = [xn[i] + ((t - 1) / tn) * (xn[i] - x[i]) for i in range(n)]
@@ -277,7 +279,7 @@ def target_vol_scale(w, C, target_annual, periods_per_year=243, max_gross=1.5):
     if target_annual is None or target_annual <= 0 or ann < _EPS or gross < _EPS:
         return w[:], 1.0, ann
     k = target_annual / ann
-    k = min(k, max_gross / gross)     # 总敞口上限，防低波期过度加杠杆
+    k = min(k, max_gross / gross)  # 总敞口上限，防低波期过度加杠杆
     return [x * k for x in w], k, ann
 
 
@@ -288,7 +290,7 @@ def risk_contributions(w, C):
     pv = math.sqrt(max(sum(rc), 0.0))
     if pv < _EPS:
         return rc, [1.0 / len(w)] * len(w), pv
-    frac = [x / (pv * pv) for x in rc]   # rc_i / (w'Σw) = 占比
+    frac = [x / (pv * pv) for x in rc]  # rc_i / (w'Σw) = 占比
     return rc, frac, pv
 
 
@@ -311,11 +313,11 @@ def gross_exposure(w):
 def turnover(new_w, old_w, keys_new=None, keys_old=None):
     """单边换手 = ½Σ|w_new−w_old|（不同标的集合按并集、缺省0）；long-only 下∈[0,1+杠杆]。"""
     if keys_new is None and keys_old is None and len(new_w) == len(old_w):
-        return 0.5 * sum(abs(a - b) for a, b in zip(new_w, old_w))
+        return 0.5 * sum(abs(a - b) for a, b in zip(new_w, old_w, strict=False))
     kn = keys_new or list(range(len(new_w)))
     ko = keys_old or list(range(len(old_w)))
-    dn = dict(zip(kn, new_w))
-    do = dict(zip(ko, old_w))
+    dn = dict(zip(kn, new_w, strict=False))
+    do = dict(zip(ko, old_w, strict=False))
     keys = set(dn) | set(do)
     return 0.5 * sum(abs(dn.get(k, 0.0) - do.get(k, 0.0)) for k in keys)
 
@@ -324,9 +326,19 @@ def turnover(new_w, old_w, keys_new=None, keys_old=None):
 METHODS = ("equal", "inv_vol", "erc", "gmv")
 
 
-def construct(returns, method="equal", *, shrink=DEFAULT_SHRINK, cap=DEFAULT_CAP,
-              target_annual=0.0, periods_per_year=243, max_gross=1.5,
-              erc_tol=1e-4, erc_iter=300, raw_cov=False):
+def construct(
+    returns,
+    method="equal",
+    *,
+    shrink=DEFAULT_SHRINK,
+    cap=DEFAULT_CAP,
+    target_annual=0.0,
+    periods_per_year=243,
+    max_gross=1.5,
+    erc_tol=1e-4,
+    erc_iter=300,
+    raw_cov=False,
+):
     """按资产收益序列构建目标权重。
 
     返回 dict：method/weights(按 returns 资产顺序)/cov/shrink/ann_vol/rc_frac/eff_n/div_ratio/gross/leverage。
@@ -353,9 +365,15 @@ def construct(returns, method="equal", *, shrink=DEFAULT_SHRINK, cap=DEFAULT_CAP
         w, lev, ann_pre = target_vol_scale(w, C, target_annual, periods_per_year, max_gross)
     rc, frac, pv = risk_contributions(w, C)
     return {
-        "method": method, "weights": w, "cov": C, "ann_vol": pv * math.sqrt(periods_per_year),
-        "rc_frac": frac, "eff_n": effective_n(w), "div_ratio": diversification_ratio(w, C),
-        "gross": gross_exposure(w), "leverage": lev,
+        "method": method,
+        "weights": w,
+        "cov": C,
+        "ann_vol": pv * math.sqrt(periods_per_year),
+        "rc_frac": frac,
+        "eff_n": effective_n(w),
+        "div_ratio": diversification_ratio(w, C),
+        "gross": gross_exposure(w),
+        "leverage": lev,
     }
 
 
@@ -381,18 +399,23 @@ def selftest():
 
     # 4) capped-simplex 投影：和归一+非负+单票上限
     p = project_capped_simplex([0.9, 0.9, 0.0], cap=0.5)
-    assert abs(sum(p) - 1) < 1e-9 and abs(p[0] - 0.5) < 1e-9 and abs(p[1] - 0.5) < 1e-9 and abs(p[2]) < 1e-12
+    assert (
+        abs(sum(p) - 1) < 1e-9
+        and abs(p[0] - 0.5) < 1e-9
+        and abs(p[1] - 0.5) < 1e-9
+        and abs(p[2]) < 1e-12
+    )
     p0 = project_capped_simplex([5.0, -1.0, 0.0])
     assert abs(sum(p0) - 1) < 1e-9 and all(x >= -1e-12 for x in p0)
 
     # 5) 目标波动缩放：单资产期σ=0.1，年化(225)后=1.5，精确缩到目标0.15=缩10倍；杠杆受 max_gross 限制
-    Cw = [[0.01, 0.0], [0.0, 0.01]]           # 单期方差0.01→单期σ=0.1
+    Cw = [[0.01, 0.0], [0.0, 0.01]]  # 单期方差0.01→单期σ=0.1
     base = [1.0, 0.0]
     ws, k, ann0 = target_vol_scale(base, Cw, 0.15, periods_per_year=225, max_gross=10)
-    assert abs(ann0 - 1.5) < 1e-9             # 0.1*sqrt(225)=1.5
-    assert abs(k - 0.1) < 1e-9                # 1.5→0.15 需缩10倍
+    assert abs(ann0 - 1.5) < 1e-9  # 0.1*sqrt(225)=1.5
+    assert abs(k - 0.1) < 1e-9  # 1.5→0.15 需缩10倍
     wcap, kcap, _ = target_vol_scale(base, Cw, 5.0, periods_per_year=225, max_gross=1.5)
-    assert abs(sum(abs(x) for x in wcap) - 1.5) < 1e-9   # 想加杠杆被总敞口1.5截住
+    assert abs(sum(abs(x) for x in wcap) - 1.5) < 1e-9  # 想加杠杆被总敞口1.5截住
 
     # 6) 换手：全仓一只→两只各半 = 0.5；不同标的集合并集
     assert abs(turnover([1.0, 0.0], [0.5, 0.5]) - 0.5) < 1e-12
@@ -417,9 +440,11 @@ def selftest():
     assert max(abs(x - 0.5) for x in fh) < 1e-4
 
     # 9) construct 端到端：四方法都合法（和≈1、非负、有效N≥1），未知方法报错
-    data = [[1.0, 1.02, 0.99, 1.03, 0.97, 1.01, 1.0, 0.98, 1.04, 1.0],
-            [1.0, 1.01, 1.01, 0.99, 1.02, 0.98, 1.0, 1.03, 0.97, 1.01],
-            [1.0, 0.97, 1.05, 0.96, 1.06, 0.95, 1.0, 1.07, 0.94, 1.02]]
+    data = [
+        [1.0, 1.02, 0.99, 1.03, 0.97, 1.01, 1.0, 0.98, 1.04, 1.0],
+        [1.0, 1.01, 1.01, 0.99, 1.02, 0.98, 1.0, 1.03, 0.97, 1.01],
+        [1.0, 0.97, 1.05, 0.96, 1.06, 0.95, 1.0, 1.07, 0.94, 1.02],
+    ]
     rets = [[data[a][t + 1] / data[a][t] - 1 for t in range(9)] for a in range(3)]
     for m in METHODS:
         out = construct(rets, m, cap=0.6)
@@ -441,8 +466,10 @@ def selftest():
     out = construct(z, "gmv", raw_cov=False, cap=0.7)
     assert abs(sum(out["weights"]) - 1) < 1e-9 and all(x >= -1e-12 for x in out["weights"])
 
-    print("portfolio_constructor selftest ALL PASS（等权/逆波动/ERC风险平价/长仓GMV、capped-simplex投影、"
-          "目标波动缩放与杠杆上限、协方差对角收缩正定、风险贡献/有效N/换手、退化零方差安全 共10组）")
+    print(
+        "portfolio_constructor selftest ALL PASS（等权/逆波动/ERC风险平价/长仓GMV、capped-simplex投影、"
+        "目标波动缩放与杠杆上限、协方差对角收缩正定、风险贡献/有效N/换手、退化零方差安全 共10组）"
+    )
     return 0
 
 

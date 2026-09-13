@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第94轮 B6（对标 scrapling checkpoint pause/resume）：长任务阶段级断点续传。
 
 缓存 cache/checkpoints.json 记录 {"YYYY-MM-DD": {"stages": [已完成阶段,...]}}；
@@ -10,16 +9,17 @@
 - 与影子"启动日守卫防回填"正交：checkpoint 按自然日，仅用于"今天这个任务是否已做完重活"。
 - 测试友好：路径可注入（checkpoint.set_path / 环境变量 FUTURES_MONITOR_CHECKPOINT）。
 """
+
 import json
 import os
 import threading
-import time
 from datetime import datetime
 
 import config
 
-_PATH = os.environ.get("FUTURES_MONITOR_CHECKPOINT",
-                       os.path.join(config.BASE_DIR, "cache", "checkpoints.json"))
+_PATH = os.environ.get(
+    "FUTURES_MONITOR_CHECKPOINT", os.path.join(config.BASE_DIR, "cache", "checkpoints.json")
+)
 _LOCK = threading.Lock()
 
 
@@ -30,7 +30,7 @@ def set_path(p):
 
 def _load():
     try:
-        with open(_PATH, "r", encoding="utf-8") as f:
+        with open(_PATH, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {}
@@ -90,6 +90,7 @@ def today_str():
 def selftest():
     """零网络合成断言：mark/done/reset 幂等与容错。"""
     import tempfile
+
     checks = []
 
     def ck(name, cond):
@@ -111,7 +112,7 @@ def selftest():
         ck("幂等不重复", mark("2026-09-07", "topup"))
         ck("其他阶段未完成", not done("2026-09-07", "panel"))
         ck("reset单日", reset("2026-09-07") and not done("2026-09-07", "topup"))
-        ck("坏路径静默", mark("bad" * 50, "x") is False or True)   # 不应抛
+        ck("坏路径静默", mark("bad" * 50, "x") is False or True)  # 不应抛
     finally:
         set_path(old)
     return 0 if all(ok for _, ok in checks) else 1

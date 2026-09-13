@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G3 完整绩效指标包 / tear sheet（纯标准库、零网络、零第三方依赖）。
 
 统一绩效口径，供 portfolio.py / paper_broker.py / backtest.py / charts.py 复用，
@@ -18,6 +17,7 @@
 
 运行自检：D:\\Python\\python.exe metrics.py --selftest（全部为手算可复核的合成断言）。
 """
+
 import argparse
 import math
 import statistics
@@ -28,10 +28,11 @@ DEFAULT_BARS_PER_YEAR = 243
 DEFAULT_VAR_ALPHA = 0.05
 # 滚动夏普默认窗口（个周期；日度即交易日）
 DEFAULT_ROLLING_WINDOW = 60
-MIN_ROLLING = 3          # 少于该样本数滚动指标不给值（样本 stdev 至少要 2，3 起步更稳）
+MIN_ROLLING = 3  # 少于该样本数滚动指标不给值（样本 stdev 至少要 2，3 起步更稳）
 
 
 # =========================== 基础工具 ===========================
+
 
 def clean_returns(returns):
     """过滤非有限值，返回 float 列表（不改变顺序）。"""
@@ -59,8 +60,7 @@ def quantile_linear(sorted_vals, q):
     lo, hi = math.floor(pos), math.ceil(pos)
     if lo == hi:
         return float(sorted_vals[lo])
-    return (float(sorted_vals[lo]) * (hi - pos)
-            + float(sorted_vals[hi]) * (pos - lo))
+    return float(sorted_vals[lo]) * (hi - pos) + float(sorted_vals[hi]) * (pos - lo)
 
 
 def returns_from_equity(equity):
@@ -103,7 +103,7 @@ def daily_last_equity(dates, equity):
     用于把一天多轮的纸面快照 / 逐 bar 权益曲线收敛成日度序列再算年化类指标。"""
     day_last = {}
     order = []
-    for d, e in zip(dates, equity):
+    for d, e in zip(dates, equity, strict=False):
         k = _date_key(d)
         if k is None:
             continue
@@ -115,12 +115,13 @@ def daily_last_equity(dates, equity):
             continue
         if k not in day_last:
             order.append(k)
-        day_last[k] = v            # 后写覆盖=当日最后一点
+        day_last[k] = v  # 后写覆盖=当日最后一点
     order.sort()
     return order, [day_last[k] for k in order]
 
 
 # =========================== 周期收益类指标 ===========================
+
 
 def cumulative_return(returns):
     """复利累计收益 ∏(1+r)-1。"""
@@ -278,8 +279,7 @@ def conditional_var(returns, alpha=DEFAULT_VAR_ALPHA):
     return sum(tail) / len(tail)
 
 
-def rolling_sharpe(returns, window=DEFAULT_ROLLING_WINDOW,
-                   bars_per_year=DEFAULT_BARS_PER_YEAR):
+def rolling_sharpe(returns, window=DEFAULT_ROLLING_WINDOW, bars_per_year=DEFAULT_BARS_PER_YEAR):
     """滚动年化夏普：每个时点取末尾 window 个周期计算；前 window-1 个为 None。返回等长列表。"""
     rs = clean_returns(returns)
     w = int(window)
@@ -287,7 +287,7 @@ def rolling_sharpe(returns, window=DEFAULT_ROLLING_WINDOW,
     if w < MIN_ROLLING or len(rs) < w:
         return out
     for i in range(w - 1, len(rs)):
-        seg = rs[i - w + 1:i + 1]
+        seg = rs[i - w + 1 : i + 1]
         sd = statistics.stdev(seg)
         if sd > 1e-15:
             out[i] = (sum(seg) / w) / sd * math.sqrt(bars_per_year)
@@ -305,8 +305,8 @@ def monthly_returns(returns, dates):
     rs = clean_returns(returns)
     if not rs or dates is None or len(dates) != len(returns):
         return None
-    mult = {}        # (year, month) -> 月度净值乘数
-    for r0, d in zip(returns, dates):
+    mult = {}  # (year, month) -> 月度净值乘数
+    for r0, d in zip(returns, dates, strict=False):
         k = _date_key(d)
         if not k:
             continue
@@ -327,6 +327,7 @@ def monthly_returns(returns, dates):
 
 # =========================== 逐笔交易类指标 ===========================
 
+
 def trade_stats(trade_pnls):
     """逐笔盈亏 -> 交易级统计字典。金额/比例均可（带符号），样本为空返回 None。
 
@@ -339,7 +340,7 @@ def trade_stats(trade_pnls):
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
     gross_profit = sum(wins)
-    gross_loss = sum(losses)                 # 负数
+    gross_loss = sum(losses)  # 负数
     avg_win = gross_profit / len(wins) if wins else 0.0
     avg_loss = gross_loss / len(losses) if losses else 0.0
     # 连胜/连亏（按交易顺序；0 盈亏不中断也不计入）
@@ -354,17 +355,23 @@ def trade_stats(trade_pnls):
         max_ws = max(max_ws, cur_w)
         max_ls = max(max_ls, cur_l)
     return {
-        "n": len(pnls), "n_win": len(wins), "n_loss": len(losses),
+        "n": len(pnls),
+        "n_win": len(wins),
+        "n_loss": len(losses),
         "n_flat": len(pnls) - len(wins) - len(losses),
         "win_rate": len(wins) / len(pnls),
         "avg_pnl": sum(pnls) / len(pnls),
         "expectancy": sum(pnls) / len(pnls),
-        "avg_win": avg_win, "avg_loss": avg_loss,
-        "gross_profit": gross_profit, "gross_loss": gross_loss,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
         "profit_factor": (gross_profit / abs(gross_loss)) if gross_loss < -1e-18 else None,
         "payoff_ratio": (avg_win / abs(avg_loss)) if avg_loss < -1e-18 else None,
-        "max_win_streak": max_ws, "max_loss_streak": max_ls,
-        "best": max(pnls), "worst": min(pnls),
+        "max_win_streak": max_ws,
+        "max_loss_streak": max_ls,
+        "best": max(pnls),
+        "worst": min(pnls),
     }
 
 
@@ -421,19 +428,30 @@ def mae_mfe_summary(records):
         return sum(xs) / len(xs) if xs else None
 
     return {
-        "n": len(mfe_all), "avg_mfe": _mean(mfe_all), "avg_mae": _mean(mae_all),
-        "avg_mfe_win": _mean(mfe_win), "avg_mae_win": _mean(mae_win),
-        "avg_mfe_loss": _mean(mfe_loss), "avg_mae_loss": _mean(mae_loss),
+        "n": len(mfe_all),
+        "avg_mfe": _mean(mfe_all),
+        "avg_mae": _mean(mae_all),
+        "avg_mfe_win": _mean(mfe_win),
+        "avg_mae_win": _mean(mae_win),
+        "avg_mfe_loss": _mean(mfe_loss),
+        "avg_mae_loss": _mean(mae_loss),
         # 平均 MFE/MAE：>1 说明有利波动幅度大于不利，趋势持仓体验更好
         "mfe_mae_ratio": (_mean(mfe_all) / _mean(mae_all))
-                          if _mean(mae_all) and _mean(mae_all) > 1e-15 else None,
+        if _mean(mae_all) and _mean(mae_all) > 1e-15
+        else None,
     }
 
 
 # =========================== 一站式 tear sheet ===========================
 
-def tear_sheet(returns, dates=None, bars_per_year=DEFAULT_BARS_PER_YEAR,
-               var_alpha=DEFAULT_VAR_ALPHA, rolling_window=DEFAULT_ROLLING_WINDOW):
+
+def tear_sheet(
+    returns,
+    dates=None,
+    bars_per_year=DEFAULT_BARS_PER_YEAR,
+    var_alpha=DEFAULT_VAR_ALPHA,
+    rolling_window=DEFAULT_ROLLING_WINDOW,
+):
     """周期收益序列 -> 完整绩效字典（任一子指标样本不足则该键为 None，不抛异常）。
 
     返回固定键集合，调用方可用 .get 安全渲染；rolling 为等长列表（暖机期 None）。"""
@@ -463,6 +481,7 @@ def tear_sheet(returns, dates=None, bars_per_year=DEFAULT_BARS_PER_YEAR,
 
 
 # =========================== 合成自检（零网络，手算可复核） ===========================
+
 
 def _approx(a, b, tol=1e-9):
     if a is None or b is None:
@@ -495,8 +514,13 @@ def selftest():
     ck("Omega=2", _approx(omega_ratio(rs), 2.0))
     # 回撤序列 [0, 0.02, 0, 0.01, 0]，maxDD=0.02，Ulcer=sqrt((.0004+.0001)/5)=0.01
     _dd = drawdown_series(rs)
-    ck("回撤序列", len(_dd) == 5
-       and all(_approx(a, b, 1e-12) for a, b in zip(_dd, [0.0, 0.02, 0.0, 0.01, 0.0])))
+    ck(
+        "回撤序列",
+        len(_dd) == 5
+        and all(
+            _approx(a, b, 1e-12) for a, b in zip(_dd, [0.0, 0.02, 0.0, 0.01, 0.0], strict=False)
+        ),
+    )
     ck("最大回撤=0.02", _approx(max_drawdown(rs), 0.02))
     ck("Ulcer=0.01", _approx(ulcer_index(rs), 0.01))
     # ppy=5 时 CAGR=累计=0.0294850412，Calmar=/0.02
@@ -507,26 +531,29 @@ def selftest():
 
     # —— 滚动夏普：window=3，前 2 个为 None，长度恒等 ——
     roll = rolling_sharpe(rs, 3, 243)
-    ck("滚动长度", len(roll) == 5 and roll[0] is None and roll[1] is None
-       and roll[2] is not None)
+    ck("滚动长度", len(roll) == 5 and roll[0] is None and roll[1] is None and roll[2] is not None)
     seg = rs[:3]
     expect = (sum(seg) / 3) / statistics.stdev(seg) * math.sqrt(243)
     ck("滚动首值", _approx(roll[2], expect, 1e-9))
     ck("窗口过长全None", rolling_sharpe(rs, 99) == [None] * 5)
 
     # —— 权益转收益 / 日度收敛 ——
-    ck("权益转收益", _approx(returns_from_equity([1.0, 1.01, 1.03])[1],
-                              1.03 / 1.01 - 1.0))
+    ck("权益转收益", _approx(returns_from_equity([1.0, 1.01, 1.03])[1], 1.03 / 1.01 - 1.0))
     dts = ["2026-01-05 09:00", "2026-01-05 15:00", "2026-01-06 09:00"]
     days, deq = daily_last_equity(dts, [100.0, 101.0, 103.0])
     ck("日度取最后点", days == ["2026-01-05", "2026-01-06"] and deq == [101.0, 103.0])
 
     # —— 月度矩阵：1月 1.01*0.99=0.9999；2月 1.02*0.98=0.9996 ——
-    mr = monthly_returns([0.01, -0.01, 0.02, -0.02],
-                         ["2026-01-05", "2026-01-12", "2026-02-03", "2026-02-10"])
-    ck("月度矩阵", _approx(mr["matrix"][2026][1], -0.0001, 1e-12)
-       and _approx(mr["matrix"][2026][2], -0.0004, 1e-12)
-       and mr["years"] == [2026] and len(mr["cells"]) == 2)
+    mr = monthly_returns(
+        [0.01, -0.01, 0.02, -0.02], ["2026-01-05", "2026-01-12", "2026-02-03", "2026-02-10"]
+    )
+    ck(
+        "月度矩阵",
+        _approx(mr["matrix"][2026][1], -0.0001, 1e-12)
+        and _approx(mr["matrix"][2026][2], -0.0004, 1e-12)
+        and mr["years"] == [2026]
+        and len(mr["cells"]) == 2,
+    )
 
     # —— 逐笔交易：[100,-50,200,-80,-30,120] ——
     trades = [100.0, -50.0, 200.0, -80.0, -30.0, 120.0]
@@ -534,8 +561,10 @@ def selftest():
     ck("笔数/胜率", ts["n"] == 6 and _approx(ts["win_rate"], 0.5))
     ck("总盈/总亏", _approx(ts["gross_profit"], 420.0) and _approx(ts["gross_loss"], -160.0))
     ck("profit_factor=2.625", _approx(ts["profit_factor"], 2.625))
-    ck("平均盈=140/平均亏=-53.333", _approx(ts["avg_win"], 140.0)
-       and _approx(ts["avg_loss"], -160.0 / 3))
+    ck(
+        "平均盈=140/平均亏=-53.333",
+        _approx(ts["avg_win"], 140.0) and _approx(ts["avg_loss"], -160.0 / 3),
+    )
     # 胜负序列 W L W L L W -> 最大连胜1、最大连亏2
     ck("连胜连亏", ts["max_win_streak"] == 1 and ts["max_loss_streak"] == 2)
     ck("best/worst", ts["best"] == 200.0 and ts["worst"] == -80.0)
@@ -547,27 +576,57 @@ def selftest():
     # 空单 entry100，路径 98/101/97 -> MFE3% MAE1%
     mfe2, mae2 = excursion(-1, 100.0, [98, 101, 97])
     ck("空单MFE/MAE", _approx(mfe2, 0.03) and _approx(mae2, 0.01))
-    ms = mae_mfe_summary([{"mfe": 0.03, "mae": 0.01, "win": True},
-                          {"mfe": 0.02, "mae": 0.04, "win": False}])
-    ck("MFE/MAE汇总", ms["n"] == 2 and _approx(ms["avg_mfe"], 0.025)
-       and _approx(ms["avg_mae_win"], 0.01) and _approx(ms["avg_mfe_loss"], 0.02))
+    ms = mae_mfe_summary(
+        [{"mfe": 0.03, "mae": 0.01, "win": True}, {"mfe": 0.02, "mae": 0.04, "win": False}]
+    )
+    ck(
+        "MFE/MAE汇总",
+        ms["n"] == 2
+        and _approx(ms["avg_mfe"], 0.025)
+        and _approx(ms["avg_mae_win"], 0.01)
+        and _approx(ms["avg_mfe_loss"], 0.02),
+    )
 
     # —— 样本不足安全：全部返回 None / 空结构，绝不抛 ——
-    ck("空序列安全", cumulative_return([]) is None and sharpe_ratio([]) is None
-       and max_drawdown([]) is None and calmar_ratio([]) is None
-       and omega_ratio([]) is None and ulcer_index([]) is None
-       and value_at_risk([0.01]) is None and trade_stats([]) is None
-       and mae_mfe_summary([]) is None and monthly_returns([], []) is None)
+    ck(
+        "空序列安全",
+        cumulative_return([]) is None
+        and sharpe_ratio([]) is None
+        and max_drawdown([]) is None
+        and calmar_ratio([]) is None
+        and omega_ratio([]) is None
+        and ulcer_index([]) is None
+        and value_at_risk([0.01]) is None
+        and trade_stats([]) is None
+        and mae_mfe_summary([]) is None
+        and monthly_returns([], []) is None,
+    )
     ck("脏值过滤", _approx(mean_return([0.01, None, "x", float("nan"), 0.03]), 0.02))
     # 常量收益（零波动）：夏普/索提诺给 0 而非除零，Calmar 无回撤给 None
-    ck("零波动", sharpe_ratio([0.01, 0.01, 0.01]) == 0.0
-       and sortino_ratio([0.01, 0.01, 0.01]) == 0.0
-       and calmar_ratio([0.01, 0.01, 0.01]) is None)
+    ck(
+        "零波动",
+        sharpe_ratio([0.01, 0.01, 0.01]) == 0.0
+        and sortino_ratio([0.01, 0.01, 0.01]) == 0.0
+        and calmar_ratio([0.01, 0.01, 0.01]) is None,
+    )
 
     # —— tear_sheet 一键聚合，键齐全、子项独立降级 ——
     sheet = tear_sheet(rs, dates=["2026-01-%02d" % (i + 1) for i in range(5)])
-    for key in ("n", "cumulative", "sharpe", "sortino", "calmar", "omega", "ulcer",
-                "max_drawdown", "var", "cvar", "drawdown", "rolling_sharpe", "monthly"):
+    for key in (
+        "n",
+        "cumulative",
+        "sharpe",
+        "sortino",
+        "calmar",
+        "omega",
+        "ulcer",
+        "max_drawdown",
+        "var",
+        "cvar",
+        "drawdown",
+        "rolling_sharpe",
+        "monthly",
+    ):
         ck("tear含" + key, key in sheet)
     ck("tear drawdown等长", len(sheet["drawdown"]) == 5)
     empty_sheet = tear_sheet([])

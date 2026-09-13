@@ -1,19 +1,19 @@
-# -*- coding: utf-8 -*-
 """第94轮 A4/A5/A6 http_client 测试：每源会话+cookie 持久化 / 限流退避 / dev 缓存重放。
 全零网络（只调模块内部纯逻辑与缓存读写，不真正发请求）。"""
-import os
+
 import time
 
-import http_client
 import requests
+
+import http_client
 
 
 def test_get_session_per_source():
     s1 = http_client.get_session("src_a")
     s2 = http_client.get_session("src_a")
     s3 = http_client.get_session("src_b")
-    assert s1 is s2                      # 同源复用
-    assert s1 is not s3                  # 异源隔离
+    assert s1 is s2  # 同源复用
+    assert s1 is not s3  # 异源隔离
     assert http_client.get_session(None) is http_client.SESSION
     assert http_client.get_session("__global__") is http_client.SESSION
 
@@ -27,6 +27,7 @@ def test_cookie_persist_roundtrip(tmp_path, monkeypatch):
     assert (tmp_path / "cookies.json").exists()
     # 新进程视角：另一个源会话读取持久化文件内容正确
     import json
+
     store = json.load(open(tmp_path / "cookies.json", encoding="utf-8"))
     assert store["src_cookie"]["PHPSESSID"] == "abc123"
 
@@ -54,9 +55,9 @@ def test_throttle_decision_and_record(monkeypatch):
 def test_retry_after_honored(monkeypatch):
     monkeypatch.setattr(http_client, "THROTTLE_DISABLED", False)
     t0 = time.monotonic()
-    http_client._record_result("h.ra", 200, "45", t0)   # 200 但带 Retry-After
+    http_client._record_result("h.ra", 200, "45", t0)  # 200 但带 Retry-After
     blocked, wait = http_client._throttle_decision("h.ra", t0 + 1)
-    assert blocked and 35 <= wait <= 55   # 含±10%抖动
+    assert blocked and 35 <= wait <= 55  # 含±10%抖动
 
 
 def test_synthetic_503_not_hitting_network(monkeypatch):
@@ -75,7 +76,7 @@ def test_dev_cache_replay(tmp_path, monkeypatch):
     resp.status_code = 200
     resp.url = "https://x.test/api"
     resp.encoding = "utf-8"
-    resp._content = '{"ok": 1}'.encode("utf-8")
+    resp._content = b'{"ok": 1}'
     resp.headers = {"Content-Type": "application/json"}
     http_client._dev_store("GET", resp.url, "src_x", resp)
     # 重放：同键命中且内容一致
@@ -90,6 +91,7 @@ def test_dev_cache_replay(tmp_path, monkeypatch):
 
 # ---------------- B7（第126轮）：TLS 指纹伪装通道 ----------------
 
+
 def test_curl_session_fallback_when_lib_missing(monkeypatch):
     # curl_cffi 缺失（置 None 模拟）→ _curl_session 返回 None，调用方回退普通 requests
     monkeypatch.setattr(http_client, "_curl_requests", None)
@@ -98,9 +100,9 @@ def test_curl_session_fallback_when_lib_missing(monkeypatch):
 
 def test_curl_session_per_source_and_impersonate_cached():
     if http_client._curl_requests is None:
-        return                                    # 环境无 curl_cffi 时静默跳过
+        return  # 环境无 curl_cffi 时静默跳过
     s1 = http_client._curl_session("src_c2", "chrome")
     s2 = http_client._curl_session("src_c2", "chrome")
     s3 = http_client._curl_session("src_c3", "chrome")
-    assert s1 is s2 and s1 is not s3              # 同键复用、异键隔离
+    assert s1 is s2 and s1 is not s3  # 同键复用、异键隔离
     assert http_client._curl_session("src_c2", "firefox") is not s1

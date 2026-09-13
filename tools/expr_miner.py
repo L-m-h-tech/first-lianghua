@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第72-73轮 G25续：表达式因子自动挖掘 expr_miner——研究侧、红线门控。
 
 按总纲第16条红线：自动挖掘最多在 tools 研究侧产出候选，任何因子仍须人工复核并通过
@@ -22,6 +21,7 @@ G23/G29 的双样本与因子体检，且受 G13/G16 门控，禁止端到端自
 用法（项目根目录）：
   D:\\Python\\python.exe tools\\expr_miner.py [--db cache/research_panel.db] [--limit N] [--selftest]
 """
+
 import argparse
 import json
 import math
@@ -34,27 +34,31 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-import factor_expr as fe          # noqa: E402 白名单DSL引擎
-import panel_builder as pb        # noqa: E402 G21面板回读
+import panel_builder as pb  # noqa: E402
+
+import factor_expr as fe  # noqa: E402
 
 HORIZONS = (1, 5, 20)
 DEFAULT_DB = ROOT / "cache" / "research_panel.db"
 DEFAULT_TXT = ROOT / "reports" / "expr_miner.txt"
 DEFAULT_JSON = ROOT / "reports" / "expr_miner.json"
-MIN_FINITE = 30            # 单品种最少有限配对点才计入逐品种IC均值
-IC_FLOOR = 0.05            # |meanIC| 上榜门槛：达到才值得人工复核（不自动上线）
-MIN_CS = 10                # 逐日截面IC：当日截面最少有限品种数
+MIN_FINITE = 30  # 单品种最少有限配对点才计入逐品种IC均值
+IC_FLOOR = 0.05  # |meanIC| 上榜门槛：达到才值得人工复核（不自动上线）
+MIN_CS = 10  # 逐日截面IC：当日截面最少有限品种数
 WINDOWS = (5, 10, 20, 60)
 
 
 # =========================== 输入装配（同 expr_research 口径） ===========================
 def series_from_rows(rows):
     """面板列直读：close/volume/oi/high/low/open 与 expr_research 完全一致（缺键回退，合成夹具友好）。"""
-    return {"close": [r["c"] for r in rows], "volume": [r.get("v") for r in rows],
-            "high": [r.get("h", r["c"]) for r in rows],
-            "low": [r.get("l", r["c"]) for r in rows],
-            "oi": [r.get("oi", 0.0) for r in rows],
-            "open": [r.get("o", r["c"]) for r in rows]}
+    return {
+        "close": [r["c"] for r in rows],
+        "volume": [r.get("v") for r in rows],
+        "high": [r.get("h", r["c"]) for r in rows],
+        "low": [r.get("l", r["c"]) for r in rows],
+        "oi": [r.get("oi", 0.0) for r in rows],
+        "open": [r.get("o", r["c"]) for r in rows],
+    }
 
 
 def forward_return(close, t, h):
@@ -110,14 +114,17 @@ def cs_summary(day_ics):
     xs = [ic for _, ic, _ in day_ics]
     n = len(xs)
     if n == 0:
-        return {"mean_ic": None, "icir": None, "t_stat": None,
-                "pct_positive": None, "n_days": 0}
+        return {"mean_ic": None, "icir": None, "t_stat": None, "pct_positive": None, "n_days": 0}
     mean = sum(xs) / n
     var = sum((v - mean) ** 2 for v in xs) / (n - 1) if n > 1 else 0.0
     sd = math.sqrt(var)
-    return {"mean_ic": mean, "icir": (mean / sd if sd > 1e-15 else 0.0),
-            "t_stat": (mean / sd * math.sqrt(n) if sd > 1e-15 else 0.0),
-            "pct_positive": sum(1 for v in xs if v > 0) / n, "n_days": n}
+    return {
+        "mean_ic": mean,
+        "icir": (mean / sd if sd > 1e-15 else 0.0),
+        "t_stat": (mean / sd * math.sqrt(n) if sd > 1e-15 else 0.0),
+        "pct_positive": sum(1 for v in xs if v > 0) / n,
+        "n_days": n,
+    }
 
 
 # =========================== 候选生成（确定性穷举，白名单DSL） ===========================
@@ -125,75 +132,165 @@ def candidate_pool():
     """生成确定性候选表达式列表（带 key/方向/名称/说明）。全部只用白名单算子+字段，
     时序上下文逐品种计算（不混截面算子——截面体检由 expr_research/组合层另行覆盖）。"""
     cands = []
+
     def add(key, expr, direction, name, note):
-        cands.append({"key": key, "expr": expr, "direction": direction,
-                      "name": name, "note": note})
+        cands.append({"key": key, "expr": expr, "direction": direction, "name": name, "note": note})
+
     # --- 基础派生量（归一化，量纲无关）---
     for n in WINDOWS:
-        add("mom_%d" % n, "close/delay(close,%d)-1" % n, +1,
-            "%d日动量" % n, "前n日收益率（与 expr_ret 同源，表达式版）")
+        add(
+            "mom_%d" % n,
+            "close/delay(close,%d)-1" % n,
+            +1,
+            "%d日动量" % n,
+            "前n日收益率（与 expr_ret 同源，表达式版）",
+        )
     for n in WINDOWS:
-        add("vol_chg_%d" % n, "volume/delay(volume,%d)-1" % n, +1,
-            "%d日成交量变化率" % n, "量能扩张/收缩")
+        add(
+            "vol_chg_%d" % n,
+            "volume/delay(volume,%d)-1" % n,
+            +1,
+            "%d日成交量变化率" % n,
+            "量能扩张/收缩",
+        )
     for n in WINDOWS:
-        add("oi_chg_%d" % n, "oi/delay(oi,%d)-1" % n, +1,
-            "%d日持仓量变化率" % n, "持仓增减代理")
+        add("oi_chg_%d" % n, "oi/delay(oi,%d)-1" % n, +1, "%d日持仓量变化率" % n, "持仓增减代理")
     for n in (5, 10, 20):
-        add("ma_ratio_%d_20" % n, "ts_mean(close,%d)/ts_mean(close,20)-1" % n, +1,
-            "%d/20日均线比" % n, "短长均线强度")
+        add(
+            "ma_ratio_%d_20" % n,
+            "ts_mean(close,%d)/ts_mean(close,20)-1" % n,
+            +1,
+            "%d/20日均线比" % n,
+            "短长均线强度",
+        )
     # 波动/风险调整动量
     for n in (20, 60):
-        add("trend_per_vol_%d" % n,
-            "(close/ts_mean(close,%d)-1)/(ts_std(close,%d)+0.000001)" % (n, n), +1,
-            "单位波动趋势%d" % n, "趋势/波动，风险调整动量")
+        add(
+            "trend_per_vol_%d" % n,
+            "(close/ts_mean(close,%d)-1)/(ts_std(close,%d)+0.000001)" % (n, n),
+            +1,
+            "单位波动趋势%d" % n,
+            "趋势/波动，风险调整动量",
+        )
     # 量仓组合
     add("vol_oi_ratio", "volume/(oi+1)", 0, "量仓比", "换手活跃度代理")
-    add("vol_oi_chg_ratio", "volume/delay(volume,5)/(oi/delay(oi,5)+1)", +1,
-        "量仓变化比", "量增仓增相对强度")
+    add(
+        "vol_oi_chg_ratio",
+        "volume/delay(volume,5)/(oi/delay(oi,5)+1)",
+        +1,
+        "量仓变化比",
+        "量增仓增相对强度",
+    )
     add("price_oi_corr20", "corr(close,oi,20)", 0, "价仓相关20", "量价配合诊断")
     # 量价配合
     for n in (5, 20):
-        add("vol_price_corr_%d" % n, "corr(volume,close,%d)" % n, 0,
-            "量价相关%d" % n, "量价同步/背离")
+        add(
+            "vol_price_corr_%d" % n,
+            "corr(volume,close,%d)" % n,
+            0,
+            "量价相关%d" % n,
+            "量价同步/背离",
+        )
     # 时序标准化（尾窗 z-score 形态，量纲统一）
     for n in (20, 60):
-        add("mom_z_%d" % n,
+        add(
+            "mom_z_%d" % n,
             "(close/delay(close,%d)-1-ts_mean(close/delay(close,1)-1,%d))/(ts_std(close/delay(close,1)-1,%d)+0.000001)"
-            % (n, n, n), +1, "%d日动量z" % n, "动量减去自身窗均值再除自身窗std（时序z，跨品种可比）")
+            % (n, n, n),
+            +1,
+            "%d日动量z" % n,
+            "动量减去自身窗均值再除自身窗std（时序z，跨品种可比）",
+        )
     # 高阶/非线性（白名单内）
-    add("ret_sq_20", "sign(delta(close,1))*abs(delta(close,1)/delay(close,1))", 0,
-        "日收益符号强度", "sign*|收益| 的方向强度代理")
+    add(
+        "ret_sq_20",
+        "sign(delta(close,1))*abs(delta(close,1)/delay(close,1))",
+        0,
+        "日收益符号强度",
+        "sign*|收益| 的方向强度代理",
+    )
     add("range_pos_20", "ts_minmax(close,20)", 0, "20日区间位置", "收盘在20日高低区间的位置")
     add("vol_surge_5", "volume/ts_mean(volume,20)", 0, "量能突增5", "当日量/20日均量（放量）")
     add("oi_surge_5", "oi/ts_mean(oi,20)", 0, "持仓突增5", "当日持仓/20日均持仓")
-    add("ret_vol_ratio_20", "ts_mean(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,20)+0.000001)",
-        +1, "20日收益波动比", "均值/波动，风险调整动量")
+    add(
+        "ret_vol_ratio_20",
+        "ts_mean(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,20)+0.000001)",
+        +1,
+        "20日收益波动比",
+        "均值/波动，风险调整动量",
+    )
     # --- 第81轮：偏度族（ts_skew 白名单新算子，收益分布不对称性）---
     for n in (20, 60):
-        add("ret_skew_%d" % n, "ts_skew(close/delay(close,1)-1,%d)" % n, 0,
-            "%d日收益偏度" % n, "尾窗收益标准化三阶矩（g1）；负偏=左尾更肥（崩尾风险代理）")
+        add(
+            "ret_skew_%d" % n,
+            "ts_skew(close/delay(close,1)-1,%d)" % n,
+            0,
+            "%d日收益偏度" % n,
+            "尾窗收益标准化三阶矩（g1）；负偏=左尾更肥（崩尾风险代理）",
+        )
     # --- 第74轮扩容：振幅/影线/K线结构/涨跌天数/Amihud/波动结构/跳期动量（仍全白名单、量纲无关） ---
     for n in (5, 20):
-        add("range_pct_%d" % n, "ts_mean((high-low)/close,%d)" % n, 0,
-            "%d日均振幅" % n, "日内振幅均值（波动/情绪代理）")
+        add(
+            "range_pct_%d" % n,
+            "ts_mean((high-low)/close,%d)" % n,
+            0,
+            "%d日均振幅" % n,
+            "日内振幅均值（波动/情绪代理）",
+        )
     add("range_pos_60", "ts_minmax(close,60)", 0, "60日区间位置", "收盘在60日高低区间的位置")
-    add("upper_shadow", "(high-max(open,close))/(close+1)", 0, "上影线占比", "上影/(收盘)——冲高回落强度")
+    add(
+        "upper_shadow",
+        "(high-max(open,close))/(close+1)",
+        0,
+        "上影线占比",
+        "上影/(收盘)——冲高回落强度",
+    )
     add("body_ratio", "(close-open)/(high-low+0.000001)", 0, "K线实体占比", "实体/振幅——方向坚定度")
     for n in (5, 20):
-        add("updays_%d" % n, "ts_sum(sign(close/delay(close,1)-1),%d)/%d" % (n, n), 0,
-            "%d日净上行占比" % n, "上涨天数占比（sign 净和/窗宽，[-1,1]）")
-    add("amihud_20", "ts_mean(abs(close/delay(close,1)-1)/(close*volume+1),20)", 0,
-        "Amihud非流动性20", "|收益|/成交额代理（close×volume），每单位成交额的价格冲击")
-    add("vol_ratio_20_60", "ts_std(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,60)+0.000001)",
-        0, "短长波动比20/60", "波动短期扩张/收缩")
-    add("vol_oi_div", "volume/delay(volume,1)/(abs(oi/delay(oi,1)-1)+0.000001)", 0,
-        "量/持仓变动", "每单位持仓变动的成交量（换手冲击）")
-    add("oi_trend_5_20", "ts_mean(oi,5)/ts_mean(oi,20)-1", +1, "持仓短长均线比", "持仓5/20日均线比（增仓/减仓趋势）")
+        add(
+            "updays_%d" % n,
+            "ts_sum(sign(close/delay(close,1)-1),%d)/%d" % (n, n),
+            0,
+            "%d日净上行占比" % n,
+            "上涨天数占比（sign 净和/窗宽，[-1,1]）",
+        )
+    add(
+        "amihud_20",
+        "ts_mean(abs(close/delay(close,1)-1)/(close*volume+1),20)",
+        0,
+        "Amihud非流动性20",
+        "|收益|/成交额代理（close×volume），每单位成交额的价格冲击",
+    )
+    add(
+        "vol_ratio_20_60",
+        "ts_std(close/delay(close,1)-1,20)/(ts_std(close/delay(close,1)-1,60)+0.000001)",
+        0,
+        "短长波动比20/60",
+        "波动短期扩张/收缩",
+    )
+    add(
+        "vol_oi_div",
+        "volume/delay(volume,1)/(abs(oi/delay(oi,1)-1)+0.000001)",
+        0,
+        "量/持仓变动",
+        "每单位持仓变动的成交量（换手冲击）",
+    )
+    add(
+        "oi_trend_5_20",
+        "ts_mean(oi,5)/ts_mean(oi,20)-1",
+        +1,
+        "持仓短长均线比",
+        "持仓5/20日均线比（增仓/减仓趋势）",
+    )
     add("corr_oi_vol_20", "corr(oi,volume,20)", 0, "量仓相关20", "持仓与成交量的20日相关")
-    for (n, m) in ((12, 1), (36, 1)):
-        add("mom_skip_%d_%d" % (n, m),
-            "(close/delay(close,%d))/(close/delay(close,%d))-1" % (n, m), +1,
-            "%d-%d日跳期动量" % (n, m), "剔除近%d日的n日动量（学术 skip-momentum，规避短期反转污染）" % m)
+    for n, m in ((12, 1), (36, 1)):
+        add(
+            "mom_skip_%d_%d" % (n, m),
+            "(close/delay(close,%d))/(close/delay(close,%d))-1" % (n, m),
+            +1,
+            "%d-%d日跳期动量" % (n, m),
+            "剔除近%d日的n日动量（学术 skip-momentum，规避短期反转污染）" % m,
+        )
     return cands
 
 
@@ -241,20 +338,30 @@ def run(db_path=None, txt_path=None, json_path=None, limit=None, verbose=True):
         series_cache[sym] = series_from_rows(rows)
         dates_cache[sym] = [r.get("date") for r in rows]
         close = series_cache[sym]["close"]
-        fwd_cache[sym] = {h: {dates_cache[sym][t]: forward_return(close, t, h)
-                              for t in range(len(close))} for h in HORIZONS}
+        fwd_cache[sym] = {
+            h: {dates_cache[sym][t]: forward_return(close, t, h) for t in range(len(close))}
+            for h in HORIZONS
+        }
     # 逐候选体检（每品种因子序列只算一次，三档 H 共用；同时落逐日截面层）
     results = []
     for c in cands:
-        rec = {"key": c["key"], "expr": c["expr"], "direction": c["direction"],
-               "name": c["name"], "note": c["note"], "h": {}, "cs": {}}
+        rec = {
+            "key": c["key"],
+            "expr": c["expr"],
+            "direction": c["direction"],
+            "name": c["name"],
+            "note": c["note"],
+            "h": {},
+            "cs": {},
+        }
         per = {h: {"ics": [], "n_pair": 0, "pooled_x": [], "pooled_y": []} for h in HORIZONS}
         fac_by_sym_date = {}
         for sym, series in series_cache.items():
             close = series["close"]
             fac = fe.compute_ts(c["expr"], series)
-            fac_by_sym_date[sym] = {dates_cache[sym][t]: v for t, v in enumerate(fac)
-                                    if fe._isnum(v)}
+            fac_by_sym_date[sym] = {
+                dates_cache[sym][t]: v for t, v in enumerate(fac) if fe._isnum(v)
+            }
             for h in HORIZONS:
                 xs, ys = aligned_pairs(fac, close, h)
                 if len(xs) >= MIN_FINITE:
@@ -266,32 +373,55 @@ def run(db_path=None, txt_path=None, json_path=None, limit=None, verbose=True):
                 per[h]["pooled_y"].extend(ys)
         for h in HORIZONS:
             ics = per[h]["ics"]
-            pooled = fe.spearman(per[h]["pooled_x"], per[h]["pooled_y"]) if per[h]["pooled_x"] else None
+            pooled = (
+                fe.spearman(per[h]["pooled_x"], per[h]["pooled_y"]) if per[h]["pooled_x"] else None
+            )
             rec["h"][h] = {
-                "mean_ic": _mean(ics), "n_sym": len(ics), "n_pair": per[h]["n_pair"],
-                "pooled_ic": pooled}
-            rec["cs"][h] = cs_summary(cross_section_ics(
-                fac_by_sym_date, {s: fwd_cache[s][h] for s in series_cache}, MIN_CS))
+                "mean_ic": _mean(ics),
+                "n_sym": len(ics),
+                "n_pair": per[h]["n_pair"],
+                "pooled_ic": pooled,
+            }
+            rec["cs"][h] = cs_summary(
+                cross_section_ics(
+                    fac_by_sym_date, {s: fwd_cache[s][h] for s in series_cache}, MIN_CS
+                )
+            )
         results.append(rec)
+
     # 汇总：按 H5 的 |meanIC| 降序（参考），但报告保留全部；上榜候选动态判定
     def key_h(r, h):
         return abs(r["h"][h]["mean_ic"]) if fe._isnum(r["h"][h]["mean_ic"]) else 0.0
+
     ranked = sorted(results, key=lambda r: key_h(r, 5), reverse=True)
     hits = [r["key"] for r in results if _max_abs_ic(r) >= IC_FLOOR]
 
     def _cs_abs(r, h=5):
         mi = r["cs"][h]["mean_ic"]
         return abs(mi) if fe._isnum(mi) else 0.0
-    cs_hits = [r["key"] for r in results
-               if any(fe._isnum(r["cs"][h]["mean_ic"]) and abs(r["cs"][h]["mean_ic"]) >= IC_FLOOR
-                      for h in HORIZONS)]
+
+    cs_hits = [
+        r["key"]
+        for r in results
+        if any(
+            fe._isnum(r["cs"][h]["mean_ic"]) and abs(r["cs"][h]["mean_ic"]) >= IC_FLOOR
+            for h in HORIZONS
+        )
+    ]
     cs_ranked = sorted(results, key=_cs_abs, reverse=True)
-    result = {"n_symbols": len(series_cache), "horizons": list(HORIZONS),
-              "min_finite": MIN_FINITE, "ic_floor": IC_FLOOR, "min_cs": MIN_CS,
-              "n_candidates": len(cands), "candidates": results,
-              "hits_over_floor": hits, "cs_hits_over_floor": cs_hits,
-              "ranked_by_H5_mean_abs_ic": [r["key"] for r in ranked],
-              "cs_ranked_by_H5_mean_abs_ic": [r["key"] for r in cs_ranked]}
+    result = {
+        "n_symbols": len(series_cache),
+        "horizons": list(HORIZONS),
+        "min_finite": MIN_FINITE,
+        "ic_floor": IC_FLOOR,
+        "min_cs": MIN_CS,
+        "n_candidates": len(cands),
+        "candidates": results,
+        "hits_over_floor": hits,
+        "cs_hits_over_floor": cs_hits,
+        "ranked_by_H5_mean_abs_ic": [r["key"] for r in ranked],
+        "cs_ranked_by_H5_mean_abs_ic": [r["key"] for r in cs_ranked],
+    }
     text = render_report(result)
     if verbose:
         print(text)
@@ -303,6 +433,7 @@ def run(db_path=None, txt_path=None, json_path=None, limit=None, verbose=True):
     # 台账旁路
     try:
         import experiment_ledger
+
         top = ranked[0] if ranked else None
         metrics = {}
         if top:
@@ -313,15 +444,22 @@ def run(db_path=None, txt_path=None, json_path=None, limit=None, verbose=True):
         metrics["n_hits_over_floor"] = len(hits)
         metrics["n_cs_hits_over_floor"] = len(cs_hits)
         experiment_ledger.safe_record(
-            "expr_miner", {"n_candidates": len(cands), "horizons": list(HORIZONS),
-                           "min_finite": MIN_FINITE, "ic_floor": IC_FLOOR, "min_cs": MIN_CS},
+            "expr_miner",
+            {
+                "n_candidates": len(cands),
+                "horizons": list(HORIZONS),
+                "min_finite": MIN_FINITE,
+                "ic_floor": IC_FLOOR,
+                "min_cs": MIN_CS,
+            },
             metrics,
             inputs={"panel": db_path, "n_sym": len(series_cache), "n_dates": None},
             artifacts=[txt_path, json_path],
             conclusion="G25续表达式因子自动挖掘：确定性穷举白名单候选%d条+前向RankIC双口径体检"
-                       "（时序/逐日截面），时序上榜%d条、截面上榜%d条，负结果照实，只产出候选不自动上线"
-                       % (len(cands), len(hits), len(cs_hits)),
-            reproduce="D:\\Python\\python.exe tools/expr_miner.py")
+            "（时序/逐日截面），时序上榜%d条、截面上榜%d条，负结果照实，只产出候选不自动上线"
+            % (len(cands), len(hits), len(cs_hits)),
+            reproduce="D:\\Python\\python.exe tools/expr_miner.py",
+        )
     except Exception:
         pass
     return result
@@ -338,7 +476,10 @@ def _fmt_cs(r):
     if not fe._isnum(r["mean_ic"]):
         return "无有效截面样本"
     return "mean%+.3f/t%+.1f/正%.0f%%" % (
-        r["mean_ic"], r["t_stat"] or 0.0, 100.0 * (r["pct_positive"] or 0.0))
+        r["mean_ic"],
+        r["t_stat"] or 0.0,
+        100.0 * (r["pct_positive"] or 0.0),
+    )
 
 
 def _max_abs_cs_ic(rec):
@@ -353,60 +494,102 @@ def _max_abs_cs_ic(rec):
 
 def render_report(result):
     floor = result.get("ic_floor", IC_FLOOR)
-    hits = [r for r in result["candidates"]
-            if any(fe._isnum(r["h"][h]["mean_ic"]) and abs(r["h"][h]["mean_ic"]) >= floor
-                   for h in result["horizons"])]
-    cs_hits = [r for r in result["candidates"]
-               if any(fe._isnum(r.get("cs", {}).get(h, {}).get("mean_ic"))
-                      and abs(r["cs"][h]["mean_ic"]) >= floor
-                      for h in result["horizons"])]
-    L = ["=" * 104,
-         " G25续 表达式因子自动挖掘 expr_miner（研究侧，红线门控：只产出候选+IC体检，不自动上线）  生成于 %s"
-         % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         "=" * 104]
-    L.append("品种数=%d；候选表达式=%d；前向 H=%s；单品种最少有限点=%d；上榜门槛 |meanIC|>=%.2f；截面日最少品种=%d" % (
-        result["n_symbols"], result["n_candidates"], result["horizons"],
-        result["min_finite"], floor, result.get("min_cs", MIN_CS)))
-    L.append("红线门控（总纲第16条）：自动挖掘产物不进 LIBRARY/catalog、不改综合分；候选须人工复核+"
-             "G23/G29 双样本体检+受 G13/G16 门控后方可谈影子。")
+    hits = [
+        r
+        for r in result["candidates"]
+        if any(
+            fe._isnum(r["h"][h]["mean_ic"]) and abs(r["h"][h]["mean_ic"]) >= floor
+            for h in result["horizons"]
+        )
+    ]
+    cs_hits = [
+        r
+        for r in result["candidates"]
+        if any(
+            fe._isnum(r.get("cs", {}).get(h, {}).get("mean_ic"))
+            and abs(r["cs"][h]["mean_ic"]) >= floor
+            for h in result["horizons"]
+        )
+    ]
+    L = [
+        "=" * 104,
+        " G25续 表达式因子自动挖掘 expr_miner（研究侧，红线门控：只产出候选+IC体检，不自动上线）  生成于 %s"
+        % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "=" * 104,
+    ]
+    L.append(
+        "品种数=%d；候选表达式=%d；前向 H=%s；单品种最少有限点=%d；上榜门槛 |meanIC|>=%.2f；截面日最少品种=%d"
+        % (
+            result["n_symbols"],
+            result["n_candidates"],
+            result["horizons"],
+            result["min_finite"],
+            floor,
+            result.get("min_cs", MIN_CS),
+        )
+    )
+    L.append(
+        "红线门控（总纲第16条）：自动挖掘产物不进 LIBRARY/catalog、不改综合分；候选须人工复核+"
+        "G23/G29 双样本体检+受 G13/G16 门控后方可谈影子。"
+    )
     L.append("-" * 104)
-    L.append("[候选表达式 前向 RankIC·两层]（时序行 meanIC=逐品种IC均值/pooledIC=全样本池化；截面行=逐交易日跨品种 RankIC；"
-             "按 H5 |meanIC| 降序全量列出，负结果照实）")
+    L.append(
+        "[候选表达式 前向 RankIC·两层]（时序行 meanIC=逐品种IC均值/pooledIC=全样本池化；截面行=逐交易日跨品种 RankIC；"
+        "按 H5 |meanIC| 降序全量列出，负结果照实）"
+    )
     for r in result["candidates"]:
         cells = [_fmt_ic(r["h"][h]) for h in result["horizons"]]
         L.append("  %-20s %+d  %s" % (r["key"], r["direction"], r["expr"]))
-        L.append("    %-18s H=1 %-24s H=5 %-24s H=20 %-24s" % (r["name"], cells[0], cells[1], cells[2]))
+        L.append(
+            "    %-18s H=1 %-24s H=5 %-24s H=20 %-24s" % (r["name"], cells[0], cells[1], cells[2])
+        )
         if r.get("cs"):
             cs_cells = [_fmt_cs(r["cs"][h]) for h in result["horizons"]]
-            L.append("    %-18s H=1 %-24s H=5 %-24s H=20 %-24s"
-                     % ("截面IC(逐日)", cs_cells[0], cs_cells[1], cs_cells[2]))
+            L.append(
+                "    %-18s H=1 %-24s H=5 %-24s H=20 %-24s"
+                % ("截面IC(逐日)", cs_cells[0], cs_cells[1], cs_cells[2])
+            )
     L.append("-" * 104)
     if hits:
         L.append("[时序上榜 |meanIC|>=%.2f]（由数据动态判定，仅供人工复核，不自动上线）" % floor)
         for r in sorted(hits, key=lambda r: _max_abs_ic(r), reverse=True):
-            cells = ", ".join("H%d mean%+.3f" % (h, r["h"][h]["mean_ic"])
-                              if fe._isnum(r["h"][h]["mean_ic"]) else "H%d 无样本" % h
-                              for h in result["horizons"])
+            cells = ", ".join(
+                "H%d mean%+.3f" % (h, r["h"][h]["mean_ic"])
+                if fe._isnum(r["h"][h]["mean_ic"])
+                else "H%d 无样本" % h
+                for h in result["horizons"]
+            )
             L.append("  %-20s %-18s %s" % (r["key"], r["name"], cells))
     else:
         L.append("[时序上榜 |meanIC|>=%.2f]  无（负结果照实：当前候选池无一达到上榜门槛）" % floor)
     if cs_hits:
-        L.append("[截面上榜 |逐日截面meanIC|>=%.2f]（跨品种排序口径，仅供人工复核，不自动上线）" % floor)
+        L.append(
+            "[截面上榜 |逐日截面meanIC|>=%.2f]（跨品种排序口径，仅供人工复核，不自动上线）" % floor
+        )
         for r in sorted(cs_hits, key=lambda r: _max_abs_cs_ic(r), reverse=True):
-            cells = ", ".join("H%d mean%+.3f/t%+.1f" % (h, r["cs"][h]["mean_ic"], r["cs"][h]["t_stat"] or 0.0)
-                              if fe._isnum(r["cs"][h]["mean_ic"]) else "H%d 无有效样本" % h
-                              for h in result["horizons"])
+            cells = ", ".join(
+                "H%d mean%+.3f/t%+.1f" % (h, r["cs"][h]["mean_ic"], r["cs"][h]["t_stat"] or 0.0)
+                if fe._isnum(r["cs"][h]["mean_ic"])
+                else "H%d 无有效样本" % h
+                for h in result["horizons"]
+            )
             L.append("  %-20s %-18s %s" % (r["key"], r["name"], cells))
     else:
         L.append("[截面上榜 |meanIC|>=%.2f]  无（负结果照实：当前候选池无一达到上榜门槛）" % floor)
     L.append("-" * 104)
     L.append("[诚实结论]")
-    L.append("  自动挖掘只是把白名单算子+字段的确定性组合全部体检一遍；|meanIC|<%.2f 视为无稳定预测力，"
-             "上榜与否由本次数据动态判定（见上节）。" % floor)
-    L.append("  注：cross_rank/scale 等截面单调变换不改变截面 Spearman（秩不变），故截面体检直接覆盖"
-             "全部候选，无需单列 cross_rank 版候选表达式。")
-    L.append("  候选如需进一步研究，须人工复核表达式含义+G29 因子体检+G23 双样本，且默认不进分；"
-             "本工具永不写 LIBRARY/catalog、不被 main import。")
+    L.append(
+        "  自动挖掘只是把白名单算子+字段的确定性组合全部体检一遍；|meanIC|<%.2f 视为无稳定预测力，"
+        "上榜与否由本次数据动态判定（见上节）。" % floor
+    )
+    L.append(
+        "  注：cross_rank/scale 等截面单调变换不改变截面 Spearman（秩不变），故截面体检直接覆盖"
+        "全部候选，无需单列 cross_rank 版候选表达式。"
+    )
+    L.append(
+        "  候选如需进一步研究，须人工复核表达式含义+G29 因子体检+G23 双样本，且默认不进分；"
+        "本工具永不写 LIBRARY/catalog、不被 main import。"
+    )
     L.append("=" * 104)
     return "\n".join(L)
 
@@ -415,24 +598,30 @@ def render_report(result):
 def _synth_series(n=200, seed=1):
     """构造一个含确定信号的合成品种：y 与 lag1 收益强相关（可被挖掘出）。"""
     import random
+
     rng = random.Random(seed)
     xs = []
     px = 100.0
     for i in range(n):
         shock = rng.gauss(0, 1) * 0.02
-        px *= (1 + shock)
+        px *= 1 + shock
         xs.append(px)
     vol = [1000.0 + i for i in range(n)]
     oi = [500.0 + i * 0.5 for i in range(n)]
-    return {"close": xs, "volume": vol, "high": [v * 1.01 for v in xs],
-            "low": [v * 0.99 for v in xs], "oi": oi,
-            "open": [xs[0]] + xs[:-1]}   # 合成口径：开盘=前收
+    return {
+        "close": xs,
+        "volume": vol,
+        "high": [v * 1.01 for v in xs],
+        "low": [v * 0.99 for v in xs],
+        "oi": oi,
+        "open": [xs[0]] + xs[:-1],
+    }  # 合成口径：开盘=前收
 
 
 def selftest():
     # 1) 候选池全部可编译、可求值（白名单 DSL 有效）
     pool = candidate_pool()
-    assert len(pool) >= 40, len(pool)      # 第74轮扩容后 ≥43 条
+    assert len(pool) >= 40, len(pool)  # 第74轮扩容后 ≥43 条
     s = _synth_series()
     for c in pool:
         fac = fe.compute_ts(c["expr"], s)
@@ -445,31 +634,69 @@ def selftest():
     mom = evaluate_candidate("close/delay(close,5)-1", s, close, horizons=(1, 5))
     assert fe._isnum(mom[1][0]) and mom[1][1] > 0
     # 4) run() 合成面板（缺 DB 友好降级路径不需要，此处直接用小合成验证 render 与 JSON 结构）
-    fake = {"n_symbols": 3, "horizons": [1, 5, 20], "min_finite": 30, "ic_floor": 0.05,
-            "n_candidates": 2,
-            "candidates": [{"key": "k1", "expr": "a", "direction": 1, "name": "n1", "note": "",
-                            "h": {1: {"mean_ic": 0.01, "pooled_ic": 0.02, "n_sym": 2, "n_pair": 100},
-                                  5: {"mean_ic": 0.03, "pooled_ic": 0.04, "n_sym": 2, "n_pair": 100},
-                                  20: {"mean_ic": 0.05, "pooled_ic": 0.06, "n_sym": 2, "n_pair": 100}}},
-                           {"key": "k2", "expr": "b", "direction": -1, "name": "n2", "note": "",
-                            "h": {1: {"mean_ic": -0.02, "pooled_ic": -0.03, "n_sym": 2, "n_pair": 100},
-                                  5: {"mean_ic": -0.04, "pooled_ic": -0.05, "n_sym": 2, "n_pair": 100},
-                                  20: {"mean_ic": -0.06, "pooled_ic": -0.07, "n_sym": 2, "n_pair": 100}}}],
-            "ranked_by_H5_mean_abs_ic": ["k2", "k1"]}
+    fake = {
+        "n_symbols": 3,
+        "horizons": [1, 5, 20],
+        "min_finite": 30,
+        "ic_floor": 0.05,
+        "n_candidates": 2,
+        "candidates": [
+            {
+                "key": "k1",
+                "expr": "a",
+                "direction": 1,
+                "name": "n1",
+                "note": "",
+                "h": {
+                    1: {"mean_ic": 0.01, "pooled_ic": 0.02, "n_sym": 2, "n_pair": 100},
+                    5: {"mean_ic": 0.03, "pooled_ic": 0.04, "n_sym": 2, "n_pair": 100},
+                    20: {"mean_ic": 0.05, "pooled_ic": 0.06, "n_sym": 2, "n_pair": 100},
+                },
+            },
+            {
+                "key": "k2",
+                "expr": "b",
+                "direction": -1,
+                "name": "n2",
+                "note": "",
+                "h": {
+                    1: {"mean_ic": -0.02, "pooled_ic": -0.03, "n_sym": 2, "n_pair": 100},
+                    5: {"mean_ic": -0.04, "pooled_ic": -0.05, "n_sym": 2, "n_pair": 100},
+                    20: {"mean_ic": -0.06, "pooled_ic": -0.07, "n_sym": 2, "n_pair": 100},
+                },
+            },
+        ],
+        "ranked_by_H5_mean_abs_ic": ["k2", "k1"],
+    }
     text = render_report(fake)
     assert "红线门控" in text and "诚实结论" in text and "k2" in text
     # 5) 排序：按 H5 |meanIC| 降序（k2 abs 0.04 > k1 0.03）
     assert fake["ranked_by_H5_mean_abs_ic"][0] == "k2"
     # 6) 上榜结论由数据动态判定：达标候选必须列名、无达标必须明说"无"
-    text_hit = render_report(fake)          # k1 H20 |0.05|>=0.05、k2 全档达标 → 有上榜
-    assert "时序上榜" in text_hit and "k2" in text_hit.split("[时序上榜")[1].split("-"*104)[0]
-    fake_no = {"n_symbols": 1, "horizons": [1, 5, 20], "min_finite": 30, "ic_floor": 0.05,
-               "n_candidates": 1,
-               "candidates": [{"key": "weak", "expr": "a", "direction": 1, "name": "w", "note": "",
-                               "h": {1: {"mean_ic": 0.01, "pooled_ic": 0.01, "n_sym": 1, "n_pair": 50},
-                                     5: {"mean_ic": 0.02, "pooled_ic": 0.02, "n_sym": 1, "n_pair": 50},
-                                     20: {"mean_ic": -0.03, "pooled_ic": -0.03, "n_sym": 1, "n_pair": 50}}}],
-               "ranked_by_H5_mean_abs_ic": ["weak"]}
+    text_hit = render_report(fake)  # k1 H20 |0.05|>=0.05、k2 全档达标 → 有上榜
+    assert "时序上榜" in text_hit and "k2" in text_hit.split("[时序上榜")[1].split("-" * 104)[0]
+    fake_no = {
+        "n_symbols": 1,
+        "horizons": [1, 5, 20],
+        "min_finite": 30,
+        "ic_floor": 0.05,
+        "n_candidates": 1,
+        "candidates": [
+            {
+                "key": "weak",
+                "expr": "a",
+                "direction": 1,
+                "name": "w",
+                "note": "",
+                "h": {
+                    1: {"mean_ic": 0.01, "pooled_ic": 0.01, "n_sym": 1, "n_pair": 50},
+                    5: {"mean_ic": 0.02, "pooled_ic": 0.02, "n_sym": 1, "n_pair": 50},
+                    20: {"mean_ic": -0.03, "pooled_ic": -0.03, "n_sym": 1, "n_pair": 50},
+                },
+            }
+        ],
+        "ranked_by_H5_mean_abs_ic": ["weak"],
+    }
     text_none = render_report(fake_no)
     assert "无一达到上榜门槛" in text_none
     # 7) _max_abs_ic：None 记 0，取各档最大绝对值
@@ -477,8 +704,8 @@ def selftest():
     assert _max_abs_ic({"h": {h: {"mean_ic": None} for h in HORIZONS}}) == 0.0
     # 8) 逐日截面IC（纯函数）：A 每日跑赢 B 的双品种合成 → 截面IC 恒为 +1
     n8 = 40
-    ca = [100.0 * (1.01 ** i) for i in range(n8)]
-    cb = [100.0 * (1.001 ** i) for i in range(n8)]
+    ca = [100.0 * (1.01**i) for i in range(n8)]
+    cb = [100.0 * (1.001**i) for i in range(n8)]
     dates8 = ["d%02d" % i for i in range(n8)]
     fac_bd = {"A": {d: 1.0 for d in dates8}, "B": {d: -1.0 for d in dates8}}
     fwd_bd = {"A": {}, "B": {}}
@@ -500,22 +727,57 @@ def selftest():
     var10 = sum((v - m10) ** 2 for v in vals) / (len(vals) - 1)
     assert abs(s10["mean_ic"] - m10) < 1e-12
     assert abs(s10["t_stat"] - m10 / math.sqrt(var10) * math.sqrt(len(vals))) < 1e-12
-    fake_cs = {"n_symbols": 1, "horizons": [1, 5, 20], "min_finite": 30, "ic_floor": 0.05,
-               "min_cs": 10, "n_candidates": 1,
-               "candidates": [{"key": "cs1", "expr": "a", "direction": 1, "name": "c", "note": "",
-                               "h": {h: {"mean_ic": 0.01, "pooled_ic": 0.01, "n_sym": 1, "n_pair": 50}
-                                     for h in HORIZONS},
-                               "cs": {1: {"mean_ic": 0.20, "icir": 1.5, "t_stat": 3.0,
-                                          "pct_positive": 0.6, "n_days": 40},
-                                      5: {"mean_ic": 0.30, "icir": 2.0, "t_stat": 4.0,
-                                          "pct_positive": 0.7, "n_days": 40},
-                                      20: {"mean_ic": 0.10, "icir": 0.8, "t_stat": 1.6,
-                                           "pct_positive": 0.55, "n_days": 40}}}],
-               "ranked_by_H5_mean_abs_ic": ["cs1"]}
+    fake_cs = {
+        "n_symbols": 1,
+        "horizons": [1, 5, 20],
+        "min_finite": 30,
+        "ic_floor": 0.05,
+        "min_cs": 10,
+        "n_candidates": 1,
+        "candidates": [
+            {
+                "key": "cs1",
+                "expr": "a",
+                "direction": 1,
+                "name": "c",
+                "note": "",
+                "h": {
+                    h: {"mean_ic": 0.01, "pooled_ic": 0.01, "n_sym": 1, "n_pair": 50}
+                    for h in HORIZONS
+                },
+                "cs": {
+                    1: {
+                        "mean_ic": 0.20,
+                        "icir": 1.5,
+                        "t_stat": 3.0,
+                        "pct_positive": 0.6,
+                        "n_days": 40,
+                    },
+                    5: {
+                        "mean_ic": 0.30,
+                        "icir": 2.0,
+                        "t_stat": 4.0,
+                        "pct_positive": 0.7,
+                        "n_days": 40,
+                    },
+                    20: {
+                        "mean_ic": 0.10,
+                        "icir": 0.8,
+                        "t_stat": 1.6,
+                        "pct_positive": 0.55,
+                        "n_days": 40,
+                    },
+                },
+            }
+        ],
+        "ranked_by_H5_mean_abs_ic": ["cs1"],
+    }
     text_cs = render_report(fake_cs)
     assert "截面IC(逐日)" in text_cs and "截面上榜" in text_cs and "cs1" in text_cs
-    print("expr_miner selftest ALL PASS（候选池全编译/前向IC严格未来/单因子手算/报告结构/排序/"
-          "上榜动态判定/max_abs_ic/截面IC手算/截面零方差/截面t与渲染 共10组）")
+    print(
+        "expr_miner selftest ALL PASS（候选池全编译/前向IC严格未来/单因子手算/报告结构/排序/"
+        "上榜动态判定/max_abs_ic/截面IC手算/截面零方差/截面t与渲染 共10组）"
+    )
     return 0
 
 

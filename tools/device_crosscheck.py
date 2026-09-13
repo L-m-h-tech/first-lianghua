@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""装置行情交叉校验 tools/device_crosscheck.py（研究侧，不进综合分）。
 
 数据来源对比：
@@ -14,6 +13,7 @@ r"""装置行情交叉校验 tools/device_crosscheck.py（研究侧，不进综�
 
 CLI：python tools/device_crosscheck.py | --selftest（零网络合成）
 """
+
 import argparse
 import json
 import os
@@ -27,12 +27,12 @@ for _p in (_ROOT, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import config                     # noqa: E402
+import config  # noqa: E402
 
 DB_PATH = os.path.join(config.DATA_DIR, "monitor.db")
 TXT = os.path.join(_ROOT, "reports", "device_crosscheck.txt")
 JSON = os.path.join(_ROOT, "reports", "device_crosscheck.json")
-DIFF_THRESH_PCT = 1.0             # 价格偏差阈值（与装置 quality.conflict_diff_pct 一致）
+DIFF_THRESH_PCT = 1.0  # 价格偏差阈值（与装置 quality.conflict_diff_pct 一致）
 MAX_ROWS = 64
 
 
@@ -41,8 +41,9 @@ def load_device_quotes(conn, cycle=99):
     n = 0
     out = {}
     for code, cat, price, ts in conn.execute(
-            "SELECT code, cat, price, ts FROM quotes WHERE cycle=? "
-            "ORDER BY ts DESC LIMIT ?", (int(cycle), 2000)):
+        "SELECT code, cat, price, ts FROM quotes WHERE cycle=? ORDER BY ts DESC LIMIT ?",
+        (int(cycle), 2000),
+    ):
         sym = str(code).upper()
         try:
             price_f = float(price)
@@ -83,20 +84,29 @@ def compare(device, live):
         if lp <= 0:
             continue
         diff = abs(d["price"] - lp) / lp * 100.0
-        rows.append({"sym": sym, "device_source": d["source"],
-                     "device_price": round(d["price"], 2),
-                     "live_price": round(lp, 2),
-                     "diff_pct": round(diff, 2), "ok": diff <= DIFF_THRESH_PCT})
+        rows.append(
+            {
+                "sym": sym,
+                "device_source": d["source"],
+                "device_price": round(d["price"], 2),
+                "live_price": round(lp, 2),
+                "diff_pct": round(diff, 2),
+                "ok": diff <= DIFF_THRESH_PCT,
+            }
+        )
     rows.sort(key=lambda r: r["diff_pct"], reverse=True)
     return rows
 
 
 def render(device, live, rows):
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    lines = ["装置行情 vs 量化主链行情 交叉校验（研究侧）",
-             "=" * 60,
-             "生成: %s | 装置 cycle=99 行情 %d 条 | 偏差阈值 %.1f%%" % (
-                 now, len(device), DIFF_THRESH_PCT), ""]
+    lines = [
+        "装置行情 vs 量化主链行情 交叉校验（研究侧）",
+        "=" * 60,
+        "生成: %s | 装置 cycle=99 行情 %d 条 | 偏差阈值 %.1f%%"
+        % (now, len(device), DIFF_THRESH_PCT),
+        "",
+    ]
     matched = len(rows)
     ok_n = sum(1 for r in rows if r["ok"])
     bad_n = matched - ok_n
@@ -107,20 +117,46 @@ def render(device, live, rows):
         lines.append("  %-8s %-10s %10s %10s %8s" % ("品种", "装置源", "装置价", "主链价", "偏差%"))
         for r in rows:
             if not r["ok"]:
-                lines.append("  %-8s %-10s %10.2f %10.2f %7.2f" % (
-                    r["sym"], r["device_source"], r["device_price"], r["live_price"], r["diff_pct"]))
+                lines.append(
+                    "  %-8s %-10s %10.2f %10.2f %7.2f"
+                    % (
+                        r["sym"],
+                        r["device_source"],
+                        r["device_price"],
+                        r["live_price"],
+                        r["diff_pct"],
+                    )
+                )
         lines.append("")
     lines.append("二、全部可对照行情（偏差降序 Top %d）" % min(MAX_ROWS, len(rows)))
-    lines.append("  %-8s %-10s %10s %10s %8s %s" % ("品种", "装置源", "装置价", "主链价", "偏差%", "状态"))
+    lines.append(
+        "  %-8s %-10s %10s %10s %8s %s" % ("品种", "装置源", "装置价", "主链价", "偏差%", "状态")
+    )
     for r in rows[:MAX_ROWS]:
-        lines.append("  %-8s %-10s %10.2f %10.2f %7.2f %s" % (
-            r["sym"], r["device_source"], r["device_price"], r["live_price"],
-            r["diff_pct"], "OK" if r["ok"] else "!!"))
+        lines.append(
+            "  %-8s %-10s %10.2f %10.2f %7.2f %s"
+            % (
+                r["sym"],
+                r["device_source"],
+                r["device_price"],
+                r["live_price"],
+                r["diff_pct"],
+                "OK" if r["ok"] else "!!",
+            )
+        )
     lines.append("")
-    lines.append("说明：装置行情来自界面操作收集装置（Legend/同花顺/OpenVLab 界面采集），"
-                 "只读对照、研究侧、不进综合分。")
-    summary = {"generated": now, "device_rows": len(device), "matched": matched,
-               "ok": ok_n, "over_threshold": bad_n, "rows": rows[:MAX_ROWS]}
+    lines.append(
+        "说明：装置行情来自界面操作收集装置（Legend/同花顺/OpenVLab 界面采集），"
+        "只读对照、研究侧、不进综合分。"
+    )
+    summary = {
+        "generated": now,
+        "device_rows": len(device),
+        "matched": matched,
+        "ok": ok_n,
+        "over_threshold": bad_n,
+        "rows": rows[:MAX_ROWS],
+    }
     return "\n".join(lines) + "\n", summary
 
 
@@ -137,11 +173,14 @@ def selftest():
     """合成数据零网络：构造装置/主链行情并校验对照逻辑。"""
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE quotes(code TEXT, cycle INT, cat TEXT, price REAL, ts TEXT)")
-    conn.executemany("INSERT INTO quotes VALUES(?,99,?,?,?)", [
-        ("RB", "legend_ui", 3200.0, "2026-09-08 20:00:00"),
-        ("CU", "openvlab", 71000.0, "2026-09-08 20:00:00"),
-        ("AG", "ths_ui", 7500.0, "2026-09-08 20:00:00"),
-    ])
+    conn.executemany(
+        "INSERT INTO quotes VALUES(?,99,?,?,?)",
+        [
+            ("RB", "legend_ui", 3200.0, "2026-09-08 20:00:00"),
+            ("CU", "openvlab", 71000.0, "2026-09-08 20:00:00"),
+            ("AG", "ths_ui", 7500.0, "2026-09-08 20:00:00"),
+        ],
+    )
     device, n = load_device_quotes(conn, cycle=99)
     assert n == 3, n
     live = {"RB0": {"price": 3205.0}, "CU0": {"price": 72000.0}, "AG0": {"price": 7510.0}}
@@ -169,6 +208,7 @@ def main(argv=None):
         conn.close()
     # 主链实时（新浪 + 东财兜底，与量化主循环同源）
     import futures_data
+
     live_codes = set()
     for r in list(device.keys()):
         c = _sym_code(r)
@@ -178,8 +218,10 @@ def main(argv=None):
     rows = compare(device, live)
     lines, summary = render(device, live, rows)
     txt, js = save(lines, summary)
-    print("device_crosscheck: 装置 %d 条 / 可对照 %d / 超阈值 %d → %s" % (
-        len(device), len(rows), summary["over_threshold"], txt))
+    print(
+        "device_crosscheck: 装置 %d 条 / 可对照 %d / 超阈值 %d → %s"
+        % (len(device), len(rows), summary["over_threshold"], txt)
+    )
     return 0
 
 

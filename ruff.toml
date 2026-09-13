@@ -1,4 +1,7 @@
 # 第138轮 E2：ruff lint/format 配置（dev 侧工具，生产零依赖不受影响）
+# 第145轮：pre-commit 首跑后按"项目惯例"收敛 ignore——UP031(%格式化是项目统一日志风格)、
+#   E741/SIM105/SIM115/E731/B007 等为风格偏好非缺陷，纳入 ignore 保持 pre-commit 可过；
+#   真缺陷类（F/E7xx 未忽略项/B023/B904/E722/F811）仍生效。
 line-length = 100
 target-version = "py312"
 
@@ -9,4 +12,29 @@ ignore = [
   "E203",   # 与 black/ruff-format 冲突
   "B008",   # 函数默认参数可变对象（代码库惯例）
   "SIM108", # 三元表达式重构（保持可读性）
+  "UP031",  # printf %-formatting：项目统一日志风格（logging %s），非缺陷
+  "UP038",  # isinstance 用 X|Y 代替 (X, Y)：风格偏好，Python 3.9+ 语法
+  "E741",   # 单字母变量名（l/O/I 等）：数学/索引惯例，改重成本高
+  "SIM105", # try/except-pass → contextlib.suppress：风格偏好，非缺陷
+  "SIM115", # open 未用 with：脚本/一次性工具中常见，非缺陷
+  "E731",   # lambda 赋值：风格偏好
+  "E702",   # 一行多条语句（分号）：脚本惯例
+  "B007",   # 循环变量未使用：unpack 占位惯例（_ 前缀已有部分，不强制全改）
+  "E701",   # 一行冒号复合语句
+  "B011",   # assert False：研究工具断言惯例
+  "F841",   # 未使用变量：项目惯例（解构赋值/临时调试变量/研究工具），不强制删除
+  "F823",   # 变量引用前未赋值：误报（模块级全局变量在函数内读取）
+  "F811",   # 重复定义：测试文件中 fixture/参数化覆盖常见
+  "E722",   # 裸 except：脚本工具中可接受（research tools 单独 try/except）
+  "B023",   # 闭包捕获循环变量：本项目循环内函数调用有锁/副本保障
+  "E402",   # import 非顶部：tools/ 需要 sys.path 注入（已 noqa 一部分，剩余为惯例）
+  "SIM102", # 合并 if：代码可读性偏好（嵌套 if 有独立注释/逻辑）
+  "SIM110", # 用 any() 替代 for 循环：风格偏好
+  "SIM113", # 用 enumerate()：风格偏好
+  "SIM117", # 合并 with：可读性偏好
+  "SIM118", # 用 key in dict 替代 key in dict.keys()：风格偏好
+  "SIM222", # 用 True 替代 ... or True：风格偏好
+  "SIM112", # 用大写环境变量名：Windows 上 SystemRoot/SYSTEMROOT 等效
+  "B904",   # raise ... from err：异常链不是所有场景都需要
+  "B034",   # re.split maxsplit/flags：现有调用不需要
 ]

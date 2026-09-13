@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G28（第35轮）因子收益归因 + BHB 板块归因 零网络确定性测试。
 
 全部手算可核、不连 monitor.db：
@@ -9,19 +8,27 @@
   - 板块统计 wp 归一 / rb 无方向、基准权重归一、累计曲线末端闭合、IS-OOS 有序
   - 端到端 build_report 结构与 sidecar JSON 安全
 """
+
 import json
-import math
 import random
 
 import attribution as at
 
-KEYS = ["新闻消息面", "原油联动", "机构动向", "日线动量", "技术共振",
-        "分钟共振", "盘中动量", "量仓资金", "基本面"]
+KEYS = [
+    "新闻消息面",
+    "原油联动",
+    "机构动向",
+    "日线动量",
+    "技术共振",
+    "分钟共振",
+    "盘中动量",
+    "量仓资金",
+    "基本面",
+]
 
 
 def _ev(y, x, sector="黑色", d=1, band="分批", ts="2026-01-01", sym="RB"):
-    return {"y": y, "x": dict(x), "dir": d, "sector": sector,
-            "band": band, "ts": ts, "sym": sym}
+    return {"y": y, "x": dict(x), "dir": d, "sector": sector, "band": band, "ts": ts, "sym": sym}
 
 
 def _linear_events(n=60, seed=1):
@@ -32,34 +39,46 @@ def _linear_events(n=60, seed=1):
         a = rnd.randint(-2, 2)
         b = rnd.randint(-3, 3)
         ts = "2026-%02d-%02d" % (i // 28 + 1, i % 28 + 1)
-        evs.append(_ev(0.001 + 2.0 * a - 1.0 * b,
-                       {"A": float(a), "B": float(b), "C": 0.0}, ts=ts))
+        evs.append(_ev(0.001 + 2.0 * a - 1.0 * b, {"A": float(a), "B": float(b), "C": 0.0}, ts=ts))
     return evs
 
 
 # --------------------------- 1) 事件解析：方向化暴露 ---------------------------
 def test_parse_event_row_signed_exposure():
-    row = {"direction_int": -1, "ret": -0.01,
-           "parts_json": json.dumps({"新闻消息面": 2.0, "日线动量": -1.0}),
-           "cat": "有色", "sym": "CU", "score_band": "轻仓",
-           "entry_ts": "2026-01-01", "horizon_min": 1440}
+    row = {
+        "direction_int": -1,
+        "ret": -0.01,
+        "parts_json": json.dumps({"新闻消息面": 2.0, "日线动量": -1.0}),
+        "cat": "有色",
+        "sym": "CU",
+        "score_band": "轻仓",
+        "entry_ts": "2026-01-01",
+        "horizon_min": 1440,
+    }
     e = at.parse_event_row(row, KEYS)
     assert e["dir"] == -1 and abs(e["y"] + 0.01) < 1e-12
-    assert e["x"]["新闻消息面"] == -2.0      # 做空：正 part → 负暴露
-    assert e["x"]["日线动量"] == +1.0       # 做空：负 part → 正暴露
+    assert e["x"]["新闻消息面"] == -2.0  # 做空：正 part → 负暴露
+    assert e["x"]["日线动量"] == +1.0  # 做空：负 part → 正暴露
     assert e["sector"] == "有色"
 
 
 def test_parse_event_row_canon_oil_and_bad():
-    row = {"direction_int": 1, "ret": 0.0,
-           "parts_json": json.dumps({"原油联动(w=0.50)": 1.25}),
-           "cat": "能源化工", "sym": "FU", "score_band": "分批",
-           "entry_ts": "t", "horizon_min": 30}
+    row = {
+        "direction_int": 1,
+        "ret": 0.0,
+        "parts_json": json.dumps({"原油联动(w=0.50)": 1.25}),
+        "cat": "能源化工",
+        "sym": "FU",
+        "score_band": "分批",
+        "entry_ts": "t",
+        "horizon_min": 30,
+    }
     e = at.parse_event_row(row, KEYS)
     assert "原油联动" in e["x"] and abs(e["x"]["原油联动"] - 1.25) < 1e-12
-    assert at.parse_event_row({"direction_int": 0}, KEYS) is None       # 非法方向
-    assert at.parse_event_row({"direction_int": 1, "ret": "x",
-                               "parts_json": "{}"}, KEYS) is None       # 坏收益
+    assert at.parse_event_row({"direction_int": 0}, KEYS) is None  # 非法方向
+    assert (
+        at.parse_event_row({"direction_int": 1, "ret": "x", "parts_json": "{}"}, KEYS) is None
+    )  # 坏收益
 
 
 # --------------------------- 2) OLS 求解 ---------------------------
@@ -77,7 +96,7 @@ def test_ols_fit_recovers_coefficients():
 
 
 def test_ols_fit_singular_and_undersize():
-    assert at.ols_fit([[1.0], [1.0]], [0.1, 0.2]) is None               # 样本不足
+    assert at.ols_fit([[1.0], [1.0]], [0.1, 0.2]) is None  # 样本不足
     assert at.ols_fit([], []) is None
     # 完全共线（两列相同）→ 正规方程奇异返回 None
     X = [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]]
@@ -90,7 +109,7 @@ def test_factor_attribution_closes_and_recovers():
     evs = _linear_events()
     a = at.factor_attribution(evs, ["A", "B", "C"], x_eps=0.05)
     assert a["n"] == len(evs)
-    assert "C" in a["dropped"]                       # 零方差列剔除
+    assert "C" in a["dropped"]  # 零方差列剔除
     assert set(a["used"]) == {"A", "B"}
     assert abs(a["alpha"] - 0.001) < 1e-10
     assert abs(a["beta"]["A"] - 2.0) < 1e-9
@@ -101,23 +120,20 @@ def test_factor_attribution_closes_and_recovers():
     # 每行贡献=β×平均暴露，行字段齐全
     for r in a["rows"]:
         assert abs(r["contrib"] - r["beta"] * r["mean_x"]) < 1e-12
-        assert {"factor", "n", "beta", "tstat", "mean_x", "contrib",
-                "ic", "win_support"} <= set(r)
+        assert {"factor", "n", "beta", "tstat", "mean_x", "contrib", "ic", "win_support"} <= set(r)
 
 
 def test_factor_attribution_empty_and_allzero():
     z = at.factor_attribution([], ["A"])
     assert z["n"] == 0 and z["rows"] == [] and z["used"] == []
-    z2 = at.factor_attribution([_ev(0.01, {"A": 0.0}),
-                                _ev(0.03, {"A": 0.0})], ["A"])
+    z2 = at.factor_attribution([_ev(0.01, {"A": 0.0}), _ev(0.03, {"A": 0.0})], ["A"])
     assert z2["used"] == [] and abs(z2["alpha"] - 0.02) < 1e-12
     assert abs(z2["closure_resid"]) < 1e-12
 
 
 def test_factor_attribution_support_winrate():
     # A 强支持时 y 恒正、反对时 y 恒负 → 支持胜率 100%，IC>0
-    evs = [_ev(0.01, {"A": 1.0}) for _ in range(10)] + \
-          [_ev(-0.01, {"A": -1.0}) for _ in range(10)]
+    evs = [_ev(0.01, {"A": 1.0}) for _ in range(10)] + [_ev(-0.01, {"A": -1.0}) for _ in range(10)]
     a = at.factor_attribution(evs, ["A"], x_eps=0.05)
     row = a["rows"][0]
     assert row["win_support"] == 1.0 and row["ic"] > 0.99
@@ -126,17 +142,16 @@ def test_factor_attribution_support_winrate():
 
 # --------------------------- 4) BHB 手算 + 恒等式 ---------------------------
 def test_bhb_handcalc_two_sectors():
-    stats = {"S1": {"wp": 0.6, "rp": 0.10, "rb": 0.08},
-             "S2": {"wp": 0.4, "rp": 0.02, "rb": 0.04}}
+    stats = {"S1": {"wp": 0.6, "rp": 0.10, "rb": 0.08}, "S2": {"wp": 0.4, "rp": 0.02, "rb": 0.04}}
     wb = {"S1": 0.5, "S2": 0.5}
     r = at.bhb(stats, wb)
     s1, s2 = r["sectors"]
-    assert abs(s1["alloc"] - 0.008) < 1e-12      # (0.6-0.5)*0.08
-    assert abs(s1["select"] - 0.010) < 1e-12     # 0.5*(0.10-0.08)
-    assert abs(s1["inter"] - 0.002) < 1e-12      # 0.1*0.02
-    assert abs(s2["alloc"] + 0.004) < 1e-12      # -0.1*0.04
-    assert abs(s2["select"] + 0.010) < 1e-12     # 0.5*(0.02-0.04)
-    assert abs(s2["inter"] - 0.002) < 1e-12      # -0.1*-0.02
+    assert abs(s1["alloc"] - 0.008) < 1e-12  # (0.6-0.5)*0.08
+    assert abs(s1["select"] - 0.010) < 1e-12  # 0.5*(0.10-0.08)
+    assert abs(s1["inter"] - 0.002) < 1e-12  # 0.1*0.02
+    assert abs(s2["alloc"] + 0.004) < 1e-12  # -0.1*0.04
+    assert abs(s2["select"] + 0.010) < 1e-12  # 0.5*(0.02-0.04)
+    assert abs(s2["inter"] - 0.002) < 1e-12  # -0.1*-0.02
     assert abs(r["port_ret"] - 0.068) < 1e-12
     assert abs(r["bench_ret"] - 0.060) < 1e-12
     assert abs(r["excess"] - 0.008) < 1e-12
@@ -155,9 +170,10 @@ def test_bhb_identity_random_fuzz():
         wb = [rnd.random() for _ in sectors]
         tot = sum(wb)
         wb = [v / tot for v in wb]
-        stats = {s: {"wp": wp[i], "rp": rnd.uniform(-0.05, 0.05),
-                     "rb": rnd.uniform(-0.05, 0.05)}
-                 for i, s in enumerate(sectors)}
+        stats = {
+            s: {"wp": wp[i], "rp": rnd.uniform(-0.05, 0.05), "rb": rnd.uniform(-0.05, 0.05)}
+            for i, s in enumerate(sectors)
+        }
         r = at.bhb(stats, {s: wb[i] for i, s in enumerate(sectors)})
         assert abs(r["total"] - r["excess"]) < 1e-12
         assert abs(r["closure_resid"]) < 1e-12
@@ -165,13 +181,16 @@ def test_bhb_identity_random_fuzz():
 
 # --------------------------- 5) 板块统计 / 基准权重 ---------------------------
 def test_events_to_sector_stats():
-    es = [_ev(0.02, {"A": 1}, "S1", d=1), _ev(0.04, {"A": 1}, "S1", d=1),
-          _ev(-0.02, {"A": 1}, "S2", d=-1)]
+    es = [
+        _ev(0.02, {"A": 1}, "S1", d=1),
+        _ev(0.04, {"A": 1}, "S1", d=1),
+        _ev(-0.02, {"A": 1}, "S2", d=-1),
+    ]
     st = at.events_to_sector_stats(es)
     assert abs(st["S1"]["wp"] - 2 / 3) < 1e-12 and abs(st["S2"]["wp"] - 1 / 3) < 1e-12
     assert abs(st["S1"]["rp"] - 0.03) < 1e-12
-    assert abs(st["S2"]["rp"] + 0.02) < 1e-12     # 方向化
-    assert abs(st["S2"]["rb"] - 0.02) < 1e-12     # 无方向绝对涨跌=y/dir
+    assert abs(st["S2"]["rp"] + 0.02) < 1e-12  # 方向化
+    assert abs(st["S2"]["rb"] - 0.02) < 1e-12  # 无方向绝对涨跌=y/dir
 
 
 def test_universe_sector_weights_normalized():
@@ -214,7 +233,7 @@ def test_group_mean():
 # --------------------------- 7) 端到端 attribute_horizon / build_report ---------------------------
 def test_attribute_horizon_structure():
     evs = _linear_events(80)
-    for e in evs:                       # 分散到两板块，保证 BHB 可算
+    for e in evs:  # 分散到两板块，保证 BHB 可算
         pass
     a = at.attribute_horizon(evs, ["A", "B", "C"])
     assert abs(a["bhb"]["closure_resid"]) < 1e-12

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求⑥】外部网站公开接口数据（10秒刷新线程）：
 1. 交易可查 /api/v2/aireport  机构研报多空统计（看多/震荡/看空家数）
    -> analyzer"机构动向"因子(±2) + option_strategies"机构观点配合"检查
@@ -17,6 +16,7 @@
                                用于：期权月份校验（只在真实挂牌月份中选）+ 精确剩余天数
    （其市场页隐波排行走内部POST接口，程序以历史波动率估计IV并明确标注，实盘以盘面为准）
 """
+
 import threading
 import time
 from datetime import datetime
@@ -26,17 +26,37 @@ from http_client import http
 from utils import LOG
 
 _UA = config.HEADERS_COMMON["User-Agent"]
-JYKC_HEADERS = {"User-Agent": _UA, "Referer": "https://www.jiaoyikecha.com/",
-                "X-Requested-With": "XMLHttpRequest"}
+JYKC_HEADERS = {
+    "User-Agent": _UA,
+    "Referer": "https://www.jiaoyikecha.com/",
+    "X-Requested-With": "XMLHttpRequest",
+}
 OVL_HEADERS = {"User-Agent": _UA, "Referer": "https://www.openvlab.cn/market"}
 
 # aireportHot 等接口里的品种简称 -> 标准品种名
 NAME_ALIAS = {
-    "沪金": "黄金", "沪银": "白银", "沪铜": "铜", "沪铝": "铝", "沪锌": "锌",
-    "沪铅": "铅", "沪镍": "镍", "沪锡": "锡", "螺纹": "螺纹钢", "热卷": "热卷",
-    "铁矿": "铁矿石", "郑醇": "甲醇", "燃油": "燃料油", "低硫燃油": "低硫燃料油",
-    "塑料": "塑料", "聚乙烯": "塑料", "PVC": "PVC", "聚氯乙烯": "PVC",
-    "PP": "聚丙烯", "菜油": "菜籽油", "郑棉": "棉花", "郑糖": "白糖",
+    "沪金": "黄金",
+    "沪银": "白银",
+    "沪铜": "铜",
+    "沪铝": "铝",
+    "沪锌": "锌",
+    "沪铅": "铅",
+    "沪镍": "镍",
+    "沪锡": "锡",
+    "螺纹": "螺纹钢",
+    "热卷": "热卷",
+    "铁矿": "铁矿石",
+    "郑醇": "甲醇",
+    "燃油": "燃料油",
+    "低硫燃油": "低硫燃料油",
+    "塑料": "塑料",
+    "聚乙烯": "塑料",
+    "PVC": "PVC",
+    "聚氯乙烯": "PVC",
+    "PP": "聚丙烯",
+    "菜油": "菜籽油",
+    "郑棉": "棉花",
+    "郑糖": "白糖",
 }
 
 
@@ -54,8 +74,10 @@ def _sym_to_variety(sym):
 def fetch_inst_views(timeout=8):
     """交易可查机构观点 -> {品种名: {bullish, volatile, bearish, total}}"""
     out = {}
-    for url in ("https://www.jiaoyikecha.com/api/v2/aireport",
-                "https://www.jiaoyikecha.com/api/v2/aireportHot"):
+    for url in (
+        "https://www.jiaoyikecha.com/api/v2/aireport",
+        "https://www.jiaoyikecha.com/api/v2/aireportHot",
+    ):
         try:
             r = http.get(url, headers=JYKC_HEADERS, timeout=timeout)
             r.encoding = "utf-8"
@@ -76,8 +98,7 @@ def fetch_inst_views(timeout=8):
             # 同一品种两个接口都有时取观点总数更多的
             if old and (old["bullish"] + old["volatile"] + old["bearish"]) >= (b + vo + be):
                 continue
-            out[key] = {"bullish": b, "volatile": vo, "bearish": be,
-                        "total": b + vo + be}
+            out[key] = {"bullish": b, "volatile": vo, "bearish": be, "total": b + vo + be}
     return out
 
 
@@ -85,8 +106,9 @@ def fetch_option_calendar(timeout=10):
     """OpenVlab期权日历 -> {sym: {yymm(int): {"exp_date": date}}}（仅四大交易所范围）"""
     out = {}
     try:
-        r = http.get("https://www.openvlab.cn/api/product-exps",
-                         headers=OVL_HEADERS, timeout=timeout)
+        r = http.get(
+            "https://www.openvlab.cn/api/product-exps", headers=OVL_HEADERS, timeout=timeout
+        )
         r.encoding = "utf-8"
         items = r.json().get("result") or []
     except Exception as e:
@@ -96,7 +118,7 @@ def fetch_option_calendar(timeout=10):
         ex = it.get("exchange")
         if ex not in config.ANALYZE_EXCHANGES:
             continue
-        parts = (it.get("symbol_und") or "").split("_")   # FUT_CZCE_MA
+        parts = (it.get("symbol_und") or "").split("_")  # FUT_CZCE_MA
         if len(parts) < 3:
             continue
         sym = parts[2].upper()
@@ -113,6 +135,7 @@ def fetch_option_calendar(timeout=10):
     # A1（第94轮）：解析健康探针——期权日历覆盖品种数归零=接口结构变化/失效早期信号
     try:
         import parser_health
+
         parser_health.record("openvlab_calendar", bool(out), len(out))
     except Exception:
         pass
@@ -124,8 +147,8 @@ class WebDataTracker:
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.views = {}          # 品种名 -> 机构多空统计
-        self.calendar = {}       # sym -> {yymm: {"exp_date": date}}
+        self.views = {}  # 品种名 -> 机构多空统计
+        self.calendar = {}  # sym -> {yymm: {"exp_date": date}}
         self.views_updated = None
         self.cal_updated = None
         self._last_cal = 0.0

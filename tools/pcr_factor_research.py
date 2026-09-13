@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""PCR 因子影子体检 tools/pcr_factor_research.py（第129轮，阶段D影子，研究侧只读/零网络/零第三方依赖）。
 
 回答阶段D遗留问题："PCR 接入综合分"有没有预测力证据（Legend T链载体已废，数据源用量化自己的
@@ -21,6 +20,7 @@ Spearman 秩相关——逐日截面 RankIC 均值 ± t 估计 + 全样本池化
 纪律：只读、不写生产表、不进综合分；结论只做"继续积累/放弃"的决策素材。
 CLI: python tools/pcr_factor_research.py [--monitor-db ...] [--selftest]
 """
+
 import argparse
 import json
 import os
@@ -33,10 +33,10 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import config                     # noqa: E402
+import config  # noqa: E402
 
-PCT_WINDOW = 30                   # 滚动分位窗口（交易日）
-RET_OUTLIER = 0.10                # |ret1d|>10% 视为换月跳变剔除（未复权口径）
+PCT_WINDOW = 30  # 滚动分位窗口（交易日）
+RET_OUTLIER = 0.10  # |ret1d|>10% 视为换月跳变剔除（未复权口径）
 
 
 def _q(db, sql, args=()):
@@ -52,9 +52,12 @@ def load_pcr_daily(monitor_db):
     """option_chains(cycle>=1, pcr_oi 非 NULL) → {sym: [(date, pcr), ...]} 按日升序。
 
     每日取当日最后一个快照时点，跨到期月 OI 合计 put/call；call 合计<=0 的时点跳过。"""
-    rows = _q(monitor_db, """SELECT sym, substr(ts,1,10) d, ts, put_oi, call_oi
+    rows = _q(
+        monitor_db,
+        """SELECT sym, substr(ts,1,10) d, ts, put_oi, call_oi
                              FROM option_chains WHERE cycle>=1 AND pcr_oi IS NOT NULL
-                             ORDER BY sym, ts""")
+                             ORDER BY sym, ts""",
+    )
     per_ts = {}
     for sym, d, ts, put, call in rows:
         if put is None or call is None:
@@ -77,12 +80,16 @@ def load_closes_from_minutes(monitor_db, syms):
     """minute_bars(period=60) 末日收盘 → {sym: [(date, close), ...]}（按日升序）。"""
     out = {}
     for sym in syms:
-        rows = _q(monitor_db, """SELECT substr(bar_dt,1,10) d, bar_dt, c FROM minute_bars
-                                 WHERE sym=? AND period=60 ORDER BY bar_dt""", (sym,))
+        rows = _q(
+            monitor_db,
+            """SELECT substr(bar_dt,1,10) d, bar_dt, c FROM minute_bars
+                                 WHERE sym=? AND period=60 ORDER BY bar_dt""",
+            (sym,),
+        )
         by_day = {}
         for d, dt, c in rows:
             if c:
-                by_day[d] = float(c)          # 升序遍历，末次覆盖=当日收盘
+                by_day[d] = float(c)  # 升序遍历，末次覆盖=当日收盘
         out[sym] = sorted(by_day.items())
     return out
 
@@ -128,12 +135,12 @@ def spearman(xs, ys):
         return None
     rx, ry = _ranks(xs), _ranks(ys)
     mx, my = sum(rx) / n, sum(ry) / n
-    cov = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    cov = sum((a - mx) * (b - my) for a, b in zip(rx, ry, strict=False))
     vx = sum((a - mx) ** 2 for a in rx)
     vy = sum((b - my) ** 2 for b in ry)
     if vx <= 0 or vy <= 0:
         return None
-    return cov / (vx ** 0.5 * vy ** 0.5)
+    return cov / (vx**0.5 * vy**0.5)
 
 
 def quintile_spread(xs, ys, q=5):
@@ -160,7 +167,7 @@ def build_factors(pcr_daily):
                 if prev > 0:
                     fac["pcr_chg"][(sym, d)] = pcr / prev - 1.0
             if len(series) >= PCT_WINDOW and i >= PCT_WINDOW - 1:
-                window = [p for _, p in series[i - PCT_WINDOW + 1:i + 1]]
+                window = [p for _, p in series[i - PCT_WINDOW + 1 : i + 1]]
                 below = sum(1 for p in window if p <= pcr)
                 fac["pcr_pct30"][(sym, d)] = below / len(window)
     return fac
@@ -186,14 +193,16 @@ def evaluate(fac_value, ret_map, horizon):
     if len(day_ics) >= 3 and mean_ic is not None:
         var = sum((x - mean_ic) ** 2 for x in day_ics) / (len(day_ics) - 1)
         if var > 0:
-            tstat = mean_ic / (var ** 0.5) * (len(day_ics) ** 0.5)
+            tstat = mean_ic / (var**0.5) * (len(day_ics) ** 0.5)
     qs = quintile_spread(xs, ys)
-    return {"pooled_spearman": round(pooled, 4) if pooled is not None else None,
-            "day_mean_ic": round(mean_ic, 4) if mean_ic is not None else None,
-            "n_days": len(day_ics),
-            "day_ic_t": round(tstat, 2) if tstat is not None else None,
-            "q_spread": round(qs[2], 5) if qs else None,
-            "n": len(xs)}
+    return {
+        "pooled_spearman": round(pooled, 4) if pooled is not None else None,
+        "day_mean_ic": round(mean_ic, 4) if mean_ic is not None else None,
+        "n_days": len(day_ics),
+        "day_ic_t": round(tstat, 2) if tstat is not None else None,
+        "q_spread": round(qs[2], 5) if qs else None,
+        "n": len(xs),
+    }
 
 
 def run(monitor_db=None):
@@ -211,50 +220,78 @@ def run(monitor_db=None):
                 ret1[(sym, d)] = r1
             if r5 is not None:
                 ret5[(sym, d)] = r5
-    res = {"generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-           "pcr_days": min((len(s) for s in pcr_daily.values()), default=0),
-           "max_pcr_days": max((len(s) for s in pcr_daily.values()), default=0),
-           "n_syms": len(pcr_daily), "horizons": {}}
+    res = {
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "pcr_days": min((len(s) for s in pcr_daily.values()), default=0),
+        "max_pcr_days": max((len(s) for s in pcr_daily.values()), default=0),
+        "n_syms": len(pcr_daily),
+        "horizons": {},
+    }
     for fname in ("pcr_level", "pcr_chg", "pcr_pct30"):
         res["horizons"][fname] = {
             "ret1d": evaluate(fac[fname], ret1, "ret1d"),
             "ret5": evaluate(fac[fname], ret5, "ret5"),
-            "sample_note": ("30日分位需 %d 天历史" % PCT_WINDOW
-                            if fname == "pcr_pct30" and res["max_pcr_days"] < PCT_WINDOW else "")}
+            "sample_note": (
+                "30日分位需 %d 天历史" % PCT_WINDOW
+                if fname == "pcr_pct30" and res["max_pcr_days"] < PCT_WINDOW
+                else ""
+            ),
+        }
     return res
 
 
 def render(res):
-    L = ["PCR 因子影子体检（第129轮，阶段D影子——只测预测力，不进综合分）", "=" * 64,
-         "生成: %s ｜ 品种 %d ｜ PCR 历史 %d 个交易日（滚动分位需 30 天）" % (
-             res["generated"], res["n_syms"], res["pcr_days"]),
-         "口径: 因子(t)=当日末次快照(23:00后已可得) → 前向收益 ret1d(t→t+1)/ret5(t→t+5)，严格 PIT；",
-         "      收益自 minute_bars 60m 末日收盘（未复权，|ret|>10% 剔除）；逐日截面 RankIC。", ""]
-    L.append("%-10s %8s %10s %10s %6s %7s %12s %5s" % (
-        "因子", "期限", "池化RankIC", "逐日IC均值", "天数", "t估计", "五分位高-低", "n"))
+    L = [
+        "PCR 因子影子体检（第129轮，阶段D影子——只测预测力，不进综合分）",
+        "=" * 64,
+        "生成: %s ｜ 品种 %d ｜ PCR 历史 %d 个交易日（滚动分位需 30 天）"
+        % (res["generated"], res["n_syms"], res["pcr_days"]),
+        "口径: 因子(t)=当日末次快照(23:00后已可得) → 前向收益 ret1d(t→t+1)/ret5(t→t+5)，严格 PIT；",
+        "      收益自 minute_bars 60m 末日收盘（未复权，|ret|>10% 剔除）；逐日截面 RankIC。",
+        "",
+    ]
+    L.append(
+        "%-10s %8s %10s %10s %6s %7s %12s %5s"
+        % ("因子", "期限", "池化RankIC", "逐日IC均值", "天数", "t估计", "五分位高-低", "n")
+    )
     for fname, hs in res["horizons"].items():
         note = hs.get("sample_note") or ""
         for h in ("ret1d", "ret5"):
             e = hs[h]
-            L.append("%-10s %8s %10s %10s %6d %7s %12s %5d %s" % (
-                fname, h,
-                str(e["pooled_spearman"]) if e["pooled_spearman"] is not None else "—",
-                str(e["day_mean_ic"]) if e["day_mean_ic"] is not None else "—",
-                e["n_days"],
-                str(e["day_ic_t"]) if e["day_ic_t"] is not None else "—",
-                str(e["q_spread"]) if e["q_spread"] is not None else "—",
-                e["n"], ("⚠" + note) if note else ""))
+            L.append(
+                "%-10s %8s %10s %10s %6d %7s %12s %5d %s"
+                % (
+                    fname,
+                    h,
+                    str(e["pooled_spearman"]) if e["pooled_spearman"] is not None else "—",
+                    str(e["day_mean_ic"]) if e["day_mean_ic"] is not None else "—",
+                    e["n_days"],
+                    str(e["day_ic_t"]) if e["day_ic_t"] is not None else "—",
+                    str(e["q_spread"]) if e["q_spread"] is not None else "—",
+                    e["n"],
+                    ("⚠" + note) if note else "",
+                )
+            )
     L.append("")
-    L.append("解读（双向假说）: pcr_level IC>0 支持'确认假说'（高PCR顺势偏空获利=因子应反向使用需谨慎），")
-    L.append("IC<0 支持'反向假说'（高PCR恐慌见底偏多）；|逐日IC t|<2 或天数<10 一律视为'证据不足，继续积累'。")
-    L.append("决策门: 连续 20+ 交易日 IC 方向稳定且 |t|>=2 才可提交 factors_catalog 注册评审；当前仅为影子观察。")
-    L.append("（只读体检：不改综合分/不写生产表；PCR 情绪档在期权严格分析中已在用，此处只评估期货综合分扩展）")
+    L.append(
+        "解读（双向假说）: pcr_level IC>0 支持'确认假说'（高PCR顺势偏空获利=因子应反向使用需谨慎），"
+    )
+    L.append(
+        "IC<0 支持'反向假说'（高PCR恐慌见底偏多）；|逐日IC t|<2 或天数<10 一律视为'证据不足，继续积累'。"
+    )
+    L.append(
+        "决策门: 连续 20+ 交易日 IC 方向稳定且 |t|>=2 才可提交 factors_catalog 注册评审；当前仅为影子观察。"
+    )
+    L.append(
+        "（只读体检：不改综合分/不写生产表；PCR 情绪档在期权严格分析中已在用，此处只评估期货综合分扩展）"
+    )
     return "\n".join(L)
 
 
 def selftest():
     """零网络合成断言：PCR聚合取末次快照/因子构造/前向对齐PIT/ spearman与五分位。"""
     import tempfile
+
     tmp = tempfile.mkdtemp(prefix="pcr_res_")
     try:
         db = os.path.join(tmp, "m.db")
@@ -266,40 +303,47 @@ def selftest():
         # RB：09-01 两个快照（取末次），09-02 三个到期月同快照（跨月合计）
         chain_rows = [
             ("2026-09-01 15:00:03", 1, "RB", "2610", 100.0, 200.0, 0.5),
-            ("2026-09-01 23:00:03", 1, "RB", "2610", 120.0, 200.0, 0.6),   # 末次快照 → 0.6
+            ("2026-09-01 23:00:03", 1, "RB", "2610", 120.0, 200.0, 0.6),  # 末次快照 → 0.6
             ("2026-09-02 23:00:03", 1, "RB", "2610", 200.0, 200.0, 1.0),
-            ("2026-09-02 23:00:03", 1, "RB", "2701", 100.0, 100.0, 1.0),   # 跨月合计 300/300=1.0
+            ("2026-09-02 23:00:03", 1, "RB", "2701", 100.0, 100.0, 1.0),  # 跨月合计 300/300=1.0
         ]
         for r in chain_rows:
-            conn.execute("INSERT INTO option_chains(ts,cycle,sym,expiry,put_oi,call_oi,pcr_oi)"
-                         " VALUES(?,?,?,?,?,?,?)", r)
+            conn.execute(
+                "INSERT INTO option_chains(ts,cycle,sym,expiry,put_oi,call_oi,pcr_oi)"
+                " VALUES(?,?,?,?,?,?,?)",
+                r,
+            )
         # RB 60m 收盘：09-01=100 → 09-02=101 → 09-08=103（ret1d 09-01=+1%）
-        closes = [("2026-09-01", "2026-09-01 23:00:00", 100.0),
-                  ("2026-09-02", "2026-09-02 23:00:00", 101.0),
-                  ("2026-09-08", "2026-09-08 23:00:00", 103.0)]
+        closes = [
+            ("2026-09-01", "2026-09-01 23:00:00", 100.0),
+            ("2026-09-02", "2026-09-02 23:00:00", 101.0),
+            ("2026-09-08", "2026-09-08 23:00:00", 103.0),
+        ]
         for d, dt, c in closes:
-            conn.execute("INSERT INTO minute_bars(sym,period,bar_dt,c) VALUES('RB',60,?,?)", (dt, c))
+            conn.execute(
+                "INSERT INTO minute_bars(sym,period,bar_dt,c) VALUES('RB',60,?,?)", (dt, c)
+            )
         conn.commit()
         conn.close()
         pcr = load_pcr_daily(db)
-        assert pcr["RB"] == [("2026-09-01", 0.6), ("2026-09-02", 1.0)], pcr   # 末次快照+跨月合计
+        assert pcr["RB"] == [("2026-09-01", 0.6), ("2026-09-02", 1.0)], pcr  # 末次快照+跨月合计
         fac = build_factors(pcr)
         assert abs(fac["pcr_level"][("RB", "2026-09-02")] - 1.0) < 1e-9
         assert abs(fac["pcr_chg"][("RB", "2026-09-02")] - (1.0 / 0.6 - 1)) < 1e-9
         closes_map = load_closes_from_minutes(db, ["RB"])
         fwd = forward_returns(closes_map["RB"])
-        assert abs(fwd["2026-09-01"][0] - 0.01) < 1e-9                        # 前向1日=+1%
+        assert abs(fwd["2026-09-01"][0] - 0.01) < 1e-9  # 前向1日=+1%
         assert fwd["2026-09-02"][0] is None or abs(fwd["2026-09-02"][0] - 0.019802) < 1e-4
         # spearman 方向性：因子与收益同向 → +1
         assert abs(spearman([1, 2, 3, 4], [10, 20, 30, 40]) - 1.0) < 1e-9
-        assert spearman([1, 2], [1, 2]) is None                                # n<3
-        qs = quintile_spread([1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                             [1, 1, 1, 1, 1, 2, 2, 2, 2, 2])
-        assert qs[2] == 1.0                                                    # 高-低=1
+        assert spearman([1, 2], [1, 2]) is None  # n<3
+        qs = quintile_spread([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [1, 1, 1, 1, 1, 2, 2, 2, 2, 2])
+        assert qs[2] == 1.0  # 高-低=1
         print("pcr_factor_research selftest OK")
         return 0
     finally:
         import shutil
+
         shutil.rmtree(tmp, ignore_errors=True)
 
 

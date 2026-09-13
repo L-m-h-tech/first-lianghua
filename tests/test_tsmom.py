@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G7（第30轮）多窗口时序动量 TSMOM(63/126/252) 零网络确定性测试。
 
 覆盖四块：
@@ -7,11 +6,13 @@
   3) analyzer 影子字段绝不进 parts、不改综合分（铁律①，开关两态 score/parts 相等）；
   4) tools/tsmom_eval 统计：远期收益无泄漏、OLS 残差正交、面板暖机、IS/OOS 切分。
 """
+
 import math
+
+import tsmom_eval as te
 
 import config
 import futures_data as fd
-import tsmom_eval as te
 
 
 # --------------------------- 1) 纯函数 ---------------------------
@@ -33,8 +34,16 @@ def test_lookback_return_handcalc():
 def test_tsmom_features_values_and_z():
     closes = _line_closes(300)
     f = fd.tsmom_features(closes, lookbacks=(63, 126, 252))
-    assert set(f) == {"ret63", "ret126", "ret252", "tsmom63", "tsmom126",
-                      "tsmom252", "blend", "n_valid"}
+    assert set(f) == {
+        "ret63",
+        "ret126",
+        "ret252",
+        "tsmom63",
+        "tsmom126",
+        "tsmom252",
+        "blend",
+        "n_valid",
+    }
     # z = ret / (窗口日收益样本std * sqrt(ann))，手算复核 z63（原始 z 不裁剪，clip 只在 blend 聚合时）
     end = len(closes) - 1
     sd = fd._window_std(closes, end, 63)
@@ -75,15 +84,32 @@ def test_tsmom_series_alignment():
 
 # --------------------------- 2) compute_indicators 增量且旧值不变 ---------------------------
 def _bars(closes):
-    return [{"d": "2026-%02d-%02d" % (i // 28 % 12 + 1, i % 28 + 1),
-             "o": c, "h": c + 1, "l": c - 1, "c": c, "v": 1000} for i, c in enumerate(closes)]
+    return [
+        {
+            "d": "2026-%02d-%02d" % (i // 28 % 12 + 1, i % 28 + 1),
+            "o": c,
+            "h": c + 1,
+            "l": c - 1,
+            "c": c,
+            "v": 1000,
+        }
+        for i, c in enumerate(closes)
+    ]
 
 
 def test_compute_indicators_adds_g7_keys():
     closes = _line_closes(300)
     ind = fd.compute_indicators(_bars(closes))
-    for k in ("ret63", "ret126", "ret252", "tsmom63", "tsmom126",
-              "tsmom252", "tsmom_blend", "tsmom_n_valid"):
+    for k in (
+        "ret63",
+        "ret126",
+        "ret252",
+        "tsmom63",
+        "tsmom126",
+        "tsmom252",
+        "tsmom_blend",
+        "tsmom_n_valid",
+    ):
         assert k in ind
     assert ind["tsmom_n_valid"] == 3 and ind["ret252"] is not None
 
@@ -120,6 +146,7 @@ def test_compute_indicators_short_history_safe():
 # --------------------------- 3) analyzer 影子不改分（铁律） ---------------------------
 def _analyze_once(flat_calendar):
     import analyzer
+
     closes = _line_closes(300, p0=3000.0, step=1.5)
     ind = fd.compute_indicators(_bars(closes))
     ind["intraday"] = {}
@@ -129,11 +156,18 @@ def _analyze_once(flat_calendar):
 
 
 def test_analyzer_shadow_does_not_change_score(flat_calendar):
-    import analyzer
     r_on = _analyze_once(flat_calendar)
     assert r_on["tsmom_shadow"] is not None
-    expect_keys = {"ret63", "ret126", "ret252", "tsmom63", "tsmom126",
-                   "tsmom252", "blend", "n_valid"}
+    expect_keys = {
+        "ret63",
+        "ret126",
+        "ret252",
+        "tsmom63",
+        "tsmom126",
+        "tsmom252",
+        "blend",
+        "n_valid",
+    }
     assert set(r_on["tsmom_shadow"]) == expect_keys
     # 影子绝不进 parts（parts 之和=综合分口径）
     assert all("tsmom" not in k and "ret63" not in k for k in r_on["parts"])
@@ -162,7 +196,7 @@ def test_forward_returns_no_leak():
 def test_ols_residual_orthogonal():
     x1 = [1.0, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     x2 = [2.0, 1, 4, 3, 6, 5, 8, 7, 10, 9]
-    tgt = [3 * a - 2 * b + 1 for a, b in zip(x1, x2)]
+    tgt = [3 * a - 2 * b + 1 for a, b in zip(x1, x2, strict=False)]
     resid = te.ols_residual(tgt, [x1, x2])
     # 完全线性关系 -> 残差全 0
     assert all(abs(r) < 1e-9 for r in resid)

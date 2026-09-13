@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G16（第88轮）浅ML 生产推理适配层 ml_inference——标准库前向推理 + 回退登记。
 
 按总纲 G16：
@@ -12,6 +11,7 @@ r"""G16（第88轮）浅ML 生产推理适配层 ml_inference——标准库前�
   D:\Python\python.exe ml_inference.py                    # 读 reports/ml_model.json 自检前向
   D:\Python\python.exe ml_inference.py --selftest         # 零文件合成断言
 """
+
 import json
 import math
 import os
@@ -21,8 +21,18 @@ ROOT = Path(__file__).resolve().parent
 MODEL_JSON = ROOT / "reports" / "ml_model.json"
 FALLBACK_LOG = ROOT / "reports" / "ml_fallback.jsonl"
 
-_FEATURES = ("mom5", "mom20", "ma10_bias", "ma20_bias", "ma60_bias",
-             "rsv20", "atr_pct", "vol60", "tech_score", "ret1")
+_FEATURES = (
+    "mom5",
+    "mom20",
+    "ma10_bias",
+    "ma20_bias",
+    "ma60_bias",
+    "rsv20",
+    "atr_pct",
+    "vol60",
+    "tech_score",
+    "ret1",
+)
 
 
 def _isnum(x):
@@ -42,7 +52,7 @@ def load_model(path=None):
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -57,15 +67,25 @@ def _log_fallback(reason, feats, verdict=None):
     try:
         os.makedirs(os.path.dirname(str(FALLBACK_LOG)), exist_ok=True)
         with open(FALLBACK_LOG, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps({"reason": reason, "missing": sorted(
-                set(_FEATURES) - set(feats)), "verdict": verdict,
-                "ts": _now()}, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "reason": reason,
+                        "missing": sorted(set(_FEATURES) - set(feats)),
+                        "verdict": verdict,
+                        "ts": _now(),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
     except Exception:
         pass
 
 
 def _now():
     from datetime import datetime
+
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -88,9 +108,10 @@ def infer(feats, model=None, log_fallback=True, min_span_days=250, path=None):
             _log_fallback(reason, feats)
         return {"fallback": reason, "prob": None, "meta": 0}
     # 跨度硬门槛：模型训练到日期区间长度（交易日数）< min_span_days → 禁止上线
-    dmin, dmax = (model.get("date_range") or [None, None])
+    dmin, dmax = model.get("date_range") or [None, None]
     if dmin and dmax:
         from datetime import datetime as _dt
+
         try:
             days = (_dt.strptime(dmax, "%Y-%m-%d") - _dt.strptime(dmin, "%Y-%m-%d")).days
             if days < min_span_days:
@@ -113,8 +134,13 @@ def infer(feats, model=None, log_fallback=True, min_span_days=250, path=None):
         z += w[i] * ((feats[k] - (mean[i] or 0.0)) / s)
     z += inter
     prob = _sigmoid(z)
-    meta = 1 if prob >= 0.5 else 0      # meta-label：1=预测止盈(+1)
-    return {"fallback": None, "prob": round(prob, 4), "meta": meta, "model_version": model.get("version")}
+    meta = 1 if prob >= 0.5 else 0  # meta-label：1=预测止盈(+1)
+    return {
+        "fallback": None,
+        "prob": round(prob, 4),
+        "meta": meta,
+        "model_version": model.get("version"),
+    }
 
 
 # ---------------- 独立自检入口（--selftest） ----------------
@@ -123,9 +149,15 @@ def selftest():
     r = infer({}, model=None, log_fallback=False, path="/nonexistent/ml_model_debug.json")
     assert r["fallback"] == "no_model" and r["meta"] == 0
     # 2) 特征不全回退
-    model = {"features": list(_FEATURES), "weights": [0.1] * 10, "intercept": 0.0,
-             "scaler_mean": [0.0] * 10, "scaler_std": [1.0] * 10, "version": 1,
-             "date_range": ["2026-03-10", "2026-09-01"]}
+    model = {
+        "features": list(_FEATURES),
+        "weights": [0.1] * 10,
+        "intercept": 0.0,
+        "scaler_mean": [0.0] * 10,
+        "scaler_std": [1.0] * 10,
+        "version": 1,
+        "date_range": ["2026-03-10", "2026-09-01"],
+    }
     r = infer({"mom5": 1.0}, model=model, log_fallback=False)
     assert r["fallback"] and "missing_features" in r["fallback"]
     # 3) 跨度不足回退（127交易日 < 250）
@@ -148,6 +180,7 @@ def selftest():
 
 def main(argv=None):
     import argparse
+
     ap = argparse.ArgumentParser(description="G16 浅ML 推理适配层（标准库，默认关）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
@@ -160,8 +193,10 @@ def main(argv=None):
         return 0
     feats = {k: 0.0 for k in _FEATURES}
     r = infer(feats, model=model, log_fallback=False)
-    print("模型版本=%s | 训练区间=%s | 推理(feats=0)=%s"
-          % (model.get("version"), model.get("date_range"), r))
+    print(
+        "模型版本=%s | 训练区间=%s | 推理(feats=0)=%s"
+        % (model.get("version"), model.get("date_range"), r)
+    )
     return 0
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第103轮：纸面撮合独立 ticker 线程 paper_ticker.py——交易时段每分钟撮合一次。
 
 背景（第102轮后用户拍板）：纸面 on_cycle 原本随 run_cycle 同节奏（交易时段 5/10 分钟），
@@ -25,17 +24,17 @@ r"""第103轮：纸面撮合独立 ticker 线程 paper_ticker.py——交易时�
 若后续需要期权链定向加速刷新（force=True）：在此处收集各账户活跃期权品种子集调
 option_chain.warm(force=True) 并合并进 chain_map；当前 paper_analysis 已自行 warm。
 """
-import threading
+
 from datetime import datetime
 
 import config
 import futures_data
 
 
-
 def _MinFeed(bars):
     """极简 SymbolFeed 兼容物：只给 trailing_risk_weights 需要的 dts/bars（dt/c）。"""
     from datetime import datetime as _dt
+
     bars2 = []
     for b in bars:
         d = b.get("dt")
@@ -47,8 +46,10 @@ def _MinFeed(bars):
             except ValueError:
                 continue
         bars2.append({"dt": d, "c": b.get("c")})
+
     class _Feed:
         pass
+
     f = _Feed()
     f.bars = bars2
     f.dts = [b["dt"] for b in bars2]
@@ -64,11 +65,12 @@ def _inject_risk_weights(state, broker, ts, syms=None):
     - 每轮都算（分钟级），与 paper_ticker 撮合节奏同步——目标权重随行情协方差滚动更新。
     """
     pf = getattr(broker, "pf", None)
-    rs = getattr(pf, "risk_sizing", None)          # PaperBroker 不存，读内核（main 透传后在这）
+    rs = getattr(pf, "risk_sizing", None)  # PaperBroker 不存，读内核（main 透传后在这）
     if not rs:
         return None
     try:
         import portfolio as pf_mod
+
         syms = list(syms) if syms else [m["sym"] for _, m in getattr(state, "watchlist", [])]
         if len(syms) < 2 or not getattr(state, "db", None):
             return None
@@ -84,6 +86,7 @@ def _inject_risk_weights(state, broker, ts, syms=None):
         if len(feeds) < 2:
             return None
         from datetime import datetime as _dt
+
         t = ts
         if isinstance(t, str):
             try:
@@ -91,12 +94,15 @@ def _inject_risk_weights(state, broker, ts, syms=None):
             except ValueError:
                 return None
         wmap, meta = pf_mod.trailing_risk_weights(
-            feeds, t, rs,
+            feeds,
+            t,
+            rs,
             window=getattr(config, "PRS_WINDOW", 126),
             min_hist=getattr(config, "PRS_MIN_HIST", 40),
             shrink=getattr(config, "PC_SHRINK", 0.10),
             cap=getattr(config, "PRS_CAP", 0.25),
-            gross=getattr(pf, "risk_gross", None) or getattr(config, "PRS_GROSS", 1.5))
+            gross=getattr(pf, "risk_gross", None) or getattr(config, "PRS_GROSS", 1.5),
+        )
         if wmap:
             broker.set_risk_weights(wmap, meta)
         return meta
@@ -125,10 +131,12 @@ def tick_once(state, ts, quotes):
         try:
             # 第115轮：夜盘只对活跃子集做独立分析（tick_loop 已写入 state._paper_watchlist）；
             # 无活跃子集（如刚进夜盘、子集为空）回退快照与旧行为一致。
-            watchlist = list(getattr(state, "_paper_watchlist", None)
-                             or getattr(state, "watchlist", None) or [])
+            watchlist = list(
+                getattr(state, "_paper_watchlist", None) or getattr(state, "watchlist", None) or []
+            )
             if watchlist:
                 from paper_analysis import paper_analyze
+
                 _pa = paper_analyze(state, quotes, watchlist)
                 fut_rows = _pa.get("fut_rows") or []
                 chain_map = _pa.get("chain_map") or {}
@@ -150,7 +158,7 @@ def tick_once(state, ts, quotes):
         fut_rows = snap.get("fut_rows") or []
         chain_map = snap.get("chain_map") or {}
         strat_rows = snap.get("strat_rows") or []
-        opt_rows = snap.get("opt_rows") or []   # 第110轮：analyze_option 单腿信号
+        opt_rows = snap.get("opt_rows") or []  # 第110轮：analyze_option 单腿信号
     if not fut_rows:
         # run_cycle 尚未落下本轮快照（首轮前/纸面刚开）：无信号输入，安全跳过不空推
         return {}
@@ -169,8 +177,9 @@ def tick_once(state, ts, quotes):
             else:
                 last_papers[_name] = _broker.last_summary or {}
             if (strat_rows or opt_rows) and chain_map:
-                _ols = _broker.on_cycle_options(ts, strat_rows, chain_map, fut_rows,
-                                                opt_rows=opt_rows if opt_rows else None)
+                _ols = _broker.on_cycle_options(
+                    ts, strat_rows, chain_map, fut_rows, opt_rows=opt_rows if opt_rows else None
+                )
                 (last_papers.get(_name) or {})["opt"] = _ols
             out[_name] = last_papers.get(_name)
         except Exception:
@@ -178,12 +187,15 @@ def tick_once(state, ts, quotes):
     # 向后兼容：基准账户
     if papers:
         _first = next(iter(papers.values()))
-        state.last_paper = (last_papers.get(getattr(_first, "name", None))
-                            if getattr(_first, "name", None) in last_papers
-                            else _first.last_summary)
+        state.last_paper = (
+            last_papers.get(getattr(_first, "name", None))
+            if getattr(_first, "name", None) in last_papers
+            else _first.last_summary
+        )
     # 第114轮：撮合后同步落盘纸面报告（文件与主报告隔离；失败静默不拖垮 ticker）
     try:
         import report
+
         report.write_paper_account(state)
     except Exception:
         LOG.error("纸面 ticker 报告落盘失败（已吞掉）: ", exc_info=True)
@@ -194,8 +206,11 @@ def tick_loop(state):
     """daemon 主循环（照抄 oil_loop 模式）：每 PAPER_TICK_INTERVAL 秒撮合一次。"""
     interval = max(1, int(getattr(config, "PAPER_TICK_INTERVAL", 60) or 1))
     trading_only = bool(getattr(config, "PAPER_TICK_TRADING_ONLY", True))
-    LOG.info("纸面 ticker 线程启动（每 %d 秒撮合一次%s）",
-             interval, "，仅交易时段" if trading_only else "")
+    LOG.info(
+        "纸面 ticker 线程启动（每 %d 秒撮合一次%s）",
+        interval,
+        "，仅交易时段" if trading_only else "",
+    )
     while not state.stop.is_set():
         state.stop.wait(interval)
         if state.stop.is_set():
@@ -209,10 +224,11 @@ def tick_loop(state):
             # 冻结为上一收盘价，拉取并撮合会产生无意义成交；活跃子集由 utils.trading_subset 筛。
             if getattr(config, "PAPER_TICK_REPRICE", False):
                 from utils import trading_subset
+
                 _wl = trading_subset(getattr(state, "watchlist", None) or [])
                 codes = sorted({meta["code"] for _, meta in _wl})
                 if _wl and codes:
-                    state._paper_watchlist = list(_wl)   # 供 tick_once 用同子集做独立分析
+                    state._paper_watchlist = list(_wl)  # 供 tick_once 用同子集做独立分析
             else:
                 snap = getattr(state, "_paper_stash", None) or {}
                 codes = snap.get("codes") or []
@@ -228,6 +244,7 @@ def tick_loop(state):
 def _is_trading():
     try:
         from utils import is_trading_time
+
         return bool(is_trading_time()[0])
     except Exception:
         return True  # 判定失败保守当交易中（不跳过撮合，宁多勿少）
@@ -237,5 +254,6 @@ try:  # noqa: F401  LOG 仅在 main/报告语境可用；独立运行/测试时�
     from utils import LOG  # noqa: F401
 except Exception:
     import logging
+
     LOG = logging.getLogger("paper_ticker")
     LOG.addHandler(logging.NullHandler())

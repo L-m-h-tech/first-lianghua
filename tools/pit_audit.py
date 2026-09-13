@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G21（第36轮）PIT / 训练-服务一致性通用审计器（纯标准库、离线）。
 
 对标 Feast/Tecton 的 offline/online parity 与 point-in-time as-of join：离线训练用的特征必须在事件时点
@@ -15,6 +14,7 @@ r"""G21（第36轮）PIT / 训练-服务一致性通用审计器（纯标准库�
   D:\Python\python.exe tools\pit_audit.py --codes RB0,MA0 --days 800       # 联网重拉做实时/离线parity
   D:\Python\python.exe tools\pit_audit.py --selftest
 """
+
 import argparse
 import math
 import os
@@ -25,9 +25,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+import panel_builder as pb  # noqa: E402
+
 import config  # noqa: E402
 import futures_data  # noqa: E402
-import panel_builder as pb  # noqa: E402
 
 TOL = 1e-9
 
@@ -92,7 +93,12 @@ def assert_no_future(bars, build_row_fn, t_idxs, compare_keys):
             a, b = before.get(k), after.get(k)
             if a is None and b is None:
                 continue
-            if a is None or b is None or (isinstance(a, (int, float)) and abs(a - b) > TOL) or a != b:
+            if (
+                a is None
+                or b is None
+                or (isinstance(a, (int, float)) and abs(a - b) > TOL)
+                or a != b
+            ):
                 diverge.append((t, k, a, b))
     return diverge
 
@@ -100,7 +106,7 @@ def assert_no_future(bars, build_row_fn, t_idxs, compare_keys):
 # =========================== ③ 训练-服务一致性 parity（纯函数） ===========================
 def parity_one(bars, panel_row, t, feature_keys):
     """实时路径=futures_data.compute_indicators(bars[:t+1])，与面板第 t 行逐字段比；返回不一致列表。"""
-    live = futures_data.compute_indicators(bars[:t + 1])
+    live = futures_data.compute_indicators(bars[: t + 1])
     mism = []
     for k in feature_keys:
         a = pb._num(live.get(k))
@@ -149,12 +155,13 @@ def audit_panel_db(db_path):
     conn = sqlite3.connect(str(db_path))
     cols = [r[1] for r in conn.execute("PRAGMA table_info(research_panel)")]
     real_cols = [c for c in pb.ALL_COLS if c not in ("sym", "date", "sector")]
-    rows = conn.execute("SELECT %s FROM research_panel ORDER BY sym,date"
-                        % ",".join(pb.ALL_COLS)).fetchall()
+    rows = conn.execute(
+        "SELECT %s FROM research_panel ORDER BY sym,date" % ",".join(pb.ALL_COLS)
+    ).fetchall()
     conn.close()
     by_sym, prev = {}, {}
     for tup in rows:
-        r = dict(zip(pb.ALL_COLS, tup))
+        r = dict(zip(pb.ALL_COLS, tup, strict=False))
         by_sym.setdefault(r["sym"], []).append(r)
     for sym, rs in by_sym.items():
         dates = [r["date"] for r in rs]
@@ -168,8 +175,9 @@ def audit_panel_db(db_path):
             if r["ret1d"] is not None and prev_c is not None and r["c"]:
                 expect = r["c"] / prev_c - 1.0
                 if abs(expect - r["ret1d"]) > 1e-9:
-                    issues.append("%s %s ret1d 与收盘价不自洽 %r vs %r"
-                                  % (sym, r["date"], r["ret1d"], expect))
+                    issues.append(
+                        "%s %s ret1d 与收盘价不自洽 %r vs %r" % (sym, r["date"], r["ret1d"], expect)
+                    )
             prev_c = r["c"]
             # 不允许 NaN/Inf 落库（None 允许=历史不足，绝不编造）
             for c in real_cols:
@@ -228,10 +236,13 @@ def run(argv=None):
 # =========================== 零网络合成断言 ===========================
 def selftest():
     import tempfile
+
     # 1) 时间戳泄漏：能检出越界、干净表不误报、缺失跳过
-    rows = [{"f": "2026-01-02", "e": "2026-01-01"},   # 越界
-            {"f": "2026-01-01", "e": "2026-01-01"},   # 相等允许
-            {"f": None, "e": "2026-01-01"}]            # 缺失跳过
+    rows = [
+        {"f": "2026-01-02", "e": "2026-01-01"},  # 越界
+        {"f": "2026-01-01", "e": "2026-01-01"},  # 相等允许
+        {"f": None, "e": "2026-01-01"},
+    ]  # 缺失跳过
     assert timestamp_leaks(rows, "f", "e") == [0]
     n, nleak, _ = asof_join_check([("2026-01-01", "2026-01-02"), ("2026-01-03", "2026-01-03")])
     assert n == 2 and nleak == 1
@@ -252,8 +263,9 @@ def selftest():
         rr, _ = pb.build_symbol_rows("RB", "黑色", bars, warmup=10)
         if len(bars) > 0:
             for r in rr:
-                r["ret1d"] = bars[-1]["c"]            # 偷看最后一根=未来
+                r["ret1d"] = bars[-1]["c"]  # 偷看最后一根=未来
         return rr
+
     assert assert_no_future(raw, leaky_build, [10, 30], ["ret1d"]), "未来函数未被扰动法检出"
 
     # 3) parity：面板与实时同函数逐值一致；注入差异能被检出
@@ -262,7 +274,8 @@ def selftest():
     rows3, _ = pb.build_symbol_rows("RB", "黑色", raw, warmup=10)
     adj, _ = __import__("backtest").ratio_adjusted_bars(list(raw))
     d2t = {str(b.get("d", "")): t for t, b in enumerate(adj)}
-    hacked = dict(rows3[10]); hacked["ma5"] = 999.0
+    hacked = dict(rows3[10])
+    hacked["ma5"] = 999.0
     assert parity_one(adj, hacked, d2t[hacked["date"]], ["ma5"])
 
     # 4) 缓存面板结构审计：干净面板通过；篡改 ret1d / 注入 NaN 被抓
@@ -283,7 +296,9 @@ def selftest():
         res2 = audit_panel_db(dbp)
         assert any("ret1d" in x for x in res2["issues"]), res2["issues"]
 
-    print("pit_audit selftest ALL PASS（时间戳泄漏/asof越界/扰动无未来+反向用例/训练服务parity+注入检出/面板结构审计）")
+    print(
+        "pit_audit selftest ALL PASS（时间戳泄漏/asof越界/扰动无未来+反向用例/训练服务parity+注入检出/面板结构审计）"
+    )
     return 0
 
 

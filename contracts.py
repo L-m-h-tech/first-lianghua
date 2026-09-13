@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求⑤】主力合约月份探测与缓存（购买建议标明具体合约时间段）：
 枚举每个品种未来8个月的月份合约（四大交易所统一 nf_大写品种+4位年月），
 按"成交量+持仓量"排序得到主力月份；期权月份优先结合 webdata.OpenVlab真实挂牌
@@ -11,6 +10,7 @@
 即得到主力/次主力月份；期权月份优先选取估算剩余天数满足 OPT_MIN_DAYS 的
 最活跃月份。
 """
+
 import threading
 import time
 from datetime import date
@@ -82,12 +82,20 @@ def fetch_ranking(sym, count=None):
         score = vol + oi
         if score <= 0:
             continue
-        ranked.append({"code": code, "yy": yy, "mm": mm,
-                       "vol": vol, "oi": oi, "score": score,
-                       # 保留价格字段供期限结构组装（零额外请求）
-                       "latest": float(q.get("latest") or 0.0),
-                       "prev_settle": float(q.get("prev_settle") or 0.0),
-                       "chg_pct": float(q.get("chg_pct") or 0.0)})
+        ranked.append(
+            {
+                "code": code,
+                "yy": yy,
+                "mm": mm,
+                "vol": vol,
+                "oi": oi,
+                "score": score,
+                # 保留价格字段供期限结构组装（零额外请求）
+                "latest": float(q.get("latest") or 0.0),
+                "prev_settle": float(q.get("prev_settle") or 0.0),
+                "chg_pct": float(q.get("chg_pct") or 0.0),
+            }
+        )
     ranked.sort(key=lambda x: -x["score"])
     return ranked
 
@@ -121,27 +129,34 @@ class ContractCache:
                     key = r["yy"] * 100 + r["mm"]
                     if key in cal:
                         d = (cal[key]["exp_date"] - date.today()).days
-                        info["opt_month"] = dict(r, opt_days=d,
-                                                 exp_date=cal[key]["exp_date"],
-                                                 opt_src="OpenVlab真实到期日")
+                        info["opt_month"] = dict(
+                            r,
+                            opt_days=d,
+                            exp_date=cal[key]["exp_date"],
+                            opt_src="OpenVlab真实到期日",
+                        )
                         break
                     d = estimate_option_days(r["yy"], r["mm"])
                     if d >= config.OPT_MIN_DAYS:
-                        info["opt_month"] = dict(r, opt_days=d,
-                                                 opt_src="估算(交割月前一月中旬)")
+                        info["opt_month"] = dict(r, opt_days=d, opt_src="估算(交割月前一月中旬)")
                         break
                 if info["opt_month"] is None:
                     r = cands[0]
                     key = r["yy"] * 100 + r["mm"]
                     if key in cal:
                         d = (cal[key]["exp_date"] - date.today()).days
-                        info["opt_month"] = dict(r, opt_days=max(d, 5),
-                                                 exp_date=cal[key]["exp_date"],
-                                                 opt_src="OpenVlab真实到期日")
+                        info["opt_month"] = dict(
+                            r,
+                            opt_days=max(d, 5),
+                            exp_date=cal[key]["exp_date"],
+                            opt_src="OpenVlab真实到期日",
+                        )
                     else:
-                        info["opt_month"] = dict(r, opt_days=max(
-                            estimate_option_days(r["yy"], r["mm"]), 5),
-                            opt_src="估算(交割月前一月中旬)")
+                        info["opt_month"] = dict(
+                            r,
+                            opt_days=max(estimate_option_days(r["yy"], r["mm"]), 5),
+                            opt_src="估算(交割月前一月中旬)",
+                        )
             fresh[sym] = (time.time(), info)
         if fresh:
             with self.lock:
@@ -179,11 +194,19 @@ def term_structure(info):
     rows.sort(key=lambda r: _month_index(r["yy"], r["mm"]))
     if len(rows) < config.TERM_MIN_MONTHS:
         return None
-    months = [{"label": f"{r['yy']:02d}{r['mm']:02d}", "code": r["code"],
-               "price": r["latest"], "oi": r.get("oi", 0)} for r in rows]
+    months = [
+        {
+            "label": f"{r['yy']:02d}{r['mm']:02d}",
+            "code": r["code"],
+            "price": r["latest"],
+            "oi": r.get("oi", 0),
+        }
+        for r in rows
+    ]
     near, far = rows[0], rows[-1]
-    gap_days = max(1.0, (_month_index(far["yy"], far["mm"])
-                         - _month_index(near["yy"], near["mm"])) * 30.42)
+    gap_days = max(
+        1.0, (_month_index(far["yy"], far["mm"]) - _month_index(near["yy"], near["mm"])) * 30.42
+    )
     spread = near["latest"] - far["latest"]
     spread_pct = spread / far["latest"] if far["latest"] > 0 else 0.0
     annual_carry = (near["latest"] / far["latest"] - 1.0) * config.TERM_ANNUAL_DAYS / gap_days
@@ -202,10 +225,21 @@ def term_structure(info):
     seq = "、".join(f"{m['label']}:{m['price']:g}" for m in months[:6])
     if len(months) > 6:
         seq += "…"
-    note = (f"期限结构 {shape}；{near['code']} {near['latest']:g} vs {far['code']} {far['latest']:g}"
-            f"，近-远月差{spread:+.1f}({spread_pct*100:+.2f}%)，年化展期收益率{annual_carry*100:+.2f}%；"
-            f"{slope_note}｜月序 {seq}")
-    return {"months": months, "near_label": months[0]["label"], "far_label": months[-1]["label"],
-            "near_price": near["latest"], "far_price": far["latest"],
-            "spread": spread, "spread_pct": spread_pct, "annual_carry": annual_carry,
-            "shape": shape, "slope_note": slope_note, "note": note}
+    note = (
+        f"期限结构 {shape}；{near['code']} {near['latest']:g} vs {far['code']} {far['latest']:g}"
+        f"，近-远月差{spread:+.1f}({spread_pct * 100:+.2f}%)，年化展期收益率{annual_carry * 100:+.2f}%；"
+        f"{slope_note}｜月序 {seq}"
+    )
+    return {
+        "months": months,
+        "near_label": months[0]["label"],
+        "far_label": months[-1]["label"],
+        "near_price": near["latest"],
+        "far_price": far["latest"],
+        "spread": spread,
+        "spread_pct": spread_pct,
+        "annual_carry": annual_carry,
+        "shape": shape,
+        "slope_note": slope_note,
+        "note": note,
+    }

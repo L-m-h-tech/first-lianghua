@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第13轮 WP-C：基本面数据直连（零新增第三方依赖，仅用 requests + 标准库）。
 
 数据源（2026-09-01 实测）：
@@ -13,23 +12,31 @@
 设计：日频缓存（同一自然日只拉一次），线程安全；库存/基差由后台线程批量预热，龙虎榜按主力合约
 按需取并缓存，全部失败都软降级（返回 None），不影响主监控管线。
 """
+
 import datetime
 import re
 import threading
 
 import config
-from http_client import http
 import html_text
+from http_client import http
 
 EM_API = config.FUND_EM_API
-EM_HEADERS = {"Referer": "https://data.eastmoney.com/", "Accept": "application/json, text/plain, */*"}
+EM_HEADERS = {
+    "Referer": "https://data.eastmoney.com/",
+    "Accept": "application/json, text/plain, */*",
+}
 
 
 def _em_get(params, timeout=12):
     """东财 datacenter 统一 GET，返回 result.data 列表；任何异常/空结果返回 []。"""
     try:
-        r = http.get(EM_API, params=dict(params, source="WEB", client="WEB"),
-                     headers=EM_HEADERS, timeout=timeout)
+        r = http.get(
+            EM_API,
+            params=dict(params, source="WEB", client="WEB"),
+            headers=EM_HEADERS,
+            timeout=timeout,
+        )
         if r.status_code != 200:
             return []
         j = r.json()
@@ -44,13 +51,13 @@ def _em_get(params, timeout=12):
 # 生意社页面商品名与 config.VARIETIES 命名不同的实测差异项（2026-09-11 实测 52 行产品、
 # 精确映射 40 + 别名 7；其余如 原油/20号胶/氧化铝/花生 等该站无对应现货行，诚实跳过不编造）。
 _PPI_NAME_ALIAS = {
-    "天然橡胶": "橡胶",        # RU
-    "石油沥青": "沥青",        # BU
-    "热轧卷板": "热卷",        # HC
-    "菜籽粕": "菜粕",          # RM
-    "聚氯乙烯": "PVC",         # V
-    "聚乙烯": "塑料",          # L
-    "涤纶短纤": "短纤",        # PF
+    "天然橡胶": "橡胶",  # RU
+    "石油沥青": "沥青",  # BU
+    "热轧卷板": "热卷",  # HC
+    "菜籽粕": "菜粕",  # RM
+    "聚氯乙烯": "PVC",  # V
+    "聚乙烯": "塑料",  # L
+    "涤纶短纤": "短纤",  # PF
 }
 
 _PPI_SYM_MAP = {}
@@ -84,8 +91,11 @@ def _ppi_product_rows(tables):
     """extract_tables 结果 -> 产品行最多那张表的有效行（首格可映射品种名、次格为正数价格）。"""
     best = None
     for tbl in tables:
-        rows = [cells for cells in tbl
-                if len(cells) >= 6 and _ppi_sym(cells[0]) and _ppi_float(cells[1])]
+        rows = [
+            cells
+            for cells in tbl
+            if len(cells) >= 6 and _ppi_sym(cells[0]) and _ppi_float(cells[1])
+        ]
         if rows and (best is None or len(rows) > len(best)):
             best = rows
     return best or []
@@ -126,10 +136,10 @@ def ppi_page_ok(text):
 class FundamentalFetcher:
     def __init__(self):
         self.lock = threading.RLock()
-        self._inv_map = None                 # {SYM大写: 东财原始code(保留大小写)}
-        self._inv_cache = {}                 # sym大写 -> (自然日str, series)
-        self._rank_cache = {}                # 合约代码 -> (自然日str, rank_dict)
-        self._basis_cache = {}               # 自然日str -> {SYM大写: basis_rate} 或 None(反爬)
+        self._inv_map = None  # {SYM大写: 东财原始code(保留大小写)}
+        self._inv_cache = {}  # sym大写 -> (自然日str, series)
+        self._rank_cache = {}  # 合约代码 -> (自然日str, rank_dict)
+        self._basis_cache = {}  # 自然日str -> {SYM大写: basis_rate} 或 None(反爬)
         self._map_day = ""
 
     # ---------------- 品种代码映射 ----------------
@@ -139,14 +149,22 @@ class FundamentalFetcher:
         with self.lock:
             if self._inv_map is not None and not force and self._map_day == today:
                 return dict(self._inv_map)
-        rows = _em_get({"reportName": "RPT_FUTU_POSITIONCODE", "columns": "TRADE_CODE,TRADE_TYPE",
-                        "filter": '(IS_MAINCODE="1")', "pageNumber": "1",
-                        "pageSize": "500", "sortTypes": "1", "sortColumns": "TRADE_CODE"})
+        rows = _em_get(
+            {
+                "reportName": "RPT_FUTU_POSITIONCODE",
+                "columns": "TRADE_CODE,TRADE_TYPE",
+                "filter": '(IS_MAINCODE="1")',
+                "pageNumber": "1",
+                "pageSize": "500",
+                "sortTypes": "1",
+                "sortColumns": "TRADE_CODE",
+            }
+        )
         mp = {}
         for x in rows:
             code = (x.get("TRADE_CODE") or "").strip()
             if code:
-                mp[code.upper()] = code       # 广期所东财为小写 si/lc/ps，统一用大写键、保留原值
+                mp[code.upper()] = code  # 广期所东财为小写 si/lc/ps，统一用大写键、保留原值
         with self.lock:
             if mp:
                 self._inv_map, self._map_day = mp, today
@@ -168,19 +186,29 @@ class FundamentalFetcher:
         em_code = self.em_code(key)
         if not em_code:
             return []
-        rows = _em_get({"reportName": "RPT_FUTU_STOCKDATA",
-                        "columns": "TRADE_DATE,ON_WARRANT_NUM,ADDCHANGE",
-                        "filter": f'(SECURITY_CODE="{em_code}")',
-                        "pageNumber": "1", "pageSize": str(config.FUND_EM_PAGE_SIZE),
-                        "sortTypes": "1", "sortColumns": "TRADE_DATE"})  # 升序
+        rows = _em_get(
+            {
+                "reportName": "RPT_FUTU_STOCKDATA",
+                "columns": "TRADE_DATE,ON_WARRANT_NUM,ADDCHANGE",
+                "filter": f'(SECURITY_CODE="{em_code}")',
+                "pageNumber": "1",
+                "pageSize": str(config.FUND_EM_PAGE_SIZE),
+                "sortTypes": "1",
+                "sortColumns": "TRADE_DATE",
+            }
+        )  # 升序
         series = []
         for x in rows:
             stock = x.get("ON_WARRANT_NUM")
             if stock is None:
                 continue
-            series.append({"date": (x.get("TRADE_DATE") or "")[:10],
-                           "stock": float(stock),
-                           "chg": (None if x.get("ADDCHANGE") is None else float(x.get("ADDCHANGE")))})
+            series.append(
+                {
+                    "date": (x.get("TRADE_DATE") or "")[:10],
+                    "stock": float(stock),
+                    "chg": (None if x.get("ADDCHANGE") is None else float(x.get("ADDCHANGE"))),
+                }
+            )
         with self.lock:
             self._inv_cache[key] = (today, series)
         return series
@@ -199,9 +227,16 @@ class FundamentalFetcher:
             hit = self._rank_cache.get(sec)
             if hit and hit[0] == today:
                 return hit[1]
-        rows = _em_get({"reportName": "RPT_FUTU_DAILYPOSITION", "columns": "ALL",
-                        "filter": f'(SECURITY_CODE="{sec}")(TYPE="2")',
-                        "sortTypes": "-1", "sortColumns": "TRADE_DATE", "pageSize": "3"})
+        rows = _em_get(
+            {
+                "reportName": "RPT_FUTU_DAILYPOSITION",
+                "columns": "ALL",
+                "filter": f'(SECURITY_CODE="{sec}")(TYPE="2")',
+                "sortTypes": "-1",
+                "sortColumns": "TRADE_DATE",
+                "pageSize": "3",
+            }
+        )
         out = None
         if rows:
             # 按日期分组，取最新交易日的三行（本日合计/上日合计/总量增减）
@@ -210,11 +245,13 @@ class FundamentalFetcher:
             today_row = next((r for r in day if r.get("MEMBER_NAME_ABBR") == "本日合计"), None)
             prev_row = next((r for r in day if r.get("MEMBER_NAME_ABBR") == "上日合计"), None)
             if today_row:
-                out = {"date": latest,
-                       "long": float(today_row.get("LONG_POSITION") or 0),
-                       "short": float(today_row.get("SHORT_POSITION") or 0),
-                       "prev_long": float(prev_row.get("LONG_POSITION") or 0) if prev_row else 0.0,
-                       "prev_short": float(prev_row.get("SHORT_POSITION") or 0) if prev_row else 0.0}
+                out = {
+                    "date": latest,
+                    "long": float(today_row.get("LONG_POSITION") or 0),
+                    "short": float(today_row.get("SHORT_POSITION") or 0),
+                    "prev_long": float(prev_row.get("LONG_POSITION") or 0) if prev_row else 0.0,
+                    "prev_short": float(prev_row.get("SHORT_POSITION") or 0) if prev_row else 0.0,
+                }
         with self.lock:
             self._rank_cache[sec] = (today, out)
         return out
@@ -268,6 +305,7 @@ class FundamentalFetcher:
                 break
         try:
             import parser_health
+
             parser_health.record("ppi_basis", out is not None, len(out or {}))
         except Exception:
             pass

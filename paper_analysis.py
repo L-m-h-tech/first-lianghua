@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第114轮：纸面账户独立分析管线 paper_analysis.py。
 
 与主报告完全隔离的纸面专用分析：输入最新行情 quotes，产出
@@ -16,6 +15,7 @@ fut_rows（含 option_chain/iv_surface 装饰）+ opt_rows + strat_rows + chain_
   4. analyzer.analyze_all_varieties 内部 _analyze_lock(RLock) 与 run_cycle 互斥，
      线程安全；broker 侧 on_cycle/on_cycle_options 由 _locked 保护。
 """
+
 import time
 from collections import deque
 from datetime import date
@@ -51,7 +51,9 @@ def paper_analyze(state, quotes, watchlist=None):
             q = quotes.get(meta["code"])
             if q and q.get("latest"):
                 state.var_hist.setdefault(key, deque(maxlen=240)).append((now_ts, q["latest"]))
-        flow_map = state.flow_tracker.update(quotes, now_ts) if hasattr(state, "flow_tracker") else {}
+        flow_map = (
+            state.flow_tracker.update(quotes, now_ts) if hasattr(state, "flow_tracker") else {}
+        )
         fut_rows = analyzer.analyze_all_varieties(state, watchlist, quotes, flow_map)
     except Exception:
         fut_rows = []
@@ -61,6 +63,7 @@ def paper_analyze(state, quotes, watchlist=None):
     # 执行 risk_gate.apply_gate（写入 row["risk"]），供 paper_broker 在委托流上拦截 veto。
     try:
         import risk_gate
+
         for row in fut_rows:
             risk_gate.apply_gate(row)
     except Exception:
@@ -111,8 +114,11 @@ def _decorate_option_chains(state, fut_rows):
             # 日历键为完整年月6位（202611），新浪T链pinzhong需两位年（2611）
             yy, mm = (yymm // 100) % 100, yymm % 100
             exp_date = cal_months[yymm].get("exp_date")
-            dleft = (exp_date - date.today()).days if exp_date \
+            dleft = (
+                (exp_date - date.today()).days
+                if exp_date
                 else contracts.estimate_option_days(yy, mm)
+            )
             if dleft < config.IV_SURFACE_MIN_DAYS:
                 continue
             months.append((yy, mm, dleft))
@@ -120,7 +126,7 @@ def _decorate_option_chains(state, fut_rows):
             om0 = row.get("opt_month") or {}
             if om0.get("yy"):
                 months = [(om0["yy"], om0["mm"], om0.get("opt_days", config.OPT_ASSUMED_DAYS))]
-        months = months[:config.IV_SURFACE_EXPIRIES]
+        months = months[: config.IV_SURFACE_EXPIRIES]
         if not months:
             continue
         variety_expiries[sym] = months
@@ -156,8 +162,9 @@ def _decorate_option_chains(state, fut_rows):
         if main_label and main_label in chains_by_label:
             row["option_chain"] = chains_by_label[main_label]
         try:
-            surf = iv_surface.build_surface(sym, row["ex"], row["price"],
-                                            chains_by_label, days_map, main_label=main_label)
+            surf = iv_surface.build_surface(
+                sym, row["ex"], row["price"], chains_by_label, days_map, main_label=main_label
+            )
             if surf:
                 row["iv_surface"] = surf
         except Exception:

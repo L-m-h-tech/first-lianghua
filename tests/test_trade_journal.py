@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G30（第42轮）交易复盘 journal 零网络确定性测试（tools/trade_journal.py）。
 
 全部手算可核、不连 monitor.db（分钟库重放用 monkeypatch 注入合成 bars）：
@@ -8,43 +7,107 @@
   - 盘中 MFE/MAE：多空镜像、闭区间、区间外安全、attach 覆盖率与不依赖真实库
   - 报告/JSON 成稿、空数据降级、规则化观察（全胜桶不误报、弱桶命中）
 """
-import io
+
 import json
 import os
 
 import trade_journal as tj
 
 
-def _trade(sym="RB", sector="黑色", d="多", net=100.0, *, reason="日终强平",
-           score=3.0, hold=6, entry="2026-01-02 10:00:00", exit_="2026-01-02 15:00:00",
-           fee=10.0, gross=None, leg="平今", entry_px=100.0, lots=2):
-    return {"sym": sym, "name": sym, "sector": sector, "dir": d, "lots": lots,
-            "entry_dt": tj.parse_dt(entry), "exit_dt": tj.parse_dt(exit_),
-            "entry_px": entry_px, "exit_px": entry_px, "leg": leg, "hold_bars": hold,
-            "gross_yuan": net + fee if gross is None else gross,
-            "open_fee_yuan": fee / 2, "close_fee_yuan": fee / 2, "fee_yuan": fee,
-            "net_yuan": net, "reason": reason, "forced": "强平" in reason,
-            "entry_score": score, "margin_rate": 0.1,
-            "direction": 1 if d == "多" else -1}
+def _trade(
+    sym="RB",
+    sector="黑色",
+    d="多",
+    net=100.0,
+    *,
+    reason="日终强平",
+    score=3.0,
+    hold=6,
+    entry="2026-01-02 10:00:00",
+    exit_="2026-01-02 15:00:00",
+    fee=10.0,
+    gross=None,
+    leg="平今",
+    entry_px=100.0,
+    lots=2,
+):
+    return {
+        "sym": sym,
+        "name": sym,
+        "sector": sector,
+        "dir": d,
+        "lots": lots,
+        "entry_dt": tj.parse_dt(entry),
+        "exit_dt": tj.parse_dt(exit_),
+        "entry_px": entry_px,
+        "exit_px": entry_px,
+        "leg": leg,
+        "hold_bars": hold,
+        "gross_yuan": net + fee if gross is None else gross,
+        "open_fee_yuan": fee / 2,
+        "close_fee_yuan": fee / 2,
+        "fee_yuan": fee,
+        "net_yuan": net,
+        "reason": reason,
+        "forced": "强平" in reason,
+        "entry_score": score,
+        "margin_rate": 0.1,
+        "direction": 1 if d == "多" else -1,
+    }
 
 
 def _write_csv(tmp_path, rows):
     p = tmp_path / "trades.csv"
-    header = ["sym", "name", "sector", "dir", "lots", "entry_dt", "exit_dt", "entry_px",
-              "exit_px", "leg", "hold_bars", "gross_yuan", "open_fee_yuan",
-              "close_fee_yuan", "net_yuan", "reason", "forced", "entry_score", "margin_rate"]
-    with io.open(str(p), "w", encoding="utf-8", newline="") as f:
+    header = [
+        "sym",
+        "name",
+        "sector",
+        "dir",
+        "lots",
+        "entry_dt",
+        "exit_dt",
+        "entry_px",
+        "exit_px",
+        "leg",
+        "hold_bars",
+        "gross_yuan",
+        "open_fee_yuan",
+        "close_fee_yuan",
+        "net_yuan",
+        "reason",
+        "forced",
+        "entry_score",
+        "margin_rate",
+    ]
+    with open(str(p), "w", encoding="utf-8", newline="") as f:
         f.write(",".join(header) + "\n")
         for t in rows:
-            f.write(",".join([
-                t["sym"], t["name"], t["sector"], t["dir"], str(t["lots"]),
-                t["entry_dt"].strftime("%Y-%m-%d %H:%M:%S") if t["entry_dt"] else "",
-                t["exit_dt"].strftime("%Y-%m-%d %H:%M:%S") if t["exit_dt"] else "",
-                str(t["entry_px"]), str(t["exit_px"]), t["leg"], str(t["hold_bars"]),
-                str(t["gross_yuan"]), str(t["open_fee_yuan"]), str(t["close_fee_yuan"]),
-                str(t["net_yuan"]), t["reason"], str(t["forced"]),
-                "" if t["entry_score"] is None else str(t["entry_score"]),
-                str(t["margin_rate"])]) + "\n")
+            f.write(
+                ",".join(
+                    [
+                        t["sym"],
+                        t["name"],
+                        t["sector"],
+                        t["dir"],
+                        str(t["lots"]),
+                        t["entry_dt"].strftime("%Y-%m-%d %H:%M:%S") if t["entry_dt"] else "",
+                        t["exit_dt"].strftime("%Y-%m-%d %H:%M:%S") if t["exit_dt"] else "",
+                        str(t["entry_px"]),
+                        str(t["exit_px"]),
+                        t["leg"],
+                        str(t["hold_bars"]),
+                        str(t["gross_yuan"]),
+                        str(t["open_fee_yuan"]),
+                        str(t["close_fee_yuan"]),
+                        str(t["net_yuan"]),
+                        t["reason"],
+                        str(t["forced"]),
+                        "" if t["entry_score"] is None else str(t["entry_score"]),
+                        str(t["margin_rate"]),
+                    ]
+                )
+                + "\n"
+            )
     return str(p)
 
 
@@ -112,9 +175,11 @@ def test_bucket_table_handcalc():
 
 
 def test_period_pnl_and_curve():
-    ts = [_trade("RB", net=10, exit_="2026-01-02 15:00"),
-          _trade("MA", net=-5, exit_="2026-01-02 23:00"),
-          _trade("I", net=20, exit_="2026-01-05 15:00")]
+    ts = [
+        _trade("RB", net=10, exit_="2026-01-02 15:00"),
+        _trade("MA", net=-5, exit_="2026-01-02 23:00"),
+        _trade("I", net=20, exit_="2026-01-05 15:00"),
+    ]
     days = tj.period_pnl(ts, tj.day_key)
     assert len(days) == 2
     d0 = next(r for r in days if r["key"] == "2026-01-02")
@@ -146,7 +211,8 @@ def test_range_excursion_long_short():
 def test_range_excursion_safe():
     assert tj.range_excursion(1, 100.0, [], None, None) == (None, None, 0)
     mfe, mae, used = tj.range_excursion(
-        1, 100.0, _bars(), tj.parse_dt("2027-01-01 00:00:00"), tj.parse_dt("2027-01-02 00:00:00"))
+        1, 100.0, _bars(), tj.parse_dt("2027-01-01 00:00:00"), tj.parse_dt("2027-01-02 00:00:00")
+    )
     assert used == 0 and mfe is None and mae is None
     # 入场价非法
     assert tj.range_excursion(1, 0.0, _bars(), None, None) == (None, None, 0)
@@ -156,7 +222,9 @@ def test_attach_excursions_uses_injected_bars(monkeypatch):
     ts = [_trade("RB", net=10, entry="2026-01-02 10:00:00", exit_="2026-01-02 15:00:00")]
     monkeypatch.setattr(tj, "load_minute_bars_for", lambda *a, **k: _bars())
     meta = tj.attach_excursions(ts, period=30, lookback=100)
-    assert meta["total"] == 1 and meta["with_excursion"] == 1 and abs(meta["coverage"] - 1.0) < 1e-12
+    assert (
+        meta["total"] == 1 and meta["with_excursion"] == 1 and abs(meta["coverage"] - 1.0) < 1e-12
+    )
     assert abs(ts[0]["mfe_bar"] - 0.05) < 1e-12 and abs(ts[0]["mae_bar"] - 0.02) < 1e-12
     ex = tj.excursion_summary(ts)
     assert ex["n"] == 1 and abs(ex["avg_mfe"] - 0.05) < 1e-12
@@ -177,9 +245,11 @@ def test_build_report_empty_safe():
 
 
 def test_build_report_and_json_roundtrip(tmp_path):
-    ts = [_trade("RB", net=100, reason="止盈", score=5.0, hold=4),
-          _trade("RB", net=-50, reason="止损", score=3.0, hold=8),
-          _trade("MA", net=200, reason="止盈(跳空)", score=7.0, hold=3)]
+    ts = [
+        _trade("RB", net=100, reason="止盈", score=5.0, hold=4),
+        _trade("RB", net=-50, reason="止损", score=3.0, hold=8),
+        _trade("MA", net=200, reason="止盈(跳空)", score=7.0, hold=3),
+    ]
     rep = tj.build_report(ts, review="both")
     for kw in ("总览", "品种 sym", "信号强度", "日节奏", "周节奏", "最佳/最差", "规则化观察"):
         assert kw in rep
@@ -192,6 +262,7 @@ def test_observations_no_false_allwin_alert():
     # 12 笔全胜（PF=None）不得被报为弱势桶
     ts = [_trade("RB", net=10, reason="止盈") for _ in range(12)]
     import metrics
+
     overall = metrics.trade_stats([t["net_yuan"] for t in ts])
     obs = tj.observations(ts, overall, None)
     joined = "\n".join(obs)
@@ -202,19 +273,21 @@ def test_observations_flags_weak_bucket():
     # 12 笔全亏（PF=0）应命中品种弱势桶
     ts = [_trade("RB", net=-10, reason="止损") for _ in range(12)]
     import metrics
+
     overall = metrics.trade_stats([t["net_yuan"] for t in ts])
     obs = "\n".join(tj.observations(ts, overall, None))
     assert "品种=RB" in obs and "弱势桶" in obs
 
 
 def test_run_end_to_end(tmp_path):
-    rows = [_trade("RB", net=100, exit_="2026-01-05 15:00:00"),
-            _trade("MA", net=-40, d="空", score=-3.0, exit_="2026-01-06 15:00:00")]
+    rows = [
+        _trade("RB", net=100, exit_="2026-01-05 15:00:00"),
+        _trade("MA", net=-40, d="空", score=-3.0, exit_="2026-01-06 15:00:00"),
+    ]
     p = _write_csv(tmp_path, rows)
     out = str(tmp_path / "journal.txt")
     js = str(tmp_path / "journal.json")
-    rc = tj.run(["--trades", p, "--equity", "", "--review", "both",
-                 "--out", out, "--json-out", js])
+    rc = tj.run(["--trades", p, "--equity", "", "--review", "both", "--out", out, "--json-out", js])
     assert rc == 0 and os.path.exists(out) and os.path.exists(js)
-    with io.open(js, encoding="utf-8") as f:
+    with open(js, encoding="utf-8") as f:
         assert json.load(f)["n_trades"] == 2

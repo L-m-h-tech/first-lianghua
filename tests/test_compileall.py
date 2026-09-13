@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """全量生产模块语法编译回归：任何一个 .py 语法损坏都会让套件变红（确定性、零导入副作用）。"""
+
 import glob
 import os
 import py_compile

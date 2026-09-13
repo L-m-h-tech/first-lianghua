@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G14（第92轮）一档盘口低频快照自采 —— 新浪主连快照，5分钟级、非逐笔。
 
 总纲 G14（旧 P2-5）：对**主力合约**每轮（5 分钟级，非逐笔）采一次买一/卖一价量，
@@ -24,25 +23,24 @@ CLI：
   python orderbook_snapshot.py --stats-only   只刷新统计报告（读库不请求）
   python orderbook_snapshot.py --selftest     零网络合成断言
 """
+
 import argparse
 import json
-import logging
 import os
-import time
 from datetime import datetime, timedelta
 
 import config
-from utils import LOG
 
 # 复用新浪主源解析（_parse_quote 已增量带出 bid/ask/bid_vol/ask_vol/quote_date/quote_time）
 import futures_data
+from utils import LOG
 
-_LAST_COLLECT = [None]          # 进程内最近一次采集时刻（5分钟节流用；重启后由 DB 幂等兜底）
+_LAST_COLLECT = [None]  # 进程内最近一次采集时刻（5分钟节流用；重启后由 DB 幂等兜底）
 
-STATS_DAYS = 30                 # 价差统计窗口（自然日，覆盖最近约20个交易日）
-STATS_MIN_SAMPLE = 10           # 单品种最少样本数才给统计结论（不足诚实标注"样本不足"）
+STATS_DAYS = 30  # 价差统计窗口（自然日，覆盖最近约20个交易日）
+STATS_MIN_SAMPLE = 10  # 单品种最少样本数才给统计结论（不足诚实标注"样本不足"）
 # 价差合理性上限（基点）：超过即视为瞬时异常/坏行情，统计时排除（采集入库仍保留原始行）。
-SPREAD_BP_CAP = 500.0           # 500bp=5%（开盘集合竞价/异常时刻常见放大，正常盘口远小于此）
+SPREAD_BP_CAP = 500.0  # 500bp=5%（开盘集合竞价/异常时刻常见放大，正常盘口远小于此）
 
 
 def _pilots():
@@ -79,6 +77,7 @@ def collect_once(db, now=None, force=False, fetcher=None):
             return {"stored": 0, "skipped": "disabled"}
         if not force and getattr(config, "SNAPSHOT_ONLY_TRADING", True):
             from utils import is_trading_time
+
             trading, _desc = is_trading_time(now)
             if not trading:
                 return {"stored": 0, "skipped": "off_hours"}
@@ -107,32 +106,50 @@ def collect_once(db, now=None, force=False, fetcher=None):
             qt = str(q.get("quote_time") or "")
             bkt = _bucket(qd, qt, now)
             # 进程内同桶同价量去重（避免重复 upsert 抖动 id；跨重启由 DB (sym,bucket) 幂等兜底）
-            sig = (sym, bkt, bid, ask, float(q.get("bid_vol") or 0.0), float(q.get("ask_vol") or 0.0))
+            sig = (
+                sym,
+                bkt,
+                bid,
+                ask,
+                float(q.get("bid_vol") or 0.0),
+                float(q.get("ask_vol") or 0.0),
+            )
             if sig in sig_seen:
                 continue
             sig_seen.add(sig)
-            rows.append({
-                "sym": sym, "variety": variety, "bucket": bkt,
-                "quote_date": qd, "quote_time": qt,
-                "collected_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "bid": bid, "ask": ask, "latest": latest,
-                "bid_vol": float(q.get("bid_vol") or 0.0),
-                "ask_vol": float(q.get("ask_vol") or 0.0),
-                "spread": round(ask - bid, 6),
-                "spread_bp": round((ask - bid) / latest * 1e4, 4) if latest > 0 else 0.0,
-                "prev_settle": float(q.get("prev_settle") or 0.0),
-                "oi": float(q.get("open_interest") or 0.0),
-                "volume": float(q.get("volume") or 0.0),
-                "created_real": now.timestamp(),
-            })
+            rows.append(
+                {
+                    "sym": sym,
+                    "variety": variety,
+                    "bucket": bkt,
+                    "quote_date": qd,
+                    "quote_time": qt,
+                    "collected_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "bid": bid,
+                    "ask": ask,
+                    "latest": latest,
+                    "bid_vol": float(q.get("bid_vol") or 0.0),
+                    "ask_vol": float(q.get("ask_vol") or 0.0),
+                    "spread": round(ask - bid, 6),
+                    "spread_bp": round((ask - bid) / latest * 1e4, 4) if latest > 0 else 0.0,
+                    "prev_settle": float(q.get("prev_settle") or 0.0),
+                    "oi": float(q.get("open_interest") or 0.0),
+                    "volume": float(q.get("volume") or 0.0),
+                    "created_real": now.timestamp(),
+                }
+            )
         stored = db.upsert_tick_snapshots(rows) if rows else 0
         if stored:
             try:
                 render_stats(db)
             except Exception:
                 LOG.warning("G14 统计报告刷新失败（不影响采集）:\n", exc_info=True)
-        LOG.info("G14 盘口快照: 采到 %d 个品种 / 落库 %d 行 (bucket=%s)",
-                 len(rows), stored, rows[0]["bucket"] if rows else "-")
+        LOG.info(
+            "G14 盘口快照: 采到 %d 个品种 / 落库 %d 行 (bucket=%s)",
+            len(rows),
+            stored,
+            rows[0]["bucket"] if rows else "-",
+        )
         return {"stored": stored, "n_rows": len(rows), "skipped": ""}
     except Exception:
         LOG.warning("G14 盘口快照采集失败（已吞掉，下轮自动重试）: %s", _exc_text())
@@ -141,10 +158,12 @@ def collect_once(db, now=None, force=False, fetcher=None):
 
 def _exc_text():
     import traceback
+
     return traceback.format_exc(limit=3)
 
 
 # ---------------- 统计报告 ----------------
+
 
 def render_stats(db, days=None, txt=None, js=None):
     """读 tick_snapshots 最近 days 天，输出 reports/orderbook_stats.txt/.json（价差统计）。"""
@@ -163,23 +182,40 @@ def render_stats(db, days=None, txt=None, js=None):
         n_bp = len(bps)
         last = rs[-1]
         entry = {
-            "n_samples": len(rs), "n_valid_spread": n_bp,
-            "first": rs[0]["collected_at"], "last": last["collected_at"],
+            "n_samples": len(rs),
+            "n_valid_spread": n_bp,
+            "first": rs[0]["collected_at"],
+            "last": last["collected_at"],
             "spread_bp_avg": round(sum(bps) / n_bp, 3) if n_bp else None,
             "spread_bp_median": _median(bps) if n_bp else None,
             "spread_bp_max": round(max(bps), 3) if n_bp else None,
-            "spread_abs_avg": round(sum(r["spread"] for r in rs if r["spread"] >= 0) / max(len(rs), 1), 6),
-            "latest_bid": last["bid"], "latest_ask": last["ask"], "latest": last["latest"],
+            "spread_abs_avg": round(
+                sum(r["spread"] for r in rs if r["spread"] >= 0) / max(len(rs), 1), 6
+            ),
+            "latest_bid": last["bid"],
+            "latest_ask": last["ask"],
+            "latest": last["latest"],
             "latest_spread_bp": last["spread_bp"],
-            "quote_date": last["quote_date"], "quote_time": last["quote_time"],
+            "quote_date": last["quote_date"],
+            "quote_time": last["quote_time"],
         }
         per_sym[sym] = entry
         summary["n_syms"] += 1
     summary["per_sym"] = per_sym
     _render_txt(txt, summary, by_sym)
     with open(js, "w", encoding="utf-8") as f:
-        json.dump({"asof": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "generated_by": "orderbook_snapshot",
-                   "days": days, "per_sym": per_sym, "n_rows": len(rows)}, f, ensure_ascii=False, indent=1)
+        json.dump(
+            {
+                "asof": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "generated_by": "orderbook_snapshot",
+                "days": days,
+                "per_sym": per_sym,
+                "n_rows": len(rows),
+            },
+            f,
+            ensure_ascii=False,
+            indent=1,
+        )
     return summary
 
 
@@ -199,26 +235,50 @@ def _hhmm(qt):
 def _render_txt(txt, summary, by_sym):
     lines = []
     lines.append("=" * 78)
-    lines.append("G14 一档盘口快照统计（新浪主连 5分钟级；最近 %d 天；asof %s）"
-                 % (summary["days"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    lines.append("样本 %d 行 / %d 个试点品种；价差=卖一-买一；bp=价差/最新价×10000" % (summary["n_rows"], summary["n_syms"]))
+    lines.append(
+        "G14 一档盘口快照统计（新浪主连 5分钟级；最近 %d 天；asof %s）"
+        % (summary["days"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    lines.append(
+        "样本 %d 行 / %d 个试点品种；价差=卖一-买一；bp=价差/最新价×10000"
+        % (summary["n_rows"], summary["n_syms"])
+    )
     lines.append("-" * 78)
-    lines.append("%-4s %-8s %8s %9s %9s %9s %8s %14s" %
-                 ("sym", "样本数", "均价差bp", "中位bp", "最大bp", "最新bp", "绝对均价差", "最新行情"))
+    lines.append(
+        "%-4s %-8s %8s %9s %9s %9s %8s %14s"
+        % ("sym", "样本数", "均价差bp", "中位bp", "最大bp", "最新bp", "绝对均价差", "最新行情")
+    )
     for sym, e in summary["per_sym"].items():
         avg = "%.2f" % e["spread_bp_avg"] if e["spread_bp_avg"] is not None else "n<min"
         med = "%.2f" % e["spread_bp_median"] if e["spread_bp_median"] is not None else "-"
         mx = "%.2f" % e["spread_bp_max"] if e["spread_bp_max"] is not None else "-"
-        lines.append("%-4s %8d %9s %9s %9s %8s %14s %s %s → bid %s ask %s (最新 %s)"
-                     % (sym, e["n_samples"], avg, med, mx,
-                        "%.2f" % e["latest_spread_bp"] if e["latest_spread_bp"] is not None else "-",
-                        "%.6f" % e["spread_abs_avg"],
-                        (e["quote_date"] or "") + (" " + _hhmm(e["quote_time"]) if e["quote_time"] else ""),
-                        sym, e["latest_bid"], e["latest_ask"], e["latest"]))
+        lines.append(
+            "%-4s %8d %9s %9s %9s %8s %14s %s %s → bid %s ask %s (最新 %s)"
+            % (
+                sym,
+                e["n_samples"],
+                avg,
+                med,
+                mx,
+                "%.2f" % e["latest_spread_bp"] if e["latest_spread_bp"] is not None else "-",
+                "%.6f" % e["spread_abs_avg"],
+                (e["quote_date"] or "") + (" " + _hhmm(e["quote_time"]) if e["quote_time"] else ""),
+                sym,
+                e["latest_bid"],
+                e["latest_ask"],
+                e["latest"],
+            )
+        )
     lines.append("-" * 78)
-    under = {sym: e for sym, e in summary["per_sym"].items() if (e["n_valid_spread"] or 0) < STATS_MIN_SAMPLE}
+    under = {
+        sym: e
+        for sym, e in summary["per_sym"].items()
+        if (e["n_valid_spread"] or 0) < STATS_MIN_SAMPLE
+    }
     if under:
-        lines.append("样本不足(<%d)不纳入均值结论: %s" % (STATS_MIN_SAMPLE, ",".join(sorted(under))))
+        lines.append(
+            "样本不足(<%d)不纳入均值结论: %s" % (STATS_MIN_SAMPLE, ",".join(sorted(under)))
+        )
     lines.append("口径: 主连快照非逐笔; 采集仅在交易时段(5分钟节流); 同桶去重; 非法档位丢弃不编造;")
     lines.append("     用途=统计真实价差/校准回测滑点/给G1保守成交价(尚未接线); 不构成交易建议。")
     with open(txt, "w", encoding="utf-8") as f:
@@ -228,10 +288,13 @@ def _render_txt(txt, summary, by_sym):
 
 # ---------------- selftest / CLI ----------------
 
+
 def selftest():
     """零网络合成断言：桶推导/软降级/upsert去重/节流/时段门控/统计报告。"""
     import tempfile
+
     from storage import MonitorDB
+
     checks = []
 
     def ck(name, cond):
@@ -248,14 +311,32 @@ def selftest():
             out = {}
             for c in codes:
                 if c == "RB0":
-                    out[c] = {"name": "螺纹钢连续", "latest": 3173.0, "bid": 3172.0, "ask": 3173.0,
-                              "bid_vol": 218.0, "ask_vol": 7.0, "open_interest": 1502783.0,
-                              "volume": 277062.0, "prev_settle": 3160.0,
-                              "quote_date": "2026-09-04", "quote_time": qtime}
+                    out[c] = {
+                        "name": "螺纹钢连续",
+                        "latest": 3173.0,
+                        "bid": 3172.0,
+                        "ask": 3173.0,
+                        "bid_vol": 218.0,
+                        "ask_vol": 7.0,
+                        "open_interest": 1502783.0,
+                        "volume": 277062.0,
+                        "prev_settle": 3160.0,
+                        "quote_date": "2026-09-04",
+                        "quote_time": qtime,
+                    }
                 elif c == "CU0":
-                    out[c] = {"name": "铜连续", "latest": 109290.0, "bid": 0.0, "ask": 109290.0,  # 非法档位
-                              "bid_vol": 0.0, "ask_vol": 2.0, "quote_date": "2026-09-05", "quote_time": "010000"}
+                    out[c] = {
+                        "name": "铜连续",
+                        "latest": 109290.0,
+                        "bid": 0.0,
+                        "ask": 109290.0,  # 非法档位
+                        "bid_vol": 0.0,
+                        "ask_vol": 2.0,
+                        "quote_date": "2026-09-05",
+                        "quote_time": "010000",
+                    }
             return out
+
         return fake_fetcher
 
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -264,43 +345,74 @@ def selftest():
     try:
         res = collect_once(db, now=now, force=True, fetcher=make_fetcher("230000"))
         ck("force采集落库1行(RB有效,CU非法档位被过滤)", res["stored"] == 1)
-        ck("upsert幂等: 同桶重复采集仍1行", collect_once(db, now=now + timedelta(minutes=3),
-                                                     force=True, fetcher=make_fetcher("230000"))["stored"] == 1
-           and db.conn.execute("SELECT COUNT(*) FROM tick_snapshots").fetchone()[0] == 1)
-        ck("不同行情桶新增一行", collect_once(db, now=now + timedelta(minutes=6), force=True,
-                                           fetcher=make_fetcher("230500"))["stored"] == 1
-           and db.conn.execute("SELECT COUNT(*) FROM tick_snapshots").fetchone()[0] == 2)
+        ck(
+            "upsert幂等: 同桶重复采集仍1行",
+            collect_once(
+                db, now=now + timedelta(minutes=3), force=True, fetcher=make_fetcher("230000")
+            )["stored"]
+            == 1
+            and db.conn.execute("SELECT COUNT(*) FROM tick_snapshots").fetchone()[0] == 1,
+        )
+        ck(
+            "不同行情桶新增一行",
+            collect_once(
+                db, now=now + timedelta(minutes=6), force=True, fetcher=make_fetcher("230500")
+            )["stored"]
+            == 1
+            and db.conn.execute("SELECT COUNT(*) FROM tick_snapshots").fetchone()[0] == 2,
+        )
         # 节流（临时关时段门控，仅验证节流本身；随后恢复）
         _LAST_COLLECT[0] = None
         _saved_gate = config.SNAPSHOT_ONLY_TRADING
         config.SNAPSHOT_ONLY_TRADING = False
         try:
             collect_once(db, now=now, force=True, fetcher=make_fetcher("230000"))
-            ck("节流: 5分钟内重复调用跳过", collect_once(db, now=now + timedelta(seconds=60),
-                                                      fetcher=make_fetcher("230000"))["skipped"] == "throttle")
+            ck(
+                "节流: 5分钟内重复调用跳过",
+                collect_once(db, now=now + timedelta(seconds=60), fetcher=make_fetcher("230000"))[
+                    "skipped"
+                ]
+                == "throttle",
+            )
         finally:
             config.SNAPSHOT_ONLY_TRADING = _saved_gate
         # 时段门控（周末时刻=确定非交易时段；force 绕过）
         _LAST_COLLECT[0] = None
         weekend = datetime(2026, 9, 6, 12, 0, 0)
         if not hasattr(config, "SNAPSHOT_ONLY_TRADING") or config.SNAPSHOT_ONLY_TRADING:
-            ck("非交易时段默认跳过", collect_once(db, now=weekend, fetcher=make_fetcher("230000"))["skipped"] == "off_hours")
-            ck("force绕过时段门控", collect_once(db, now=weekend, force=True,
-                                               fetcher=make_fetcher("230000"))["stored"] >= 1)
+            ck(
+                "非交易时段默认跳过",
+                collect_once(db, now=weekend, fetcher=make_fetcher("230000"))["skipped"]
+                == "off_hours",
+            )
+            ck(
+                "force绕过时段门控",
+                collect_once(db, now=weekend, force=True, fetcher=make_fetcher("230000"))["stored"]
+                >= 1,
+            )
         # 统计报告
-        summ = render_stats(db, days=30, txt=os.path.join(tempfile.gettempdir(), "ob_snap_selftest.txt"),
-                            js=os.path.join(tempfile.gettempdir(), "ob_snap_selftest.json"))
+        summ = render_stats(
+            db,
+            days=30,
+            txt=os.path.join(tempfile.gettempdir(), "ob_snap_selftest.txt"),
+            js=os.path.join(tempfile.gettempdir(), "ob_snap_selftest.json"),
+        )
         ck("统计含RB且样本>=1", summ["per_sym"].get("RB", {}).get("n_samples", 0) >= 1)
         ck("RB均价差bp为正", (summ["per_sym"]["RB"].get("spread_bp_avg") or 0) > 0)
     finally:
         db.close()
-        for p in (tmp.name, os.path.join(tempfile.gettempdir(), "ob_snap_selftest.txt"),
-                  os.path.join(tempfile.gettempdir(), "ob_snap_selftest.json")):
+        for p in (
+            tmp.name,
+            os.path.join(tempfile.gettempdir(), "ob_snap_selftest.txt"),
+            os.path.join(tempfile.gettempdir(), "ob_snap_selftest.json"),
+        ):
             try:
                 os.remove(p)
             except OSError:
                 pass
-    LOG.info("orderbook_snapshot selftest: %d/%d 通过", sum(1 for _, ok in checks if ok), len(checks))
+    LOG.info(
+        "orderbook_snapshot selftest: %d/%d 通过", sum(1 for _, ok in checks if ok), len(checks)
+    )
     return 0 if all(ok for _, ok in checks) else 1
 
 
@@ -313,11 +425,15 @@ def main(argv=None):
     if args.selftest:
         return selftest()
     from storage import MonitorDB
+
     db = MonitorDB()
     try:
         if args.stats_only:
             summ = render_stats(db, days=args.days)
-            print("stats-only: %d 行 / %d 品种 → %s" % (summ["n_rows"], summ["n_syms"], config.SNAPSHOT_STATS_TXT))
+            print(
+                "stats-only: %d 行 / %d 品种 → %s"
+                % (summ["n_rows"], summ["n_syms"], config.SNAPSHOT_STATS_TXT)
+            )
         else:
             res = collect_once(db, force=True)
             print("collect: %s" % json.dumps(res, ensure_ascii=False))

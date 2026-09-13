@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求②】期货综合分析与购买建议（评级/仓位/ATR止损止盈）：
 综合分 = 新闻因子【需求①】+ 原油联动【需求①】+ 机构动向【需求⑥】+ 日线动量 + 盘中动量，
 范围[-10,+10]；信号分级 观望/轻仓/分批建仓/顺势持有。
@@ -8,6 +7,7 @@
   消息面趋势/日线动量/原油隔夜方向）。
 【需求⑩】建议/报告上的时间与轮动节奏标注由 report.render + rotation_desc 提供。
 """
+
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -15,10 +15,10 @@ from datetime import datetime
 
 import config
 import contracts as contracts_mod
-import trade_calendar
 import fundamental_factors
+import trade_calendar
+from factors import facet_tags, sentiment_facets
 from utils import clip, fmt_px
-from factors import sentiment_facets, facet_tags
 
 # 保护 _parts_via_plugins 模块级全局（factor_parts 注册表）——run_cycle 与 paper_ticker
 # 可能并发调用 analyze_all_varieties，必须互斥，否则两线程互踩 factor_parts/factor_plugin。
@@ -38,8 +38,20 @@ def rating(score):
     return f"强看{d}", f"顺势持{d}（40%~60%仓位），移动止损跟踪", 82
 
 
-def _parts_via_plugins(fallback, oil_w, news_score, oil_score, inst, ind, kline_ok, price,
-                       tick_mom, flow, term, fund_raw):
+def _parts_via_plugins(
+    fallback,
+    oil_w,
+    news_score,
+    oil_score,
+    inst,
+    ind,
+    kline_ok,
+    price,
+    tick_mom,
+    flow,
+    term,
+    fund_raw,
+):
     """G2 最后一切片（第60轮）：经 factor_parts 注册表装配 9 个 live part 重建 parts。
 
     惰性 import 插件层（顶层不依赖）；9 个 part 已在 factor_parts.selftest 逐位 parity，
@@ -48,21 +60,44 @@ def _parts_via_plugins(fallback, oil_w, news_score, oil_score, inst, ind, kline_
     try:
         import factor_parts
         import factor_plugin as _fp
+
         factor_parts.register_builtin_parts(replace=True)
         try:
             return factor_parts.assemble_live_parts(
-                news_score=news_score, oil_w=oil_w, oil_score=oil_score, inst=inst, ind=ind,
-                kline_ok=kline_ok, price=price, tick_mom=tick_mom, flow=flow, term=term,
-                fund_raw=fund_raw)
+                news_score=news_score,
+                oil_w=oil_w,
+                oil_score=oil_score,
+                inst=inst,
+                ind=ind,
+                kline_ok=kline_ok,
+                price=price,
+                tick_mom=tick_mom,
+                flow=flow,
+                term=term,
+                fund_raw=fund_raw,
+            )
         finally:
             _fp.clear()
     except Exception:
         return fallback
 
 
-def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
-                    oil_score, tick_mom, contract=None, inst=None, page=None, flow=None,
-                    fund_raw=None):
+def analyze_variety(
+    name,
+    meta,
+    quote,
+    ind,
+    kline_ok,
+    news_score,
+    news_hits,
+    oil_score,
+    tick_mom,
+    contract=None,
+    inst=None,
+    page=None,
+    flow=None,
+    fund_raw=None,
+):
     """对单个品种生成分析结果行（contract合约月份/inst机构观点/page浏览器页面数据，均可为None）。
     flow 为 flow_tracker 根据相邻轮次成交量/持仓量算出的量仓资金因子。
     fund_raw 为第13轮基本面原料 {"inv":库存时序, "rank":(L,S,pL,pS)或None, "basis":基差率或None}。"""
@@ -81,14 +116,15 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
     if inst and inst.get("total", 0) >= 3:
         inst_ratio = (inst["bullish"] - inst["bearish"]) / inst["total"]
         parts["机构动向"] = math.tanh(inst_ratio * 2.0) * 2.0
-        inst_note = (f"机构观点(交易可查AI研报): 看多{inst['bullish']}/震荡{inst['volatile']}"
-                     f"/看空{inst['bearish']}（共{inst['total']}家）")
+        inst_note = (
+            f"机构观点(交易可查AI研报): 看多{inst['bullish']}/震荡{inst['volatile']}"
+            f"/看空{inst['bearish']}（共{inst['total']}家）"
+        )
 
     tech_info = ind.get("tech") or {}
     intraday_info = ind.get("intraday") or {}
     if kline_ok and price > 0:
-        momentum = (math.tanh(ind["ret5"] * 160) * 2.5 +
-                    math.tanh(ind["ret20"] * 70) * 2.0)
+        momentum = math.tanh(ind["ret5"] * 160) * 2.5 + math.tanh(ind["ret20"] * 70) * 2.0
         if ind.get("ma10"):
             momentum += math.tanh((price / ind["ma10"] - 1) * 220) * 1.0
         parts["日线动量"] = momentum
@@ -110,7 +146,7 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
     rank_in = (fund_raw or {}).get("rank")
     basis_in = (fund_raw or {}).get("basis")
     inv_f = fundamental_factors.inventory_factor(inv_in) if inv_in else None
-    rank_f = (fundamental_factors.rank_factor(*rank_in) if rank_in else None)
+    rank_f = fundamental_factors.rank_factor(*rank_in) if rank_in else None
     carry_f = fundamental_factors.carry_factor(term)
     basis_f = fundamental_factors.basis_factor(basis_in) if basis_in is not None else None
     fund_pack = fundamental_factors.build_fundamental(inv_f, rank_f, carry_f, basis_f)
@@ -121,8 +157,19 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
     # 9 个 part 已逐位 parity，重建结果与上面内联一致；任何异常都由 helper 回退内联 parts，主链不受影响。
     if getattr(config, "PLUGIN_PARTS_ENABLED", True):
         parts = _parts_via_plugins(
-            parts, meta.get("oil_w", 0.0), news_score, oil_score, inst, ind, kline_ok, price,
-            tick_mom, flow, term, fund_raw)
+            parts,
+            meta.get("oil_w", 0.0),
+            news_score,
+            oil_score,
+            inst,
+            ind,
+            kline_ok,
+            price,
+            tick_mom,
+            flow,
+            term,
+            fund_raw,
+        )
 
     score = clip(sum(parts.values()), -10.0, 10.0)
     label, advice, conf = rating(score)
@@ -151,7 +198,7 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
         risks.append("日线有方向但30/60分钟未完全共振，避免追在分钟短线末端")
     hv_pct = ind.get("hv_percentile")
     if hv_pct is not None and hv_pct >= 0.9:
-        risks.append(f"HV20处于近阶段{hv_pct*100:.0f}%分位，波动放大，止损放宽并降低仓位")
+        risks.append(f"HV20处于近阶段{hv_pct * 100:.0f}%分位，波动放大，止损放宽并降低仓位")
     if not trade_calendar.is_trade_day(datetime.now()):
         risks.append("今日非交易日（周末/法定节假日），信号基于最近交易日数据")
     if kline_ok and price > 0 and ind.get("ma20"):
@@ -160,9 +207,11 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
 
     flow_note = ""
     if flow.get("pattern") and flow.get("pattern") != "量仓平稳":
-        flow_note = (f"{flow['pattern']}：持仓变化{flow.get('oi_pct', 0) * 100:+.2f}%"
-                     f"（{flow.get('prev_open_interest', 0):.0f}→{flow.get('open_interest', 0):.0f}），"
-                     f"成交量相对近几轮均值{flow.get('volume_ratio', 1):.2f}倍，因子{flow_score:+.2f}")
+        flow_note = (
+            f"{flow['pattern']}：持仓变化{flow.get('oi_pct', 0) * 100:+.2f}%"
+            f"（{flow.get('prev_open_interest', 0):.0f}→{flow.get('open_interest', 0):.0f}），"
+            f"成交量相对近几轮均值{flow.get('volume_ratio', 1):.2f}倍，因子{flow_score:+.2f}"
+        )
 
     tech_note = ""
     if tech_info:
@@ -171,7 +220,8 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
             f"，MACD柱={tech_info.get('macd_hist', 0):.2f}"
             f"，KDJ={tech_info.get('kdj_k', 0):.1f}/{tech_info.get('kdj_d', 0):.1f}"
             f"/{tech_info.get('kdj_j', 0):.1f}，BOLL区间"
-            f"{tech_info.get('boll_low', 0):g}~{tech_info.get('boll_up', 0):g}")
+            f"{tech_info.get('boll_low', 0):g}~{tech_info.get('boll_up', 0):g}"
+        )
         if intraday_info.get("ok"):
             tech_note += "；" + intraday_info.get("resonance_note", "")
 
@@ -179,12 +229,14 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
     # TSMOM_SHADOW=False（或取数失败/历史不足）时为 None，分析行与本轮之前逐字节等价。
     tsmom_shadow = None
     if getattr(config, "TSMOM_SHADOW", False) and kline_ok and price > 0:
-        _shadow = {k: ind.get(k) for k in
-                   ("ret63", "ret126", "ret252", "tsmom63", "tsmom126", "tsmom252")}
+        _shadow = {
+            k: ind.get(k) for k in ("ret63", "ret126", "ret252", "tsmom63", "tsmom126", "tsmom252")
+        }
         _shadow["blend"] = ind.get("tsmom_blend")
         _shadow["n_valid"] = int(ind.get("tsmom_n_valid") or 0)
-        if _shadow["n_valid"] > 0 or any(v is not None for k, v in _shadow.items()
-                                         if k.startswith("ret")):
+        if _shadow["n_valid"] > 0 or any(
+            v is not None for k, v in _shadow.items() if k.startswith("ret")
+        ):
             tsmom_shadow = _shadow
 
     # 主力合约月份与期权月份（term 已在函数开头算好）
@@ -194,7 +246,8 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
         main_c = contract.get("main")
         if main_c:
             contract_code = contracts_mod.contract_code(
-                meta["sym"], meta["ex"], main_c["yy"], main_c["mm"])
+                meta["sym"], meta["ex"], main_c["yy"], main_c["mm"]
+            )
             main_month = f"{main_c['yy']:02d}{main_c['mm']:02d}"
             dd = contracts_mod.days_to_delivery(main_c["yy"], main_c["mm"])
             if dd <= 0:
@@ -202,31 +255,61 @@ def analyze_variety(name, meta, quote, ind, kline_ok, news_score, news_hits,
             elif dd < 45:
                 risks.append(f"主力合约{contract_code}距交割月约{dd}天，临近交割注意移仓换月")
         opt_month = contract.get("opt_month")
-        if opt_month and main_c and (opt_month["yy"], opt_month["mm"]) != (main_c["yy"], main_c["mm"]):
-            month_note = (f"主力{main_month}月份期权临近到期，建议顺延至"
-                          f"{opt_month['yy']:02d}{opt_month['mm']:02d}月份")
+        if (
+            opt_month
+            and main_c
+            and (opt_month["yy"], opt_month["mm"]) != (main_c["yy"], main_c["mm"])
+        ):
+            month_note = (
+                f"主力{main_month}月份期权临近到期，建议顺延至"
+                f"{opt_month['yy']:02d}{opt_month['mm']:02d}月份"
+            )
         # 期限结构 term 已在函数开头由 contracts.term_structure 组装（第13轮其carry进入综合分）
 
-    result = {"name": name, "code": meta["code"], "sym": meta["sym"], "ex": meta["ex"],
-            "cat": meta["cat"], "oil_w": meta["oil_w"],
-            "price": price, "chg": chg, "score": score,
-            "parts": parts, "label": label, "advice": advice, "conf": conf,
-            "stop": stop, "target": target, "atr": atr,
-            "hits": news_hits, "risks": risks,
-            "volume": float(quote.get("volume") or 0.0),
-            "open_interest": float(quote.get("open_interest") or 0.0),
-            "flow": flow, "flow_note": flow_note,
-            "hv20": hv20, "hv60": ind.get("hv60") or hv20,
-            "tech": tech_info, "intraday": intraday_info, "tech_note": tech_note,
-            "hv_percentile": ind.get("hv_percentile"),
-            "vol_cone": ind.get("vol_cone") or {},
-            "last_date": ind.get("last_date", ""),
-            "contract_code": contract_code, "main_month": main_month,
-            "opt_month": opt_month, "month_note": month_note, "term": term,
-            "fundamental": fund_pack,
-            "inst": inst or {}, "inst_ratio": inst_ratio, "inst_note": inst_note,
-            "page": page or {}, "forecast": "",
-            "tsmom_shadow": tsmom_shadow}
+    result = {
+        "name": name,
+        "code": meta["code"],
+        "sym": meta["sym"],
+        "ex": meta["ex"],
+        "cat": meta["cat"],
+        "oil_w": meta["oil_w"],
+        "price": price,
+        "chg": chg,
+        "score": score,
+        "parts": parts,
+        "label": label,
+        "advice": advice,
+        "conf": conf,
+        "stop": stop,
+        "target": target,
+        "atr": atr,
+        "hits": news_hits,
+        "risks": risks,
+        "volume": float(quote.get("volume") or 0.0),
+        "open_interest": float(quote.get("open_interest") or 0.0),
+        "flow": flow,
+        "flow_note": flow_note,
+        "hv20": hv20,
+        "hv60": ind.get("hv60") or hv20,
+        "tech": tech_info,
+        "intraday": intraday_info,
+        "tech_note": tech_note,
+        "hv_percentile": ind.get("hv_percentile"),
+        "vol_cone": ind.get("vol_cone") or {},
+        "last_date": ind.get("last_date", ""),
+        "contract_code": contract_code,
+        "main_month": main_month,
+        "opt_month": opt_month,
+        "month_note": month_note,
+        "term": term,
+        "fundamental": fund_pack,
+        "inst": inst or {},
+        "inst_ratio": inst_ratio,
+        "inst_note": inst_note,
+        "page": page or {},
+        "forecast": "",
+        "tsmom_shadow": tsmom_shadow,
+    }
     result["debate"] = build_debate(result)
     return result
 
@@ -255,8 +338,10 @@ def forecast_line(row, news_trend=0.0, oil_dir=0.0):
         label = "偏多" if net > 0 else "偏空"
         prob = 50 + min(18.0, abs(net) / 4.0 * 18.0)
     basis = "、".join(t for w, v, t in votes if abs(v) >= 0.3)
-    return (f"预测走向(非交易时段·规则预测仅供参考): {label}，参考概率约{prob:.0f}%"
-            f" —— 依据: {basis}；开盘后请以实际行情校验并重新评估")
+    return (
+        f"预测走向(非交易时段·规则预测仅供参考): {label}，参考概率约{prob:.0f}%"
+        f" —— 依据: {basis}；开盘后请以实际行情校验并重新评估"
+    )
 
 
 def direction_text(score):
@@ -264,8 +349,13 @@ def direction_text(score):
 
 
 # 因子键 -> 多空卡上的短标签
-_DEBATE_TAG = {"消息面": "消息", "原油联动": "原油", "机构动向": "机构",
-               "日线动量": "日线趋势", "盘中动量": "盘中动量"}
+_DEBATE_TAG = {
+    "消息面": "消息",
+    "原油联动": "原油",
+    "机构动向": "机构",
+    "日线动量": "日线趋势",
+    "盘中动量": "盘中动量",
+}
 
 
 def build_debate(row):
@@ -299,7 +389,9 @@ def build_debate(row):
         (bull if fs > 0 else bear).append(item)
     ir = row.get("inst_ratio")
     if ir is not None and abs(ir) >= 0.10:
-        (bull if ir > 0 else bear).append("机构净%s%.0f%%" % ("多" if ir > 0 else "空", abs(ir) * 100))
+        (bull if ir > 0 else bear).append(
+            "机构净%s%.0f%%" % ("多" if ir > 0 else "空", abs(ir) * 100)
+        )
     fp = row.get("fundamental")
     if fp and abs(fp.get("score", 0.0)) >= 0.15:
         (bull if fp["score"] > 0 else bear).append("基本面%+.2f" % fp["score"])
@@ -323,14 +415,21 @@ def detail_lines(row):
     code_part = f"（{row['contract_code']}）" if row.get("contract_code") else ""
     cpart = f" {row['contract_code']}" if row.get("contract_code") else ""
     lines = []
-    lines.append(f"● {row['name']}{code_part} [{row['cat']}] 综合分 {row['score']:+.1f} "
-                 f"{row['label']} (置信度{row['conf']}%)")
+    lines.append(
+        f"● {row['name']}{code_part} [{row['cat']}] 综合分 {row['score']:+.1f} "
+        f"{row['label']} (置信度{row['conf']}%)"
+    )
     parts = " | ".join(f"{k} {v:+.1f}" for k, v in row["parts"].items())
     lines.append(f"    因子: {parts}")
     deb = row.get("debate") or build_debate(row)
-    lines.append("    多空: 多[%s] vs 空[%s] → %s"
-                 % ("、".join(deb["bull"]) or "无明确利多",
-                    "、".join(deb["bear"]) or "无明确利空", deb["verdict"]))
+    lines.append(
+        "    多空: 多[%s] vs 空[%s] → %s"
+        % (
+            "、".join(deb["bull"]) or "无明确利多",
+            "、".join(deb["bear"]) or "无明确利空",
+            deb["verdict"],
+        )
+    )
     gate = row.get("risk") or {}
     if gate.get("reasons"):
         lines.append("    风控: " + "；".join(gate["reasons"]))
@@ -343,14 +442,18 @@ def detail_lines(row):
         lines.append(f"    量仓: {row['flow_note']}")
     if row.get("inst_note"):
         lines.append(f"    {row['inst_note']}")
-    lines.append(f"    操作: {row['advice']} | 方向:{side}{cpart} | 参考开仓 {fmt_px(row['price'])} "
-                 f"| 止损 {fmt_px(row['stop'])}(1.2×ATR) | 目标 {fmt_px(row['target'])}(2×ATR)")
+    lines.append(
+        f"    操作: {row['advice']} | 方向:{side}{cpart} | 参考开仓 {fmt_px(row['price'])} "
+        f"| 止损 {fmt_px(row['stop'])}(1.2×ATR) | 目标 {fmt_px(row['target'])}(2×ATR)"
+    )
     for s, n in row["hits"]:
         t = n.get("time").strftime("%m-%d %H:%M")
         fac = sentiment_facets(n.get("content", ""), variety=row["name"], cat=row["cat"])
         ftag = facet_tags(fac)
-        lines.append(f"    消息: [{n.get('source')} {t}] {n.get('content','')[:66]} "
-                     f"({s:+.1f}" + (f" ·{ftag}" if ftag else "") + ")")
+        lines.append(
+            f"    消息: [{n.get('source')} {t}] {n.get('content', '')[:66]} "
+            f"({s:+.1f}" + (f" ·{ftag}" if ftag else "") + ")"
+        )
     if row.get("month_note"):
         lines.append(f"    月份: {row['month_note']}")
     if row.get("term"):
@@ -381,8 +484,10 @@ def detail_lines(row):
         lines.append(f"    页面数据: OpenVlab[{r['list']}] 隐波变化{r['iv_chg']:+.2f}")
     elif p.get("prem"):
         pr = p["prem"]
-        lines.append(f"    页面数据: OpenVlab[{pr['list']}] 隐波{pr['iv']:.1f}%/实波{pr['hv']:.1f}%"
-                     f" 溢价{pr['prem']:+.2f}")
+        lines.append(
+            f"    页面数据: OpenVlab[{pr['list']}] 隐波{pr['iv']:.1f}%/实波{pr['hv']:.1f}%"
+            f" 溢价{pr['prem']:+.2f}"
+        )
     for h in p.get("headlines", []):
         d = "看多" if h["dir"] > 0 else "看空"
         lines.append(f"    页面动向: 交易可查[{h['label']}] {d} ({h['text']})")
@@ -390,30 +495,47 @@ def detail_lines(row):
     for txt, rt in (p.get("rating") or {}).items():
         if rt.get("variety") == row["name"]:
             chg_txt = f", 涨跌幅{rt['chg']:+.2f}%" if rt.get("chg") is not None else ""
-            lines.append(f"    页面评级: 交易可查乾坤归一[{rt['grade']}]"
-                         f" {rt.get('contract','')} 评级{rt['grade']}"
-                         f" 价{rt.get('price','-')}{chg_txt}")
+            lines.append(
+                f"    页面评级: 交易可查乾坤归一[{rt['grade']}]"
+                f" {rt.get('contract', '')} 评级{rt['grade']}"
+                f" 价{rt.get('price', '-')}{chg_txt}"
+            )
             break
     # 新增：外盘比价（仅展示与本品种精确相关的外盘品种，避免每个品种都带伦铜）
-    _EXT_REL = {"黄金": "美黄金", "白银": "美白银", "铜": "伦铜", "铝": "伦铝",
-                "锌": "伦锌", "镍": "伦镍", "铅": "伦铅", "锡": "伦锡",
-                "大豆": "美豆", "豆粕": "美豆粕", "豆油": "美豆油", "棉花": "美棉花",
-                "玉米": "美玉米", "原油": "布原油", "棕榈油": "马棕油",
-                "铁矿石": "铁矿FE"}
+    _EXT_REL = {
+        "黄金": "美黄金",
+        "白银": "美白银",
+        "铜": "伦铜",
+        "铝": "伦铝",
+        "锌": "伦锌",
+        "镍": "伦镍",
+        "铅": "伦铅",
+        "锡": "伦锡",
+        "大豆": "美豆",
+        "豆粕": "美豆粕",
+        "豆油": "美豆油",
+        "棉花": "美棉花",
+        "玉米": "美玉米",
+        "原油": "布原油",
+        "棕榈油": "马棕油",
+        "铁矿石": "铁矿FE",
+    }
     ext_map = p.get("external") or {}
     ext_name = _EXT_REL.get(row["name"])
     if ext_name and ext_name in ext_map:
         xd = ext_map[ext_name]
         dev = xd.get("dev")
         dev_txt = f" 偏离{dev:+.2f}%" if dev is not None else ""
-        lines.append(f"    外盘: {ext_name} {xd.get('last','-')}{dev_txt}"
-                     f" (基准{xd.get('base','-')})")
+        lines.append(
+            f"    外盘: {ext_name} {xd.get('last', '-')}{dev_txt} (基准{xd.get('base', '-')})"
+        )
     # 新增：基本信息（仅展示与本品种同名的基本面项）
-    for f in (p.get("fundamentals") or []):
+    for f in p.get("fundamentals") or []:
         if f.get("item") == row["name"] or f.get("metric") == row["name"]:
             chg_txt = f"（变动{f['chg']}）" if f.get("chg") is not None else ""
-            lines.append(f"    基本面: {f['metric']} {f.get('value','-')}{chg_txt}"
-                         f" ({f.get('date','')})")
+            lines.append(
+                f"    基本面: {f['metric']} {f.get('value', '-')}{chg_txt} ({f.get('date', '')})"
+            )
     for r in row["risks"]:
         lines.append(f"    风险: {r}")
     if row.get("forecast"):
@@ -422,6 +544,7 @@ def detail_lines(row):
 
 
 # ================== 共享全品种分析入口（run_cycle 与 paper_ticker 共用） ==================
+
 
 def _prefetch_rank(state, watchlist):
     """按各品种主力合约并发预取龙虎榜前20席多空合计（fetcher内日缓存，当天仅首轮产生请求）。"""
@@ -456,7 +579,7 @@ def _tick_momentum(hist):
     if not hist or len(hist) < 12:
         return 0.0
     now_ts, now_px = hist[-1]
-    if now_ts - hist[0][0] < 600:   # 数据不足10分钟不计算
+    if now_ts - hist[0][0] < 600:  # 数据不足10分钟不计算
         return 0.0
 
     def ret_over(sec):
@@ -485,12 +608,16 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
     - 不调用期权链预热（期权沿用 run_cycle 快照，Policy A）；
     - 并发安全：内部持 _analyze_lock，与 run_cycle 互斥 factor_parts 注册表全局。
     """
-    from utils import is_variety_trading  # 局部 import，避免 analyzer 顶层依赖 utils 循环
-    from utils import LOG
+    from utils import (
+        LOG,
+        is_variety_trading,  # 局部 import，避免 analyzer 顶层依赖 utils 循环
+    )
+
     with _analyze_lock:
         inst_map = state.webdata.views_snapshot()
         intraday_map = state.klines.warm_intraday(
-            [(meta["code"], meta["cat"]) for _, meta in watchlist])
+            [(meta["code"], meta["cat"]) for _, meta in watchlist]
+        )
         rank_map = _prefetch_rank(state, watchlist)
         fut_rows = []
         for key, meta in watchlist:
@@ -499,30 +626,61 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
             # 第118轮：缓存/失败缓存异常时 ind 可能为 None（历史上 refresh 曾把 None 写入失败缓存），
             # 防御性兜底为默认波动率 fallback，避免 dict(None) 崩溃导致整轮分析异常（主报告无法生成）。
             if ind is None:
-                ind = {"close": 0.0, "prev_close": 0.0, "day_chg": 0.0,
-                       "hv20": config.DEFAULT_HV.get(meta["cat"], 0.25),
-                       "hv60": config.DEFAULT_HV.get(meta["cat"], 0.25),
-                       "ma5": 0.0, "ma10": 0.0, "ma20": 0.0,
-                       "atr": 0.0, "ret5": 0.0, "ret20": 0.0,
-                       "ret63": None, "ret126": None, "ret252": None,
-                       "tsmom63": None, "tsmom126": None, "tsmom252": None,
-                       "tsmom_blend": None, "tsmom_n_valid": 0,
-                       "tech": {}, "hv_percentile": None, "vol_cone": {},
-                       "last_date": ""}
+                ind = {
+                    "close": 0.0,
+                    "prev_close": 0.0,
+                    "day_chg": 0.0,
+                    "hv20": config.DEFAULT_HV.get(meta["cat"], 0.25),
+                    "hv60": config.DEFAULT_HV.get(meta["cat"], 0.25),
+                    "ma5": 0.0,
+                    "ma10": 0.0,
+                    "ma20": 0.0,
+                    "atr": 0.0,
+                    "ret5": 0.0,
+                    "ret20": 0.0,
+                    "ret63": None,
+                    "ret126": None,
+                    "ret252": None,
+                    "tsmom63": None,
+                    "tsmom126": None,
+                    "tsmom252": None,
+                    "tsmom_blend": None,
+                    "tsmom_n_valid": 0,
+                    "tech": {},
+                    "hv_percentile": None,
+                    "vol_cone": {},
+                    "last_date": "",
+                }
             ind = dict(ind)
             ind["intraday"] = intraday_map.get(meta["code"], ({}, False))[0]
             n_score, n_hits = state.news.score(meta["cat"], variety=key)
             o_score = state.oil.combined_score() if meta["oil_w"] > 0 else 0.0
             t_mom = _tick_momentum(state.var_hist.get(key))
             cinfo = state.contracts.get(meta["sym"])
-            fund_raw = {"inv": state.fund_inv.get(meta["sym"]),
-                        "rank": rank_map.get(key),
-                        "basis": (state.fund_basis or {}).get(meta["sym"])}
+            fund_raw = {
+                "inv": state.fund_inv.get(meta["sym"]),
+                "rank": rank_map.get(key),
+                "basis": (state.fund_basis or {}).get(meta["sym"]),
+            }
             try:
-                fut_rows.append(analyze_variety(
-                    key, meta, q, ind, kline_ok, n_score, n_hits, o_score, t_mom,
-                    cinfo, inst_map.get(key), state.breader.page_info(key),
-                    flow=flow_map.get(meta["code"]), fund_raw=fund_raw))
+                fut_rows.append(
+                    analyze_variety(
+                        key,
+                        meta,
+                        q,
+                        ind,
+                        kline_ok,
+                        n_score,
+                        n_hits,
+                        o_score,
+                        t_mom,
+                        cinfo,
+                        inst_map.get(key),
+                        state.breader.page_info(key),
+                        flow=flow_map.get(meta["code"]),
+                        fund_raw=fund_raw,
+                    )
+                )
             except Exception as e:
                 LOG.warning("品种分析失败 %s: %s", key, e)
 
@@ -535,6 +693,6 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
                 continue
             try:
                 row["forecast"] = forecast_line(row, news_trend, oil_dir)
-            except Exception as e:
+            except Exception:
                 pass
         return fut_rows

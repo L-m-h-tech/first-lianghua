@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G29续（第39轮）因子的 regime 分层 / 换手稳定性 / 衰减形态 tools/factor_regime.py。
 
 factor_health 回答"因子现在还有没有力、稳不稳、指数半衰期多久"，本工具补它刻意留下的三块：
@@ -11,6 +10,7 @@ factor_health 回答"因子现在还有没有力、稳不稳、指数半衰期�
 纯标准库、零网络、只读 G21 面板（mode=ro），复用 factor_health 日频层/factor_eval.spearman/
 factor_expr 时序算子（G25引擎）/panel_builder；不接 main、不改任何线上权重与综合分。
 """
+
 import argparse
 import json
 import math
@@ -23,11 +23,12 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import config                       # noqa: E402
-import factor_expr as fx            # noqa: E402  G25 引擎：ts_rank
-import factor_eval as feval         # noqa: E402  spearman
-import factor_health as fh          # noqa: E402  forward_map/daily_factor_curve/fit_exp_halflife/rows_by_symbol
-import panel_builder as pb          # noqa: E402
+import factor_eval as feval  # noqa: E402
+import factor_health as fh  # noqa: E402
+import panel_builder as pb  # noqa: E402
+
+import config  # noqa: E402
+import factor_expr as fx  # noqa: E402
 
 DEFAULT_DB = os.path.join(_ROOT, "cache", "research_panel.db")
 LN2 = math.log(2.0)
@@ -146,7 +147,9 @@ def factor_persistence(rows_by_sym, factor, lags=None, win=None):
         n = len(a["xa"])
         out[k] = {
             "autocorr": feval.spearman(a["xa"], a["ya"]) if n >= config.REGIME_MIN_N else None,
-            "turnover": (sum(a["absdiff"]) / n) if n else None, "n": n}
+            "turnover": (sum(a["absdiff"]) / n) if n else None,
+            "n": n,
+        }
     return out
 
 
@@ -160,11 +163,11 @@ def _ols(xs, ys):
     sxx = sum((x - mx) ** 2 for x in xs)
     if sxx <= 1e-15:
         return None
-    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=False))
     b = sxy / sxx
     a = my - b * mx
     ss_tot = sum((y - my) ** 2 for y in ys)
-    ss_res = sum((y - (a + b * x)) ** 2 for x, y in zip(xs, ys))
+    ss_res = sum((y - (a + b * x)) ** 2 for x, y in zip(xs, ys, strict=False))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-15 else 1.0
     return b, a, r2
 
@@ -175,7 +178,8 @@ def fit_decay_shapes(horizons, curve):
     for H in horizons:
         ic = (curve.get(H) or {}).get("ic")
         if _isnum(ic) and abs(ic) > 1e-4:
-            hs.append(float(H)); lnic.append(math.log(abs(ic)))
+            hs.append(float(H))
+            lnic.append(math.log(abs(ic)))
     if len(hs) < 3:
         return None
     exp_fit = _ols(hs, lnic)
@@ -202,8 +206,13 @@ def fit_decay_shapes(horizons, curve):
 def analyze_factor(rows_by_sym, factor, horizons=None, decay_h=None, labels=None):
     horizons = horizons or config.REGIME_HORIZONS
     decay_h = decay_h or config.REGIME_DECAY_H
-    rec = {"factor": factor, "regime_ic": {}, "persistence": {}, "decay_shape": None,
-           "overall_curve": None}
+    rec = {
+        "factor": factor,
+        "regime_ic": {},
+        "persistence": {},
+        "decay_shape": None,
+        "overall_curve": None,
+    }
     for H in horizons:
         rec["regime_ic"][H] = regime_stratified_ic(rows_by_sym, factor, H, labels=labels)
     rec["persistence"] = {str(k): v for k, v in factor_persistence(rows_by_sym, factor).items()}
@@ -235,14 +244,15 @@ def inject_expr_factors(rows_by_sym, specs):
 
     求值序列与 expr_miner.series_from_rows 完全同口径（c/v/h/l/oi/o）；只改本进程内存
     中的行 dict，不落库、不触碰面板存储。键必须为合法 DSL 标识符（持续性检查要拼 ts_rank(键,win)）。"""
-    from expr_miner import series_from_rows as _sfr      # 第72轮 G25续 同口径装配（研究侧互复用）
+    from expr_miner import series_from_rows as _sfr  # 第72轮 G25续 同口径装配（研究侧互复用）
+
     out = []
     for name, expr in specs:
         key = "x_" + ("".join(ch for ch in name if ch.isalnum() or ch == "_") or "expr")
         for sym, rows in rows_by_sym.items():
             rows_sorted = sorted(rows, key=lambda r: r["date"])
             fac = fx.compute_ts(expr, _sfr(rows_sorted))
-            for r, v in zip(rows_sorted, fac):
+            for r, v in zip(rows_sorted, fac, strict=False):
                 r[key] = v if _isnum(v) else None
         out.append((name, key, expr))
     return out
@@ -255,34 +265,61 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True, expr_sp
     syms = sorted(store.symbols())
     rows = store.load_all() if hasattr(store, "load_all") else _load_all(store, syms)
     bysym = fh.rows_by_symbol(rows)
-    labels = compute_labels(bysym)     # 每品种 regime 标签只算一次（滚动 ts_rank 较贵）
+    labels = compute_labels(bysym)  # 每品种 regime 标签只算一次（滚动 ts_rank 较贵）
     injected = inject_expr_factors(bysym, parse_expr_specs(expr_specs)) if expr_specs else []
     factors = list(config.HEALTH_DAILY_FACTORS) + [key for _, key, _ in injected]
     results = {f: analyze_factor(bysym, f, labels=labels) for f in factors}
 
     L = []
     L.append("=" * 100)
-    L.append("G29续 因子 regime 分层 / 换手稳定性 / 衰减形态 factor_regime（纯离线读 G21 面板，只研究不改权重）")
-    L.append("品种=%d；趋势=面板ret126(±%.0f%%判震荡)，波动=hv60过去%d日ts_rank分低/中/高；分桶IC需n≥%d"
-             % (len(syms), config.REGIME_TREND_FLAT * 100, config.REGIME_VOL_LOOKBACK, config.REGIME_MIN_N))
+    L.append(
+        "G29续 因子 regime 分层 / 换手稳定性 / 衰减形态 factor_regime（纯离线读 G21 面板，只研究不改权重）"
+    )
+    L.append(
+        "品种=%d；趋势=面板ret126(±%.0f%%判震荡)，波动=hv60过去%d日ts_rank分低/中/高；分桶IC需n≥%d"
+        % (
+            len(syms),
+            config.REGIME_TREND_FLAT * 100,
+            config.REGIME_VOL_LOOKBACK,
+            config.REGIME_MIN_N,
+        )
+    )
     if injected:
-        L.append("注入表达式因子（--expr，G25引擎求值，仅本进程内存不落库）：%s"
-                 % "；".join("%s=%s" % (key, expr) for _, key, expr in injected))
+        L.append(
+            "注入表达式因子（--expr，G25引擎求值，仅本进程内存不落库）：%s"
+            % "；".join("%s=%s" % (key, expr) for _, key, expr in injected)
+        )
     for f in factors:
         rec = results[f]
         L.append("-" * 100)
         L.append("● %s" % f)
         for H in config.REGIME_HORIZONS:
             b = rec["regime_ic"][H]
+
             def g(k, key="ic"):
                 x = b.get(k)
                 if not x or x[key] is None:
                     return "--"
                 return ("%+.3f" % x[key]) if key == "ic" else str(x[key])
-            L.append("  H=%2d 全样本IC=%s(n%s) | 牛%s/熊%s/震%s | 低波%s/中波%s/高波%s | 牛低波%s/牛高波%s/熊低波%s/熊高波%s"
-                     % (H, g("ALL"), g("ALL", "n"), g("trend_up"), g("trend_down"), g("trend_flat"),
-                        g("vol_low"), g("vol_mid"), g("vol_high"),
-                        g("up_low"), g("up_high"), g("down_low"), g("down_high")))
+
+            L.append(
+                "  H=%2d 全样本IC=%s(n%s) | 牛%s/熊%s/震%s | 低波%s/中波%s/高波%s | 牛低波%s/牛高波%s/熊低波%s/熊高波%s"
+                % (
+                    H,
+                    g("ALL"),
+                    g("ALL", "n"),
+                    g("trend_up"),
+                    g("trend_down"),
+                    g("trend_flat"),
+                    g("vol_low"),
+                    g("vol_mid"),
+                    g("vol_high"),
+                    g("up_low"),
+                    g("up_high"),
+                    g("down_low"),
+                    g("down_high"),
+                )
+            )
         ps = []
         for k in config.REGIME_TURNOVER_LAGS:
             p = rec["persistence"][str(k)]
@@ -292,23 +329,29 @@ def run(db_path=DEFAULT_DB, txt_path=None, json_path=None, verbose=True, expr_sp
         L.append("  持续性: " + "，".join(ps))
         ds = rec["decay_shape"]
         if ds:
-            e = ds["exp"]; p = ds["power"]
+            e = ds["exp"]
+            p = ds["power"]
             et = ("指数R²=%.3f/半衰期%.1f日" % (e["r2"], e["half_life"])) if e else "指数不衰减"
             pt = ("幂律R²=%.3f/β=%.3f" % (p["r2"], p["beta"])) if p else "幂律不成立"
             L.append("  衰减形态: %s；%s → 更接近【%s】" % (et, pt, ds["prefer"] or "无"))
         else:
             L.append("  衰减形态: 有效点不足，不拟合")
     L.append("-" * 100)
-    L.append("读法：regime 间 IC 差异大=因子只在特定市场状态有效；换手随 lag 降得慢/自相关高=信号稳、调仓成本低；"
-             "幂律优于指数=长尾慢衰减（远月仍有残余），指数优于幂律=快速指数遗忘。research 结论不进综合分。")
+    L.append(
+        "读法：regime 间 IC 差异大=因子只在特定市场状态有效；换手随 lag 降得慢/自相关高=信号稳、调仓成本低；"
+        "幂律优于指数=长尾慢衰减（远月仍有残余），指数优于幂律=快速指数遗忘。research 结论不进综合分。"
+    )
     text = "\n".join(L)
     if verbose:
         print(text)
     os.makedirs(os.path.dirname(txt_path), exist_ok=True)
     with open(txt_path, "w", encoding="utf-8", newline="\n") as fp:
         fp.write(text + "\n")
-    payload = {"n_symbols": len(syms), "factors": results,
-               "injected": [{"name": n, "key": k, "expr": e} for n, k, e in injected]}
+    payload = {
+        "n_symbols": len(syms),
+        "factors": results,
+        "injected": [{"name": n, "key": k, "expr": e} for n, k, e in injected],
+    }
     with open(json_path, "w", encoding="utf-8", newline="\n") as fp:
         json.dump(payload, fp, ensure_ascii=False, allow_nan=False, indent=1)
     return payload
@@ -339,8 +382,16 @@ def _mk_rows(n=300):
                 g = closes[t + 20] / closes[t] - 1
             else:
                 g = 0.5
-            rows.append({"sym": sym, "date": "2025-%02d-%02d" % ((t // 28) + 1, (t % 28) + 1),
-                         "c": closes[t], "ret126": ret126, "hv60": hv60, "g": g})
+            rows.append(
+                {
+                    "sym": sym,
+                    "date": "2025-%02d-%02d" % ((t // 28) + 1, (t % 28) + 1),
+                    "c": closes[t],
+                    "ret126": ret126,
+                    "hv60": hv60,
+                    "g": g,
+                }
+            )
     return rows
 
 
@@ -361,8 +412,16 @@ def selftest():
     # 4) 持续性：平滑慢变因子 lag1 秩自相关很高(>0.95)、换手随再平衡间隔增大
     mono = []
     for t in range(300):
-        mono.append({"sym": "X", "date": "d%03d" % t, "c": 100.0 + t,
-                     "ret126": 0.05, "hv60": 0.2, "m": math.sin(t / 15.0)})
+        mono.append(
+            {
+                "sym": "X",
+                "date": "d%03d" % t,
+                "c": 100.0 + t,
+                "ret126": 0.05,
+                "hv60": 0.2,
+                "m": math.sin(t / 15.0),
+            }
+        )
     pers = factor_persistence(fh.rows_by_symbol(mono), "m", lags=(1, 5), win=60)
     assert pers[1]["autocorr"] is not None and pers[1]["autocorr"] > 0.95
     assert 0.0 <= pers[1]["turnover"] <= 1.0 and pers[5]["turnover"] >= pers[1]["turnover"]
@@ -372,7 +431,7 @@ def selftest():
     fit_e = fit_decay_shapes(hs, exp_curve)
     assert fit_e["prefer"] == "exp" and fit_e["exp"]["r2"] > 0.999
     assert abs(fit_e["exp"]["half_life"] - 20.0 * LN2) < 1e-6
-    pow_curve = {H: {"ic": H ** -0.5} for H in hs}
+    pow_curve = {H: {"ic": H**-0.5} for H in hs}
     fit_p = fit_decay_shapes(hs, pow_curve)
     assert fit_p["prefer"] == "power" and abs(fit_p["power"]["beta"] - 0.5) < 1e-9
     # 不衰减（常数）→ 两形态都不成立、prefer=None
@@ -385,25 +444,37 @@ def selftest():
     assert 20 in rec["regime_ic"] and "persistence" in rec
     # 7) 第74轮 表达式因子注入：parse 规则/求值注入/与原生因子同一套体检可跑
     specs = parse_expr_specs(["ts_minmax(close,20):rpos", "close/delay(close,5)-1", "  "])
-    assert specs[0] == ("rpos", "ts_minmax(close,20)") and specs[1][0] == "expr1" and len(specs) == 2
+    assert (
+        specs[0] == ("rpos", "ts_minmax(close,20)") and specs[1][0] == "expr1" and len(specs) == 2
+    )
     inj = inject_expr_factors(bysym, specs[:2])
     assert inj[0][1] == "x_rpos" and inj[1][1] == "x_expr1"
-    n_inj = sum(1 for rows in bysym.values() for r in rows
-                if isinstance(r.get("x_rpos"), (int, float)) and math.isfinite(r["x_rpos"]))
+    n_inj = sum(
+        1
+        for rows in bysym.values()
+        for r in rows
+        if isinstance(r.get("x_rpos"), (int, float)) and math.isfinite(r["x_rpos"])
+    )
     assert n_inj > 0
     rec_x = analyze_factor(bysym, "x_rpos", horizons=(20,), decay_h=(5, 20))
     assert rec_x["persistence"]["5"]["n"] > 0 or rec_x["persistence"]["20"]["n"] > 0
-    print("factor_regime selftest ALL PASS（trend/vol标签PIT边界、regime分层IC只在有效桶显著、"
-          "因子秩自相关/换手、指数vs幂律衰减形态择优与不衰减/样本不足安全降级、端到端、表达式因子注入 共7组）")
+    print(
+        "factor_regime selftest ALL PASS（trend/vol标签PIT边界、regime分层IC只在有效桶显著、"
+        "因子秩自相关/换手、指数vs幂律衰减形态择优与不衰减/样本不足安全降级、端到端、表达式因子注入 共7组）"
+    )
     return 0
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="G29续 因子regime分层/换手/衰减形态（纯离线读面板）")
     ap.add_argument("--db", default=DEFAULT_DB)
-    ap.add_argument("--expr", action="append", default=[],
-                    help="第74轮：表达式因子体检（可多次）——'EXPR[:名称]'，G25引擎求值后做全套 regime/持续性/衰减体检；"
-                         "如 --expr 'ts_mean((high-low)/close,5):range_pct_5'")
+    ap.add_argument(
+        "--expr",
+        action="append",
+        default=[],
+        help="第74轮：表达式因子体检（可多次）——'EXPR[:名称]'，G25引擎求值后做全套 regime/持续性/衰减体检；"
+        "如 --expr 'ts_mean((high-low)/close,5):range_pct_5'",
+    )
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:

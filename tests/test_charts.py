@@ -1,17 +1,26 @@
-# -*- coding: utf-8 -*-
 """P1-3 看板图表化回归（第22轮）：charts.py 纯函数 + 落盘 + 空态安全，零网络、确定性。
 
 纪律：不碰生产 reports/ 与 data/，路径全部 monkeypatch 到 tmp_path；
 图表只做展示层，这里同时固化"不改原始口径"的边界（抽稀不动输入、横截面只读）。
 """
+
 import csv
 import json
 
 import charts
 import cross_section as xs_mod
 
-EQUITY_HEADER = ["dt", "static", "float", "equity", "margin",
-                 "available", "risk", "drawdown", "npos"]
+EQUITY_HEADER = [
+    "dt",
+    "static",
+    "float",
+    "equity",
+    "margin",
+    "available",
+    "risk",
+    "drawdown",
+    "npos",
+]
 
 
 def _write_equity(path, rows):
@@ -26,18 +35,29 @@ def _equity_rows(n, base=1_000_000.0):
     rows = []
     for i in range(n):
         eq = base + i * 1000
-        rows.append(["2026-08-%02d 09:%02d:00" % (1 + i // 20, i % 20),
-                     base, i * 1000.0, eq, eq * 0.02, eq * 0.98,
-                     0.02 + (i % 5) * 0.003, (i % 7) * 0.001, i % 3])
+        rows.append(
+            [
+                "2026-08-%02d 09:%02d:00" % (1 + i // 20, i % 20),
+                base,
+                i * 1000.0,
+                eq,
+                eq * 0.02,
+                eq * 0.98,
+                0.02 + (i % 5) * 0.003,
+                (i % 7) * 0.001,
+                i % 3,
+            ]
+        )
     return rows
 
 
 # ---------------- 抽稀 ----------------
 
+
 def test_downsample_passthrough_and_empty():
     a, b = charts.downsample([1, 2, 3], [4, 5, 6], max_points=10)
     assert a == [1, 2, 3] and b == [4, 5, 6]
-    empty, = charts.downsample([], max_points=10)
+    (empty,) = charts.downsample([], max_points=10)
     assert empty == []
 
 
@@ -47,14 +67,15 @@ def test_downsample_keeps_endpoints_and_aligned():
     eqs = [float(i) for i in range(n)]
     d2, e2 = charts.downsample(dts, eqs, max_points=500)
     assert len(d2) == len(e2) == 500
-    assert d2[0] == "t0" and d2[-1] == "t999"      # 首尾必保留
+    assert d2[0] == "t0" and d2[-1] == "t999"  # 首尾必保留
     assert e2[0] == 0.0 and e2[-1] == 999.0
     # 并行数组同下标对齐（时间与权益不错位）
-    for t, e in zip(d2, e2):
+    for t, e in zip(d2, e2, strict=False):
         assert t == "t%d" % int(e)
 
 
 # ---------------- 权益 CSV ----------------
+
 
 def test_parse_equity_missing_and_bad_header(tmp_path):
     assert charts.parse_equity_csv(str(tmp_path / "nope.csv")) is None
@@ -89,10 +110,19 @@ def test_parse_equity_respects_cap(tmp_path):
 
 # ---------------- 横截面 ----------------
 
+
 def _cross_section():
-    rows = [{"name": "V%d" % i, "cat": ["黑色", "有色", "能化"][i % 3],
-             "score": v, "chg": (i - 5) * 0.001, "price": 100.0, "label": "x"}
-            for i, v in enumerate(range(-5, 6))]
+    rows = [
+        {
+            "name": "V%d" % i,
+            "cat": ["黑色", "有色", "能化"][i % 3],
+            "score": v,
+            "chg": (i - 5) * 0.001,
+            "price": 100.0,
+            "label": "x",
+        }
+        for i, v in enumerate(range(-5, 6))
+    ]
     return xs_mod.rank(rows)
 
 
@@ -101,7 +131,7 @@ def test_cross_section_payload_mapping():
     assert charts.cross_section_payload({}) is None
     assert charts.cross_section_payload({"rows": []}) is None
     p = charts.cross_section_payload(_cross_section())
-    json.dumps(p, ensure_ascii=False)                    # JSON 安全
+    json.dumps(p, ensure_ascii=False)  # JSON 安全
     assert {s["cat"] for s in p["sectors"]} == {"黑色", "有色", "能化"}
     assert p["breadth"]["n"] == 11
     assert p["top_long"] and p["top_short"]
@@ -111,15 +141,43 @@ def test_cross_section_payload_mapping():
 
 # ---------------- 校准 / 分周期胜率 ----------------
 
+
 def test_calibration_payload_order_and_mult():
     assert charts.calibration_payload([]) is None
     rows = [
-        {"dir": -1, "dir_text": "做空", "band": "轻仓", "n": 40, "hits": 20,
-         "winrate": 0.5, "avg_ret": 0.001, "mult": 1.0, "enough": True},
-        {"dir": 1, "dir_text": "做多", "band": "观望", "n": 12, "hits": 4,
-         "winrate": 0.4, "avg_ret": -0.001, "mult": None, "enough": False},
-        {"dir": 1, "dir_text": "做多", "band": "强信号", "n": 30, "hits": 20,
-         "winrate": 0.62, "avg_ret": 0.003, "mult": 1.12, "enough": True},
+        {
+            "dir": -1,
+            "dir_text": "做空",
+            "band": "轻仓",
+            "n": 40,
+            "hits": 20,
+            "winrate": 0.5,
+            "avg_ret": 0.001,
+            "mult": 1.0,
+            "enough": True,
+        },
+        {
+            "dir": 1,
+            "dir_text": "做多",
+            "band": "观望",
+            "n": 12,
+            "hits": 4,
+            "winrate": 0.4,
+            "avg_ret": -0.001,
+            "mult": None,
+            "enough": False,
+        },
+        {
+            "dir": 1,
+            "dir_text": "做多",
+            "band": "强信号",
+            "n": 30,
+            "hits": 20,
+            "winrate": 0.62,
+            "avg_ret": 0.003,
+            "mult": 1.12,
+            "enough": True,
+        },
     ]
     out = charts.calibration_payload(rows)
     # 做多在前、按 强信号→观望 排序
@@ -140,12 +198,33 @@ def test_outcomes_payload_aggregation():
     assert charts.outcomes_payload(None) is None
     assert charts.outcomes_payload(_FakeDB([])) is None
     rows = [
-        {"horizon_min": 30, "direction": "做多", "n": 10, "evaluated": 10,
-         "expired": 0, "wins": 6, "avg_ret": 0.001},
-        {"horizon_min": 30, "direction": "做空", "n": 6, "evaluated": 6,
-         "expired": 0, "wins": 3, "avg_ret": 0.002},
-        {"horizon_min": 120, "direction": "做多", "n": 8, "evaluated": 8,
-         "expired": 0, "wins": 4, "avg_ret": 0.0},
+        {
+            "horizon_min": 30,
+            "direction": "做多",
+            "n": 10,
+            "evaluated": 10,
+            "expired": 0,
+            "wins": 6,
+            "avg_ret": 0.001,
+        },
+        {
+            "horizon_min": 30,
+            "direction": "做空",
+            "n": 6,
+            "evaluated": 6,
+            "expired": 0,
+            "wins": 3,
+            "avg_ret": 0.002,
+        },
+        {
+            "horizon_min": 120,
+            "direction": "做多",
+            "n": 8,
+            "evaluated": 8,
+            "expired": 0,
+            "wins": 4,
+            "avg_ret": 0.0,
+        },
     ]
     out = charts.outcomes_payload(_FakeDB(rows))
     assert [o["horizon"] for o in out] == [30, 120]
@@ -159,10 +238,12 @@ def test_outcomes_payload_db_raises_safe():
     class Boom:
         def outcome_stats(self, days=None):
             raise RuntimeError("db locked")
+
     assert charts.outcomes_payload(Boom()) is None
 
 
 # ---------------- 因子 JSON ----------------
+
 
 def test_factor_payload(tmp_path):
     assert charts.factor_payload(str(tmp_path / "no.json")) is None
@@ -170,8 +251,11 @@ def test_factor_payload(tmp_path):
     bad.write_text("{ not json", encoding="utf-8")
     assert charts.factor_payload(str(bad)) is None
     good = tmp_path / "f.json"
-    data = {"main_h": 120, "horizons": [30, 120, 1440],
-            "factors": [{"name": "动量", "by_h": {"120": {"n": 50, "rank_ic": 0.1}}}]}
+    data = {
+        "main_h": 120,
+        "horizons": [30, 120, 1440],
+        "factors": [{"name": "动量", "by_h": {"120": {"n": 50, "rank_ic": 0.1}}}],
+    }
     good.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     p = charts.factor_payload(str(good))
     assert p["factors"][0]["name"] == "动量"
@@ -182,6 +266,7 @@ def test_factor_payload(tmp_path):
 
 
 # ---------------- ⑤ 纸面账户影子净值（第28轮 G1 二） ----------------
+
 
 class _PaperDB:
     def __init__(self, rows):
@@ -195,12 +280,22 @@ def _paper_rows(n, base=1_000_000.0):
     rows = []
     for i in range(n):
         eq = base - i * 500.0
-        rows.append({"ts": "2026-09-02 %02d:%02d:00" % (9 + i // 20, (i % 20) * 3),
-                     "static_equity": base - i * 200.0, "float_pnl": -i * 300.0,
-                     "equity": eq, "margin_used": eq * 0.05, "available": eq * 0.95,
-                     "risk_degree": 0.05 + (i % 4) * 0.01, "drawdown": (i % 6) * 0.001,
-                     "n_positions": i % 5, "realized": -i * 200.0, "fees_paid": i * 7.5,
-                     "n_trades": i // 2})
+        rows.append(
+            {
+                "ts": "2026-09-02 %02d:%02d:00" % (9 + i // 20, (i % 20) * 3),
+                "static_equity": base - i * 200.0,
+                "float_pnl": -i * 300.0,
+                "equity": eq,
+                "margin_used": eq * 0.05,
+                "available": eq * 0.95,
+                "risk_degree": 0.05 + (i % 4) * 0.01,
+                "drawdown": (i % 6) * 0.001,
+                "n_positions": i % 5,
+                "realized": -i * 200.0,
+                "fees_paid": i * 7.5,
+                "n_trades": i // 2,
+            }
+        )
     return rows
 
 
@@ -219,6 +314,7 @@ def test_paper_payload_empty_safe():
     class _Boom:
         def paper_equity_series(self, limit=2000):
             raise RuntimeError("locked")
+
     st = _PaperState([])
     st.db = _Boom()
     assert charts.paper_payload(st) is None
@@ -251,15 +347,27 @@ def test_paper_payload_mapping_and_summary():
 def test_paper_payload_respects_cap():
     p = charts.paper_payload(_PaperState(_paper_rows(2000)), max_points=1200)
     assert p["points"] == 1200
-    assert p["dt"][0] and p["dt"][-1]               # 首尾保留
+    assert p["dt"][0] and p["dt"][-1]  # 首尾保留
 
 
 # ---------------- 汇总 / JS / 落盘 ----------------
 
+
 class _FakeCal:
     def band_table(self):
-        return [{"dir": 1, "dir_text": "做多", "band": "分批", "n": 30, "hits": 18,
-                 "winrate": 0.58, "avg_ret": 0.002, "mult": 1.08, "enough": True}]
+        return [
+            {
+                "dir": 1,
+                "dir_text": "做多",
+                "band": "分批",
+                "n": 30,
+                "hits": 18,
+                "winrate": 0.58,
+                "avg_ret": 0.002,
+                "mult": 1.08,
+                "enough": True,
+            }
+        ]
 
 
 class _State:
@@ -270,22 +378,32 @@ def test_build_payload_full_and_empty(tmp_path, monkeypatch):
     eq = tmp_path / "eq.csv"
     _write_equity(eq, _equity_rows(5))
     fj = tmp_path / "f.json"
-    fj.write_text(json.dumps({"main_h": 120, "horizons": [120], "factors": []}),
-                  encoding="utf-8")
+    fj.write_text(json.dumps({"main_h": 120, "horizons": [120], "factors": []}), encoding="utf-8")
     monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(eq))
     monkeypatch.setattr(charts.config, "FACTOR_EVAL_JSON", str(fj))
     # 离线 JSON 类 payload（spread/journal/prisk/wf_cost/fhealth 等）统一指向空 tmp，确定性显 None
     monkeypatch.setattr(charts.config, "PC_JSON", str(tmp_path / "lab.json"))
     st = _State()
-    st.db = _FakeDB([{"horizon_min": 30, "direction": "做多", "n": 4,
-                      "evaluated": 4, "expired": 0, "wins": 2, "avg_ret": 0.0}])
+    st.db = _FakeDB(
+        [
+            {
+                "horizon_min": 30,
+                "direction": "做多",
+                "n": 4,
+                "evaluated": 4,
+                "expired": 0,
+                "wins": 2,
+                "avg_ret": 0.0,
+            }
+        ]
+    )
     st.calibrator = _FakeCal()
     st.last_cross_section = _cross_section()
     p = charts.build_payload(st)
     js = charts.payload_to_js(p)
     assert js.startswith("window.CHART_DATA = ") and js.rstrip().endswith(";")
     # 可反序列化回 dict（allow_nan=False 已在构建时挡住 NaN/Infinity）
-    decoded = json.loads(js[len("window.CHART_DATA = "):-2])
+    decoded = json.loads(js[len("window.CHART_DATA = ") : -2])
     assert decoded["portfolio"]["points"] == 5
     assert decoded["cross_section"]["breadth"]["n"] == 11
     assert len(decoded["calibration"]) == 1
@@ -308,7 +426,7 @@ def test_build_payload_full_and_empty(tmp_path, monkeypatch):
     assert empty["cross_section"] is None and empty["calibration"] is None
     assert empty["paper"] is None
     assert empty["wf_cost"] is None and empty["fhealth"] is None
-    json.loads(charts.payload_to_js(empty)[len("window.CHART_DATA = "):-2])
+    json.loads(charts.payload_to_js(empty)[len("window.CHART_DATA = ") : -2])
 
 
 def test_payload_escapes_script_close():
@@ -327,8 +445,7 @@ def test_write_chart_data_and_page(tmp_path, monkeypatch):
     monkeypatch.setattr(charts.config, "CHARTS_PAGE_HTML", str(page_path))
     monkeypatch.setattr(charts.config, "ECHARTS_SRC", str(src_asset))
     monkeypatch.setattr(charts.config, "ECHARTS_DST", str(dst_asset))
-    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE",
-                        str(tmp_path / "none.csv"))
+    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(tmp_path / "none.csv"))
     assert charts.write_chart_data(None) is True
     assert js_path.exists() and "window.CHART_DATA" in js_path.read_text(encoding="utf-8")
     assert charts.ensure_charts_page() is True
@@ -336,10 +453,23 @@ def test_write_chart_data_and_page(tmp_path, monkeypatch):
     html = page_path.read_text(encoding="utf-8")
     # 静态页关键结构：本地 echarts、15 个图容器、动态注入 chart_data.js
     assert 'src="assets/echarts.min.js"' in html
-    for cid in ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
-                "c-ic", "c-mono", "c-cal", "c-out",
-                "c-paper", "c-paper-dd", "c-paper-risk",
-                "c-tear-uw", "c-tear-rs", "c-tear-m"):
+    for cid in (
+        "c-equity",
+        "c-dd",
+        "c-risk",
+        "c-sector",
+        "c-xs",
+        "c-ic",
+        "c-mono",
+        "c-cal",
+        "c-out",
+        "c-paper",
+        "c-paper-dd",
+        "c-paper-risk",
+        "c-tear-uw",
+        "c-tear-rs",
+        "c-tear-m",
+    ):
         assert 'id="%s"' % cid in html
     assert "chart_data.js" in html
     # 幂等：重复调用不报错、资源不重复复制也不缺
@@ -354,17 +484,42 @@ def test_sync_asset_missing_source_safe(tmp_path, monkeypatch):
 
 # ---------------- 第23轮：片段拆分 + 实时看板内嵌（两页合并） ----------------
 
-CHART_IDS = ("c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
-             "c-ic", "c-mono", "c-cal", "c-out",
-             "c-paper", "c-paper-dd", "c-paper-risk",
-             "c-tear-uw", "c-tear-rs", "c-tear-m",
-             "c-pnav", "c-creview-sweep", "c-creview-fwd",
-             "c-attr-factor", "c-attr-bhb",
-             "c-spread-term", "c-spread-chain", "c-spread-margin",
-             "c-jr-hold", "c-jr-reason", "c-jr-daily",
-             "c-prl-method", "c-prl-stress", "c-prl-pairs",
-             "c-wf-stab", "c-wf-pos", "c-wf-surface",
-             "c-fh-event", "c-fh-daily")
+CHART_IDS = (
+    "c-equity",
+    "c-dd",
+    "c-risk",
+    "c-sector",
+    "c-xs",
+    "c-ic",
+    "c-mono",
+    "c-cal",
+    "c-out",
+    "c-paper",
+    "c-paper-dd",
+    "c-paper-risk",
+    "c-tear-uw",
+    "c-tear-rs",
+    "c-tear-m",
+    "c-pnav",
+    "c-creview-sweep",
+    "c-creview-fwd",
+    "c-attr-factor",
+    "c-attr-bhb",
+    "c-spread-term",
+    "c-spread-chain",
+    "c-spread-margin",
+    "c-jr-hold",
+    "c-jr-reason",
+    "c-jr-daily",
+    "c-prl-method",
+    "c-prl-stress",
+    "c-prl-pairs",
+    "c-wf-stab",
+    "c-wf-pos",
+    "c-wf-surface",
+    "c-fh-event",
+    "c-fh-daily",
+)
 
 
 def test_dashboard_embed_parts_are_fragments():
@@ -384,12 +539,13 @@ def test_dashboard_embed_parts_are_fragments():
     # 独立页与内嵌片段共用同一份 DOM/JS（不重复维护）
     page = charts.charts_page_html()
     assert page.count(dom) == 1 and page.count(js) == 1
-    assert "window.__CHARTS_STANDALONE__" in page      # 独立页打开即自启
-    assert "__CHARTS_STANDALONE__" not in dom          # 片段本身不绑定启动方式
+    assert "window.__CHARTS_STANDALONE__" in page  # 独立页打开即自启
+    assert "__CHARTS_STANDALONE__" not in dom  # 片段本身不绑定启动方式
 
 
 def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
     import report
+
     monkeypatch.setattr(report.config, "PAPER_ENABLED", True)  # 启用态下纸面页签才渲染
     h = report._dashboard_html()
     # 外层看板只引一次本地 echarts、只含一个面板容器，12 个图直接内嵌
@@ -402,8 +558,14 @@ def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
     assert 'data-src="__charts__"' in h
     assert 'data-src="图表看板.html"' not in h
     # 其余 txt/csv 页签全部保留走 iframe（paper_account 仅启用态渲染）
-    for fname in ("latest_report.txt", "signals.csv", "signal_tracking.txt",
-                  "daily_review.txt", "offhours_report.txt", "paper_account.txt"):
+    for fname in (
+        "latest_report.txt",
+        "signals.csv",
+        "signal_tracking.txt",
+        "daily_review.txt",
+        "offhours_report.txt",
+        "paper_account.txt",
+    ):
         assert 'data-src="%s"' % fname in h
     # 占位符必须全部被真实片段替换
     assert "/*__CP_" not in h
@@ -411,13 +573,16 @@ def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
     assert '<iframe id="view" src="latest_report.txt"></iframe>' in h
     assert "#charts-panel { display: none;" in h
 
+
 # ---------------- 第29轮 G3：完整绩效 tear（水下/滚动夏普/月度热力） ----------------
+
 
 def _multiday_equity(days, base=1_000_000.0, step=1000.0):
     """构造跨自然日的等长 dts/equity（每天2个快照，15:00 为当日收盘=日度取值）。
 
     日增幅按 0.6/1.0/1.4 倍 step 交替，保证恒为正且不相等（stdev>0，滚动夏普为正）。"""
     from datetime import datetime, timedelta
+
     d0 = datetime(2026, 4, 1)
     dts, eq, cum = [], [], 0.0
     for i in range(days):
@@ -432,7 +597,7 @@ def _multiday_equity(days, base=1_000_000.0, step=1000.0):
 
 
 def test_tear_from_series_alignment_and_monthly():
-    dts, eq = _multiday_equity(70)            # 跨 2 个自然月
+    dts, eq = _multiday_equity(70)  # 跨 2 个自然月
     t = charts._tear_from_series(dts, eq, "portfolio")
     assert t is not None and t["source"] == "portfolio"
     # 水下曲线与原始时间轴等长、首点 0、全部非负
@@ -465,8 +630,7 @@ def test_tear_from_series_insufficient_samples():
 
 def test_tear_payload_prefers_paper_then_csv(tmp_path, monkeypatch):
     # 1) 有纸面快照优先 paper
-    rows = [{"ts": "2026-04-%02d 15:00:00" % (1 + i), "equity": 1e6 - i * 500.0}
-            for i in range(70)]
+    rows = [{"ts": "2026-04-%02d 15:00:00" % (1 + i), "equity": 1e6 - i * 500.0} for i in range(70)]
 
     class _DB:
         def paper_equity_series(self, limit=20000):
@@ -474,6 +638,7 @@ def test_tear_payload_prefers_paper_then_csv(tmp_path, monkeypatch):
 
     class _St:
         db = _DB()
+
     t = charts.tear_payload(_St())
     assert t is not None and t["source"] == "paper"
 
@@ -482,9 +647,10 @@ def test_tear_payload_prefers_paper_then_csv(tmp_path, monkeypatch):
     dts, eq = _multiday_equity(70)
     with open(p, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["dt", "static", "float", "equity", "margin",
-                    "available", "risk", "drawdown", "npos"])
-        for d, e in zip(dts, eq):
+        w.writerow(
+            ["dt", "static", "float", "equity", "margin", "available", "risk", "drawdown", "npos"]
+        )
+        for d, e in zip(dts, eq, strict=False):
             w.writerow([d, 1e6, 0.0, e, e * 0.02, e * 0.98, 0.02, 0.0, 1])
     monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(p))
     t2 = charts.tear_payload(None)
@@ -499,19 +665,30 @@ def test_tear_payload_prefers_paper_then_csv(tmp_path, monkeypatch):
 def test_build_payload_contains_tear_block(tmp_path, monkeypatch):
     monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(tmp_path / "n.csv"))
     p = charts.build_payload(None)
-    assert "tear" in p and p["tear"] is None       # 无数据安全降级为 None
-    decoded = json.loads(charts.payload_to_js(p)[len("window.CHART_DATA = "):-2])
+    assert "tear" in p and p["tear"] is None  # 无数据安全降级为 None
+    decoded = json.loads(charts.payload_to_js(p)[len("window.CHART_DATA = ") : -2])
     assert decoded["tear"] is None
 
 
 # ==================== 第52轮 组合净值/熔断校准看板取数（零网络、tmp_path） ====================
 def test_portfolio_nav_payload(tmp_path):
     p = tmp_path / "portfolio_nav.csv"
-    assert charts.portfolio_nav_payload(str(p)) is None        # 缺文件 None
+    assert charts.portfolio_nav_payload(str(p)) is None  # 缺文件 None
     with open(p, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["date", "equal_ret", "inv_vol_ret", "erc_ret", "gmv_ret",
-                    "equal_nav", "inv_vol_nav", "erc_nav", "gmv_nav"])
+        w.writerow(
+            [
+                "date",
+                "equal_ret",
+                "inv_vol_ret",
+                "erc_ret",
+                "gmv_ret",
+                "equal_nav",
+                "inv_vol_nav",
+                "erc_nav",
+                "gmv_nav",
+            ]
+        )
         w.writerow(["2025-01-02", 0.01, 0.01, 0.01, 0.01, 1.01, 1.01, 1.01, 1.01])
         w.writerow(["2025-01-03", -0.01, 0.0, 0.0, 0.0, 0.9999, 1.01, 1.01, 1.01])
     d = charts.portfolio_nav_payload(str(p))
@@ -537,9 +714,16 @@ def test_circuit_review_payload(tmp_path):
         "calib_forward": {"conditional": cond, "baseline": base},
     }
     payload = {
-        "meta": {"sweep_grid": [0.01, 0.03], "horizons": [1, 3],
-                 "warn": 0.02, "halt": 0.03, "delever": 0.05, "calib_threshold": 0.01,
-                 "n_proxy": 378, "n_universe": 61},
+        "meta": {
+            "sweep_grid": [0.01, 0.03],
+            "horizons": [1, 3],
+            "warn": 0.02,
+            "halt": 0.03,
+            "delever": 0.05,
+            "calib_threshold": 0.01,
+            "n_proxy": 378,
+            "n_universe": 61,
+        },
         "per_method": {"equal": equal_block},
     }
     p.write_text(json.dumps(payload), encoding="utf-8")
@@ -552,28 +736,60 @@ def test_circuit_review_payload(tmp_path):
     assert abs(fwd["cond"][0] + 0.0016) < 1e-12 and abs(fwd["base"][1] - 0.0004) < 1e-12
     assert d["thresholds"]["halt"] == 0.03
     # 坏 JSON None
-    bad = tmp_path / "bad.json"; bad.write_text("{not json", encoding="utf-8")
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
     assert charts.circuit_review_payload(str(bad)) is None
 
 
 def test_attribution_payload(tmp_path):
     p = tmp_path / "attribution.json"
-    assert charts.attribution_payload(str(p)) is None        # 缺文件 None
+    assert charts.attribution_payload(str(p)) is None  # 缺文件 None
 
     def fac(name, contrib):
-        return {"factor": name, "beta": 0.1, "tstat": 1.2, "ic": 0.05,
-                "contrib": contrib, "share": 0.2, "n": 100}
+        return {
+            "factor": name,
+            "beta": 0.1,
+            "tstat": 1.2,
+            "ic": 0.05,
+            "contrib": contrib,
+            "share": 0.2,
+            "n": 100,
+        }
+
     payload = {
         "main_h": 1440,
         "horizons": {
             "30": {"n": 10, "factors": [], "bhb": {}, "bhb_sectors": []},
-            "1440": {"n": 235, "alpha": 0.0007, "r2": 0.19,
-                     "factors": [fac("A", 0.003), fac("B", -0.001), fac("C", 0.001)],
-                     "bhb": {"alloc": 8e-5, "select": 1.1e-4, "inter": -4e-5,
-                             "total": 1.5e-4, "excess": 1.5e-4},
-                     "bhb_sectors": [
-                         {"sector": "农产品", "alloc": 1e-5, "select": 2e-4, "inter": -5e-5, "effect": 1.6e-4},
-                         {"sector": "有色", "alloc": 7e-6, "select": -1e-5, "inter": 0.0, "effect": -3e-6}]}},
+            "1440": {
+                "n": 235,
+                "alpha": 0.0007,
+                "r2": 0.19,
+                "factors": [fac("A", 0.003), fac("B", -0.001), fac("C", 0.001)],
+                "bhb": {
+                    "alloc": 8e-5,
+                    "select": 1.1e-4,
+                    "inter": -4e-5,
+                    "total": 1.5e-4,
+                    "excess": 1.5e-4,
+                },
+                "bhb_sectors": [
+                    {
+                        "sector": "农产品",
+                        "alloc": 1e-5,
+                        "select": 2e-4,
+                        "inter": -5e-5,
+                        "effect": 1.6e-4,
+                    },
+                    {
+                        "sector": "有色",
+                        "alloc": 7e-6,
+                        "select": -1e-5,
+                        "inter": 0.0,
+                        "effect": -3e-6,
+                    },
+                ],
+            },
+        },
     }
     p.write_text(json.dumps(payload), encoding="utf-8")
     d = charts.attribution_payload(str(p))
@@ -584,28 +800,32 @@ def test_attribution_payload(tmp_path):
     assert len(d["sectors"]) == 2 and d["sectors"][0]["name"] == "农产品"
     assert abs(d["bhb"]["total"] - 1.5e-4) < 1e-15 and d["horizons"] == [30, 1440]
     # main_h 缺失时回退到最大 horizon
-    payload2 = dict(payload); payload2["main_h"] = 9999
+    payload2 = dict(payload)
+    payload2["main_h"] = 9999
     (tmp_path / "a2.json").write_text(json.dumps(payload2), encoding="utf-8")
     d2 = charts.attribution_payload(str(tmp_path / "a2.json"))
     assert d2["h"] == 1440
     # horizons 非 dict / 空 -> None；坏 JSON -> None
     (tmp_path / "a3.json").write_text(json.dumps({"horizons": []}), encoding="utf-8")
     assert charts.attribution_payload(str(tmp_path / "a3.json")) is None
-    bad = tmp_path / "bad.json"; bad.write_text("{bad", encoding="utf-8")
+    bad = tmp_path / "bad.json"
+    bad.write_text("{bad", encoding="utf-8")
     assert charts.attribution_payload(str(bad)) is None
 
 
 def test_spread_payload(tmp_path):
     p = tmp_path / "spread_lab.json"
-    assert charts.spread_payload(str(p)) is None            # 缺文件 None
+    assert charts.spread_payload(str(p)) is None  # 缺文件 None
     payload = {
         "meta": {"backwardation": {"back": 2, "n": 5}},
         "term": [
             {"sym": "AA", "spread_z": 2.1, "carry_ann": 0.05, "curve": "back"},
             {"sym": "BB", "spread_z": -2.3, "carry_ann": -0.04, "curve": "contango"},
-            {"sym": "CC", "spread_z": 0.2, "carry_ann": 0.0, "curve": "contango"}],   # |z|<1 被滤
+            {"sym": "CC", "spread_z": 0.2, "carry_ann": 0.0, "curve": "contango"},
+        ],  # |z|<1 被滤
         "chains": [{"name": "比价X", "stat": {"ratio": 1.2, "z": -1.7, "chg60": 0.02}}],
-        "margins": [{"name": "利润Y", "stat": {"value": 500.0, "z": 1.9, "chg60": 30.0}}]}
+        "margins": [{"name": "利润Y", "stat": {"value": 500.0, "z": 1.9, "chg60": 30.0}}],
+    }
     p.write_text(json.dumps(payload), encoding="utf-8")
     d = charts.spread_payload(str(p))
     assert d is not None
@@ -625,16 +845,24 @@ def test_journal_payload(tmp_path):
     p = tmp_path / "trade_journal.json"
     assert charts.journal_payload(str(p)) is None
     payload = {
-        "overall": {"n": 100, "win_rate": 0.4, "expectancy": -5.0, "profit_factor": 0.9,
-                    "payoff_ratio": 1.3},
+        "overall": {
+            "n": 100,
+            "win_rate": 0.4,
+            "expectancy": -5.0,
+            "profit_factor": 0.9,
+            "payoff_ratio": 1.3,
+        },
         "by_hold_band": [
             {"key": "2短(3-6)", "n": 30, "win_rate": 0.45, "net": 1000.0, "pf": 1.2},
-            {"key": "1极短(1-2)", "n": 70, "win_rate": 0.3, "net": -2000.0, "pf": 0.6}],
+            {"key": "1极短(1-2)", "n": 70, "win_rate": 0.3, "net": -2000.0, "pf": 0.6},
+        ],
         "by_score_band": [
             {"key": "分批[4,6)", "n": 10, "win_rate": 0.5, "net": 0.0, "pf": 1.0},
-            {"key": "弱(|分|<2)", "n": 40, "win_rate": 0.34, "net": -500.0, "pf": 0.8}],
+            {"key": "弱(|分|<2)", "n": 40, "win_rate": 0.34, "net": -500.0, "pf": 0.8},
+        ],
         "by_reason": [{"key": "止盈", "n": 20, "win_rate": 1.0, "net": 3000.0, "pf": None}],
-        "daily": [{"key": "d1", "net": 100.0}, {"key": "d2", "net": -40.0}]}
+        "daily": [{"key": "d1", "net": 100.0}, {"key": "d2", "net": -40.0}],
+    }
     p.write_text(json.dumps(payload), encoding="utf-8")
     d = charts.journal_payload(str(p))
     assert d is not None and d["overall"]["n"] == 100
@@ -657,17 +885,36 @@ def test_portfolio_risk_payload(tmp_path):
     payload = {
         "meta": {"window": ["2026-03-01", "2026-09-02"], "n_universe": 61},
         "per_method": {
-            "equal": {"eff_n": 61.0, "div_benefit": 0.6, "avg_abs_corr": 0.16,
-                      "port_param_var": 0.0098, "param": {"ann_vol": 0.093},
-                      "strongest_pairs": [["PX", "TA", 0.81], ["AA", "BB", 0.7]],
-                      "weakest_pairs": [["AU", "PF", -0.39], ["CC", "DD", -0.3]],
-                      "oil_stress": {"-0.1": {"total": -0.012}, "-0.05": {"total": -0.006},
-                                     "0.05": {"total": 0.006}}},
-            "erc": {"eff_n": 34.8, "div_benefit": 0.69, "avg_abs_corr": 0.16,
-                    "port_param_var": 0.0062, "param": {"ann_vol": 0.058},
-                    "strongest_pairs": [], "weakest_pairs": [],
-                    "oil_stress": {"-0.1": {"total": -0.005}, "-0.05": {"total": -0.0025},
-                                   "0.05": {"total": 0.0025}}}}}
+            "equal": {
+                "eff_n": 61.0,
+                "div_benefit": 0.6,
+                "avg_abs_corr": 0.16,
+                "port_param_var": 0.0098,
+                "param": {"ann_vol": 0.093},
+                "strongest_pairs": [["PX", "TA", 0.81], ["AA", "BB", 0.7]],
+                "weakest_pairs": [["AU", "PF", -0.39], ["CC", "DD", -0.3]],
+                "oil_stress": {
+                    "-0.1": {"total": -0.012},
+                    "-0.05": {"total": -0.006},
+                    "0.05": {"total": 0.006},
+                },
+            },
+            "erc": {
+                "eff_n": 34.8,
+                "div_benefit": 0.69,
+                "avg_abs_corr": 0.16,
+                "port_param_var": 0.0062,
+                "param": {"ann_vol": 0.058},
+                "strongest_pairs": [],
+                "weakest_pairs": [],
+                "oil_stress": {
+                    "-0.1": {"total": -0.005},
+                    "-0.05": {"total": -0.0025},
+                    "0.05": {"total": 0.0025},
+                },
+            },
+        },
+    }
     p.write_text(json.dumps(payload), encoding="utf-8")
     d = charts.portfolio_risk_payload(str(p))
     assert d is not None
@@ -690,6 +937,7 @@ def test_portfolio_risk_payload(tmp_path):
 
 # ---------------- 第58轮：⑬ wf_cost_lab / ⑭ factor_health 接看板 ----------------
 
+
 def _synth_wf_cell(comp, win=0.5, n=100, cg=0.1):
     return {"total_compound": comp, "win_rate": win, "n_trades": n, "cost_to_gross": cg}
 
@@ -697,16 +945,35 @@ def _synth_wf_cell(comp, win=0.5, n=100, cg=0.1):
 def test_wf_cost_payload_mapping_and_safe(tmp_path):
     def row(fee, comps):
         return {"fee": fee, "cells": [_synth_wf_cell(c) for c in comps]}
-    payload = {"generated": "2026-09-03 00:00:00", "results": [{
-        "sym": "RB", "name": "螺纹", "period": "60m",
-        "best_param": {"lookback": 20, "hold": 3},
-        "wf_summary": {"mean_is_sharpe": 0.5, "mean_oos_sharpe": 0.3},
-        "stability": {"grade": "稳健", "is_oos_decay": 0.2, "switch_rate": 0.25,
-                      "selection_regret": 0.02, "oos_positive_rate": 0.75},
-        "surface": {"fee_grid": [0.0, 2.5e-5, 5e-5], "slip_grid": [0.0, 5e-5, 1e-4],
-                    "rows": [row(0.0, [0.10, 0.05, -0.02]),
-                             row(2.5e-5, [0.08, 0.03, -0.04]),
-                             row(5e-5, [0.06, 0.01, -0.06])]}}]}
+
+    payload = {
+        "generated": "2026-09-03 00:00:00",
+        "results": [
+            {
+                "sym": "RB",
+                "name": "螺纹",
+                "period": "60m",
+                "best_param": {"lookback": 20, "hold": 3},
+                "wf_summary": {"mean_is_sharpe": 0.5, "mean_oos_sharpe": 0.3},
+                "stability": {
+                    "grade": "稳健",
+                    "is_oos_decay": 0.2,
+                    "switch_rate": 0.25,
+                    "selection_regret": 0.02,
+                    "oos_positive_rate": 0.75,
+                },
+                "surface": {
+                    "fee_grid": [0.0, 2.5e-5, 5e-5],
+                    "slip_grid": [0.0, 5e-5, 1e-4],
+                    "rows": [
+                        row(0.0, [0.10, 0.05, -0.02]),
+                        row(2.5e-5, [0.08, 0.03, -0.04]),
+                        row(5e-5, [0.06, 0.01, -0.06]),
+                    ],
+                },
+            }
+        ],
+    }
     p = tmp_path / "wf_cost_lab.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
     d = charts.wf_cost_payload(str(p))
@@ -715,8 +982,15 @@ def test_wf_cost_payload_mapping_and_safe(tmp_path):
     s0 = d["syms"][0]
     assert s0["sym"] == "RB" and s0["grade"] == "稳健" and s0["best"] == {"lookback": 20, "hold": 3}
     assert abs(s0["is_sharpe"] - 0.5) < 1e-12 and abs(s0["oos_sharpe"] - 0.3) < 1e-12
-    assert len(s0["surface"]) == 9                      # 3x3 网格
-    assert s0["surface"][0] == [0, 0, 10.0, 50.0, 100, 10.0]   # [滑点idx,费率idx,复利%,胜率%,笔数,成本占毛利%]
+    assert len(s0["surface"]) == 9  # 3x3 网格
+    assert s0["surface"][0] == [
+        0,
+        0,
+        10.0,
+        50.0,
+        100,
+        10.0,
+    ]  # [滑点idx,费率idx,复利%,胜率%,笔数,成本占毛利%]
     assert s0["surface"][8][:3] == [2, 2, -6.0]
     assert abs(d["vmin"] + 6.0) < 1e-9 and abs(d["vmax"] - 10.0) < 1e-9
     # 缺文件/坏JSON/空results -> None
@@ -729,27 +1003,41 @@ def test_wf_cost_payload_mapping_and_safe(tmp_path):
 
 def test_factor_health_payload_mapping_and_safe(tmp_path):
     def cell(ic, n, ci, verdict):
-        return {"ic": ic, "n": n, "ci": ci, "verdict": verdict,
-                "n_flip": 0, "max_consec_fail": 0}
+        return {"ic": ic, "n": n, "ci": ci, "verdict": verdict, "n_flip": 0, "max_consec_fail": 0}
+
     good_ci = {"p5": 0.0, "p95": 0.2, "prob_same_sign": 0.9}
-    payload = {"generated": "2026-09-03 00:00:00", "event": {
-        "30": {"新闻消息面": cell(0.10, 100, good_ci, "健康"),
-               "盘中动量": cell(0.0, 0, None, "样本不足")},
-        "1440": {"新闻消息面": cell(-0.05, 80, {"p5": -0.15, "p95": 0.05,
-                                               "prob_same_sign": 0.6}, "方向不稳"),
-                 "盘中动量": cell(0.0, 0, None, "样本不足")}},
-        "daily": {"ret5": {"1": {"ic": 0.02}, "2": {"ic": 0.01},
-                           "halflife": {"half_life": 40.0, "tau": 57.7}},
-                  "ret20": {"1": {"ic": -0.01}, "2": {"ic": -0.02}, "halflife": None}}}
+    payload = {
+        "generated": "2026-09-03 00:00:00",
+        "event": {
+            "30": {
+                "新闻消息面": cell(0.10, 100, good_ci, "健康"),
+                "盘中动量": cell(0.0, 0, None, "样本不足"),
+            },
+            "1440": {
+                "新闻消息面": cell(
+                    -0.05, 80, {"p5": -0.15, "p95": 0.05, "prob_same_sign": 0.6}, "方向不稳"
+                ),
+                "盘中动量": cell(0.0, 0, None, "样本不足"),
+            },
+        },
+        "daily": {
+            "ret5": {
+                "1": {"ic": 0.02},
+                "2": {"ic": 0.01},
+                "halflife": {"half_life": 40.0, "tau": 57.7},
+            },
+            "ret20": {"1": {"ic": -0.01}, "2": {"ic": -0.02}, "halflife": None},
+        },
+    }
     p = tmp_path / "factor_health.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
     d = charts.factor_health_payload(str(p))
     assert d is not None
-    assert d["factors"] == ["新闻消息面", "盘中动量"]        # 保工具写入顺序
-    assert [b["h"] for b in d["event"]] == [30, 1440]     # 周期数值升序
+    assert d["factors"] == ["新闻消息面", "盘中动量"]  # 保工具写入顺序
+    assert [b["h"] for b in d["event"]] == [30, 1440]  # 周期数值升序
     c0 = d["event"][0]["by"][0]
     assert c0["ic"] == 0.1 and c0["lo"] == 0.0 and c0["hi"] == 0.2 and c0["same"] == 0.9
-    c1 = d["event"][0]["by"][1]                            # ci=None 安全降级
+    c1 = d["event"][0]["by"][1]  # ci=None 安全降级
     assert c1["lo"] is None and c1["hi"] is None and c1["same"] is None and c1["n"] == 0
     assert d["daily_hs"] == [1, 2]
     assert d["daily"][0]["name"] == "ret5" and d["daily"][0]["half"] == 40.0

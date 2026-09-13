@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """P1-11 量仓资金因子。
 
 新浪商品期货行情本身已经提供成交量与持仓量，早期只解析、未参与分析。
@@ -10,6 +9,7 @@
 
 只使用标准库，输出给 analyzer.analyze_variety 的 flow 字典。
 """
+
 import math
 import threading
 import time

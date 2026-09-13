@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """G25（第38轮）表达式因子引擎 factor_expr 的细粒度单测（零网络/零DB）。
 
 覆盖：①解析器安全边界（白名单放行、危险/未知/属性/dunder/语句一律拒绝、窗口必须正整数字面量）；
 ②时序算子逐值手算与无未来；③截面算子；④治理（相关/正交/加权）；⑤实时离线结构性 parity。
 聚合自测在 test_tools_selftest.test_factor_expr_selftest，本文件补边界与手算颗粒度。
 """
+
 import math
 
 import pytest
@@ -12,26 +12,52 @@ import pytest
 import factor_expr as fe
 from factor_expr import ExprError, compute_ts, eval_cs, parse
 
-
 C = [100.0, 101.0, 103.0, 102.0, 105.0, 108.0, 107.0, 110.0, 112.0, 115.0]
 
 
 # ---------------- ① 安全边界 ----------------
-@pytest.mark.parametrize("bad", [
-    "__import__('os')", "x.open", "eval(close)", "exec(close)", "lambda:1", "globals()",
-    "locals()", "getattr(x,y)", "foo(close,3)", "import os", "a;b", "close.__class__",
-    "ts_mean(close,-2)", "ts_mean(close,close)", "ts_mean(close,2.5)", "delay(close)",
-    "cross_rank(close)", "unknown(close,3)", "close..3", "(close+1", "close+1)",
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "__import__('os')",
+        "x.open",
+        "eval(close)",
+        "exec(close)",
+        "lambda:1",
+        "globals()",
+        "locals()",
+        "getattr(x,y)",
+        "foo(close,3)",
+        "import os",
+        "a;b",
+        "close.__class__",
+        "ts_mean(close,-2)",
+        "ts_mean(close,close)",
+        "ts_mean(close,2.5)",
+        "delay(close)",
+        "cross_rank(close)",
+        "unknown(close,3)",
+        "close..3",
+        "(close+1",
+        "close+1)",
+    ],
+)
 def test_parser_rejects_dangerous(bad):
     with pytest.raises(ExprError):
         compute_ts(bad, {"close": C, "x": C, "y": [1.0] * len(C)})
 
 
 def test_parser_accepts_whitelist_and_decimal():
-    for ok in ["close+1", "ts_mean(close,5)", "delta(close,5)/delay(close,5)",
-               "corr(close,volume,10)", "(close/ts_mean(close,20)-1)/(ts_std(close,20)+0.000001)",
-               "abs(close-100)", "max(close,delay(close,1))", "decay_linear(close,3)"]:
+    for ok in [
+        "close+1",
+        "ts_mean(close,5)",
+        "delta(close,5)/delay(close,5)",
+        "corr(close,volume,10)",
+        "(close/ts_mean(close,20)-1)/(ts_std(close,20)+0.000001)",
+        "abs(close-100)",
+        "max(close,delay(close,1))",
+        "decay_linear(close,3)",
+    ]:
         assert parse(ok)[0] in ("bin", "call")
 
 
@@ -62,6 +88,7 @@ def test_window_stats():
     assert compute_ts("ts_max(close,3)", {"close": C})[3] == max(C[1:4])
     sd = compute_ts("ts_std(close,3)", {"close": C})
     import statistics
+
     assert sd[3] == pytest.approx(statistics.stdev(C[1:4]))
 
 
@@ -163,7 +190,7 @@ def test_correlations():
 def test_orthogonalize_recovers_beta():
     x1 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     x2 = [2.0, 1.0, 3.0, 2.0, 4.0, 3.0]
-    y = [2 * a + 3 * b for a, b in zip(x1, x2)]
+    y = [2 * a + 3 * b for a, b in zip(x1, x2, strict=False)]
     resid, beta = fe.orthogonalize(y, [x1, x2])
     assert beta[0] == pytest.approx(2.0) and beta[1] == pytest.approx(3.0)
     assert all(abs(r) < 1e-9 for r in resid)
@@ -190,12 +217,19 @@ def test_structural_parity():
 def test_library_compiles_and_registered():
     catalog_keys = set()
     import factors_catalog as fc
+
     catalog_keys = {r["key"] for r in fc.CATALOG}
     for f in fe.LIBRARY:
-        out = compute_ts(f["expr"], {"close": C, "high": [v * 1.005 for v in C],
-                                     "low": [v * 0.995 for v in C],
-                                     "volume": [1000 + i for i in range(len(C))],
-                                     "oi": [5000 + i * 2 for i in range(len(C))]})
+        out = compute_ts(
+            f["expr"],
+            {
+                "close": C,
+                "high": [v * 1.005 for v in C],
+                "low": [v * 0.995 for v in C],
+                "volume": [1000 + i for i in range(len(C))],
+                "oi": [5000 + i * 2 for i in range(len(C))],
+            },
+        )
         assert len(out) == len(C)
         assert f["key"] in catalog_keys  # 表达式因子必须在唯一注册表登记
     assert fc.validate() == []
@@ -204,6 +238,7 @@ def test_library_compiles_and_registered():
 def test_ts_skew_hand_computed():
     """第81轮：ts_skew 尾窗样本偏度手算（population g1=m3/m2^1.5）、暖机None、成对剔非有限值。"""
     import math
+
     # 右偏序列：[0,0,0,0,0,3] → 大值在尾部，偏度>0
     xs = [0.0] * 5 + [3.0]
     out = compute_ts("ts_skew(x,6)", {"x": xs})
@@ -211,7 +246,7 @@ def test_ts_skew_hand_computed():
     mu = sum(w) / 6.0
     m2 = sum((v - mu) ** 2 for v in w) / 6.0
     m3 = sum((v - mu) ** 3 for v in w) / 6.0
-    expect = m3 / (m2 ** 1.5)
+    expect = m3 / (m2**1.5)
     assert out[5] is not None and abs(out[5] - expect) < 1e-12 and out[5] > 1.5
     # 对称序列偏度=0（窗口 [0,1,2,1,0,2] 偏差 -1,0,+1,0,-1,+1 严格对称）；常数千方差→None
     sym = [0.0, 1.0, 2.0, 1.0, 0.0, 2.0]
@@ -219,7 +254,7 @@ def test_ts_skew_hand_computed():
     assert abs(o2[5]) < 1e-12
     flat = [5.0] * 10
     o3 = compute_ts("ts_skew(x,5)", {"x": flat})
-    assert o3[-1] is None                       # 零方差（m2≈0）
+    assert o3[-1] is None  # 零方差（m2≈0）
     # 暖机：窗口不足3个有限点→None；非有限值成对剔除
     o4 = compute_ts("ts_skew(x,6)", {"x": [None, None, None, 1.0, 2.0, 3.0, 4.0]})
     assert o4[3] is None and o4[6] is not None

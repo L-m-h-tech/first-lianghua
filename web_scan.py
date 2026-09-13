@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【增强⑫】全网数据查找（每 WEB_SCAN_INTERVAL=180 秒一轮）：
 聚合"新闻 / 金融 / 突发事件"三类全网公开数据源，喂给同一个新闻情绪分析管线
 （factors.NewsFactor），并对**新出现**的高影响消息触发与原油急动相同的"紧急轮动"。
@@ -18,6 +17,7 @@
   - 含"传闻/据称/网传/未经证实/疑似…"等存疑词的消息 confidence×0.4 并打 doubtful 标记，
     在 factors 打分与报告 Top 消息排序中自然靠后。
 """
+
 import re
 import threading
 import time
@@ -30,28 +30,52 @@ from utils import LOG, sanitize
 
 # 源可信度（真实优先）：权威快讯/实测数据=1.0；一线财经媒体≈0.9；转载聚合≈0.75
 SOURCE_CREDIBILITY = {
-    "东财7x24": 1.0, "华尔街见闻": 0.95, "同花顺7x24": 0.9,
+    "东财7x24": 1.0,
+    "华尔街见闻": 0.95,
+    "同花顺7x24": 0.9,
     "全网扫描·金融数据": 1.0,
 }
 # 新浪滚动稿的署名媒体在白名单内视为权威（1.0），否则按一般媒体 0.8
 AUTH_MEDIA = {
-    "新华社", "新华财经", "央视新闻", "央视财经", "人民日报", "证券时报", "中国证券报",
-    "上海证券报", "证券日报", "经济参考报", "第一财经", "财新网", "澎湃新闻", "界面新闻",
-    "21世纪经济报道", "经济观察报", "中国基金报", "期货日报", "国际金融报", "中证网",
+    "新华社",
+    "新华财经",
+    "央视新闻",
+    "央视财经",
+    "人民日报",
+    "证券时报",
+    "中国证券报",
+    "上海证券报",
+    "证券日报",
+    "经济参考报",
+    "第一财经",
+    "财新网",
+    "澎湃新闻",
+    "界面新闻",
+    "21世纪经济报道",
+    "经济观察报",
+    "中国基金报",
+    "期货日报",
+    "国际金融报",
+    "中证网",
 }
 _HEADERS = {"User-Agent": config.HEADERS_COMMON["User-Agent"]}
-_SINA_HEADERS = {"User-Agent": config.HEADERS_COMMON["User-Agent"],
-                 "Referer": "https://finance.sina.com.cn/"}
+_SINA_HEADERS = {
+    "User-Agent": config.HEADERS_COMMON["User-Agent"],
+    "Referer": "https://finance.sina.com.cn/",
+}
 
 
 # ============================ 文字源抓取 ============================
 
+
 def fetch_eastmoney_flash():
     """东方财富 7x24 快讯"""
     trace = str(int(time.time() * 1000))
-    url = (f"https://np-listapi.eastmoney.com/comm/web/getFastNewsList?client=web"
-           f"&biz=web_724&fastColumn=102&sortEnd=&pageSize={config.WEB_SCAN_PAGE_SIZE}"
-           f"&req_trace={trace}")
+    url = (
+        f"https://np-listapi.eastmoney.com/comm/web/getFastNewsList?client=web"
+        f"&biz=web_724&fastColumn=102&sortEnd=&pageSize={config.WEB_SCAN_PAGE_SIZE}"
+        f"&req_trace={trace}"
+    )
     r = http.get(url, headers=_HEADERS, timeout=config.TIMEOUT)
     items = (r.json().get("data") or {}).get("fastNewsList") or []
     out = []
@@ -64,8 +88,14 @@ def fetch_eastmoney_flash():
             dt = datetime.strptime(it.get("showTime", ""), "%Y-%m-%d %H:%M:%S")
         except Exception:
             pass
-        out.append({"source": "东财7x24", "time": dt, "content": content,
-                    "important": bool(it.get("titleColor"))})
+        out.append(
+            {
+                "source": "东财7x24",
+                "time": dt,
+                "content": content,
+                "important": bool(it.get("titleColor")),
+            }
+        )
     return out
 
 
@@ -74,8 +104,10 @@ def fetch_sina_roll():
     out = []
     for lid in (2516, 2509):
         try:
-            url = (f"https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid={lid}"
-                   f"&num={config.WEB_SCAN_PAGE_SIZE}&page=1")
+            url = (
+                f"https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid={lid}"
+                f"&num={config.WEB_SCAN_PAGE_SIZE}&page=1"
+            )
             r = http.get(url, headers=_HEADERS, timeout=config.TIMEOUT)
             data = (r.json().get("result") or {}).get("data") or []
         except Exception:
@@ -91,36 +123,53 @@ def fetch_sina_roll():
             except Exception:
                 dt = datetime.now()
             media = (it.get("media_name") or "新浪财经").strip()
-            out.append({"source": media if media in AUTH_MEDIA else "新浪滚动·" + media[:10],
-                        "time": dt, "content": content, "important": False})
+            out.append(
+                {
+                    "source": media if media in AUTH_MEDIA else "新浪滚动·" + media[:10],
+                    "time": dt,
+                    "content": content,
+                    "important": False,
+                }
+            )
     return out
 
 
 def fetch_wallstreetcn():
     """华尔街见闻全球快讯"""
-    url = ("https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel"
-           f"&limit={config.WEB_SCAN_PAGE_SIZE}")
+    url = (
+        "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel"
+        f"&limit={config.WEB_SCAN_PAGE_SIZE}"
+    )
     r = http.get(url, headers=_HEADERS, timeout=config.TIMEOUT)
     items = ((r.json().get("data") or {}).get("items")) or []
     out = []
     for it in items:
-        content = sanitize(re.sub(r"<[^>]+>", "",
-                                  it.get("content_text") or it.get("title") or "").strip())
+        content = sanitize(
+            re.sub(r"<[^>]+>", "", it.get("content_text") or it.get("title") or "").strip()
+        )
         if not content:
             continue
         try:
             dt = datetime.fromtimestamp(int(it.get("display_time", 0)))
         except Exception:
             dt = datetime.now()
-        out.append({"source": "华尔街见闻", "time": dt, "content": content,
-                    "important": bool(it.get("is_major"))})
+        out.append(
+            {
+                "source": "华尔街见闻",
+                "time": dt,
+                "content": content,
+                "important": bool(it.get("is_major")),
+            }
+        )
     return out
 
 
 def fetch_10jqka():
     """同花顺 7x24 快讯"""
-    url = ("https://news.10jqka.com.cn/tapp/news/push/stock/"
-           f"?page_size={config.WEB_SCAN_PAGE_SIZE}&track=website&tag=&page=1")
+    url = (
+        "https://news.10jqka.com.cn/tapp/news/push/stock/"
+        f"?page_size={config.WEB_SCAN_PAGE_SIZE}&track=website&tag=&page=1"
+    )
     r = http.get(url, headers=_HEADERS, timeout=config.TIMEOUT)
     items = ((r.json().get("data") or {}).get("list")) or []
     out = []
@@ -135,8 +184,7 @@ def fetch_10jqka():
         except Exception:
             dt = datetime.now()
         important = str(it.get("import", "")) in ("1", "2") or bool(it.get("color"))
-        out.append({"source": "同花顺7x24", "time": dt, "content": content,
-                    "important": important})
+        out.append({"source": "同花顺7x24", "time": dt, "content": content, "important": important})
     return out
 
 
@@ -159,8 +207,9 @@ _MACRO_SYMBOLS = [
 def fetch_macro_quotes():
     """新浪全球行情 -> {展示名: (最新价, 日涨跌幅%分数或None)}"""
     codes = ",".join(s for s, _, _ in _MACRO_SYMBOLS)
-    r = http.get(f"https://hq.sinajs.cn/list={codes}", headers=_SINA_HEADERS,
-                     timeout=config.TIMEOUT)
+    r = http.get(
+        f"https://hq.sinajs.cn/list={codes}", headers=_SINA_HEADERS, timeout=config.TIMEOUT
+    )
     r.encoding = "gbk"
     snap = {}
     for sym, name, mode in _MACRO_SYMBOLS:
@@ -169,14 +218,14 @@ def fetch_macro_quotes():
             continue
         f = m.group(1).split(",")
         try:
-            if sym.startswith("s_"):                 # 上证/深成: 名称,点位,涨跌,涨跌%
+            if sym.startswith("s_"):  # 上证/深成: 名称,点位,涨跌,涨跌%
                 price, daypct = float(f[1]), float(f[3]) / 100.0
-            elif sym == "DINIW":                      # 美元指数: 时间,最新价,...
+            elif sym == "DINIW":  # 美元指数: 时间,最新价,...
                 price, daypct = float(f[1]), None
-            elif sym.startswith("hf_"):              # 外盘期货: 最新,...,昨结=f[7]
+            elif sym.startswith("hf_"):  # 外盘期货: 最新,...,昨结=f[7]
                 price, prev = float(f[0]), float(f[7])
                 daypct = (price / prev - 1.0) if prev else None
-            else:                                    # 美股: 名称,最新,涨跌%
+            else:  # 美股: 名称,最新,涨跌%
                 price, daypct = float(f[1]), float(f[2]) / 100.0
             snap[name] = (price, daypct)
         except (IndexError, ValueError):
@@ -191,27 +240,36 @@ def _macro_text(name, pct, mode):
     d = "上涨" if up else "下跌"
     val = f"{abs(pct) * 100:.2f}%"
     if name == "美元指数":
-        return (f"【金融数据】美元指数{span}{d}{val}，" +
-                ("美元指数上涨、美元走强，对大宗商品整体形成压制" if up
-                 else "美元指数走低、美元走弱、美元回落，对大宗商品整体形成利多"))
+        return f"【金融数据】美元指数{span}{d}{val}，" + (
+            "美元指数上涨、美元走强，对大宗商品整体形成压制"
+            if up
+            else "美元指数走低、美元走弱、美元回落，对大宗商品整体形成利多"
+        )
     if name in ("纽约黄金", "纽约白银"):
-        return (f"【金融数据】{name}{span}{d}{val}，" +
-                ("避险情绪升温，央行购金预期增强，贵金属板块走强" if up
-                 else "避险情绪降温，实际利率上行，贵金属板块走弱"))
+        return f"【金融数据】{name}{span}{d}{val}，" + (
+            "避险情绪升温，央行购金预期增强，贵金属板块走强"
+            if up
+            else "避险情绪降温，实际利率上行，贵金属板块走弱"
+        )
     if name == "美铜":
-        return (f"【金融数据】美铜{span}{d}{val}，" +
-                ("精矿供应紧张、新能源需求向好，有色板块走强" if up
-                 else "库存大增、产能释放，有色板块走弱"))
+        return f"【金融数据】美铜{span}{d}{val}，" + (
+            "精矿供应紧张、新能源需求向好，有色板块走强"
+            if up
+            else "库存大增、产能释放，有色板块走弱"
+        )
     if name in ("纳斯达克", "道琼斯", "标普500"):
-        return (f"【金融数据】{name}{span}{d}{val}，" +
-                ("海外市场风险偏好回升，宽松预期升温" if up
-                 else "美股大跌、海外暴跌，避险情绪升温，经济衰退担忧加重"))
-    return (f"【金融数据】{name}{span}{d}{val}，" +
-            ("政策发力、利好政策频出，国内市场情绪回暖" if up
-             else "市场风险偏好下降，经济数据不及预期"))
+        return f"【金融数据】{name}{span}{d}{val}，" + (
+            "海外市场风险偏好回升，宽松预期升温"
+            if up
+            else "美股大跌、海外暴跌，避险情绪升温，经济衰退担忧加重"
+        )
+    return f"【金融数据】{name}{span}{d}{val}，" + (
+        "政策发力、利好政策频出，国内市场情绪回暖" if up else "市场风险偏好下降，经济数据不及预期"
+    )
 
 
 # ============================ 可信度分级 ============================
+
 
 def tag_credibility(item):
     """就地补充 confidence/doubtful 字段：真实优先，存疑打折并标记"""
@@ -230,23 +288,23 @@ def tag_credibility(item):
 
 # ============================ 扫描器 ============================
 
+
 class WebScanner:
     """每3分钟全网扫描一次：抓取→可信度分级→（金融急变合成消息）→影响评估"""
 
     def __init__(self):
         self.stop = threading.Event()
-        self._seen = set()                    # 已见过的消息键（只对"新消息"评估触发）
-        self._macro_last = {}                 # 展示名 -> (ts, 价格)，scan类指标的比较基准
-        self._macro_alert_at = {}             # 展示名 -> 上次合成消息的时间戳（冷却）
-        self._baselined = False               # 首轮只建基线，不触发紧急轮动
+        self._seen = set()  # 已见过的消息键（只对"新消息"评估触发）
+        self._macro_last = {}  # 展示名 -> (ts, 价格)，scan类指标的比较基准
+        self._macro_alert_at = {}  # 展示名 -> 上次合成消息的时间戳（冷却）
+        self._baselined = False  # 首轮只建基线，不触发紧急轮动
         self.last_summary = "全网扫描尚未运行"
         self._fail = 0
 
     # ---------- 一次完整抓取 ----------
     def scan_once(self):
         items, n_src_ok = [], 0
-        for fn in (fetch_eastmoney_flash, fetch_sina_roll,
-                   fetch_wallstreetcn, fetch_10jqka):
+        for fn in (fetch_eastmoney_flash, fetch_sina_roll, fetch_wallstreetcn, fetch_10jqka):
             try:
                 got = fn()
                 if got:
@@ -278,10 +336,17 @@ class WebScanner:
                 continue
             self._macro_alert_at[name] = now
             mode = dict((n, m) for _, n, m in _MACRO_SYMBOLS)[name]
-            out.append({"source": "全网扫描·金融数据", "time": datetime.now(),
-                        "content": _macro_text(name, pct, mode), "important": False,
-                        "confidence": 1.0, "doubtful": False,
-                        "_macro": (name, pct)})
+            out.append(
+                {
+                    "source": "全网扫描·金融数据",
+                    "time": datetime.now(),
+                    "content": _macro_text(name, pct, mode),
+                    "important": False,
+                    "confidence": 1.0,
+                    "doubtful": False,
+                    "_macro": (name, pct),
+                }
+            )
             LOG.warning("金融数据急变: %s %+.2f%% 达触发阈值，合成实测消息", name, pct * 100)
         return out
 
@@ -297,7 +362,7 @@ class WebScanner:
                     rows.append((name, daypct))
             else:
                 prev = self._macro_last.get(name)
-                self._macro_last[name] = (now, price)   # 每轮更新基准
+                self._macro_last[name] = (now, price)  # 每轮更新基准
                 if prev:
                     pct = price / prev[1] - 1.0
                     rows.append((name, pct))
@@ -313,8 +378,11 @@ class WebScanner:
             if n.get("important"):
                 w *= 1.6
             breaking = any(bw in n["content"] for bw in config.WEB_BREAKING_WORDS)
-            trig = config.WEB_IMPACT_TRIGGER if not (n.get("important") or breaking) \
+            trig = (
+                config.WEB_IMPACT_TRIGGER
+                if not (n.get("important") or breaking)
                 else config.WEB_IMPORTANT_TRIGGER
+            )
             if abs(w) < trig:
                 continue
             if best is None or abs(w) > abs(best["weight"]):

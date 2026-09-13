@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 G11 数据源主备自动熔断降级链（纯标准库、零网络、时钟可注入，便于确定性单测）。
 
@@ -15,11 +14,13 @@ G11 数据源主备自动熔断降级链（纯标准库、零网络、时钟可�
 设计铁律：默认取到的数据与旧版完全一致——熔断器只在"源确实连续失败"时跳过它（本来也拿不到），
 健康时永远按原顺序尝试；总开关 DATA_ROUTER_ENABLED=False 时 allow 恒为 True（等价旧行为）。
 """
+
 import threading
 import time
 
 try:
     import config
+
     _FAIL_THRESHOLD = getattr(config, "DATA_ROUTER_FAIL_THRESHOLD", 5)
     _COOLDOWN = getattr(config, "DATA_ROUTER_COOLDOWN_SEC", 300)
     _ENABLED = getattr(config, "DATA_ROUTER_ENABLED", True)
@@ -40,8 +41,9 @@ class AllSourcesFailed(Exception):
 class SourceHealth:
     """单源熔断器。clock 默认 time.monotonic（单调时钟，不受改系统时间影响），测试可注入。"""
 
-    def __init__(self, name, fails_threshold=None, cooldown_sec=None,
-                 clock=time.monotonic, enabled=None):
+    def __init__(
+        self, name, fails_threshold=None, cooldown_sec=None, clock=time.monotonic, enabled=None
+    ):
         self.name = name
         self.fails_threshold = _FAIL_THRESHOLD if fails_threshold is None else fails_threshold
         self.cooldown_sec = _COOLDOWN if cooldown_sec is None else cooldown_sec
@@ -55,7 +57,7 @@ class SourceHealth:
         self.success = 0
         self.fail = 0
         self.skipped = 0
-        self.trips = 0                 # 累计熔断次数
+        self.trips = 0  # 累计熔断次数
         self.last_change = None
 
     def allow(self, now=None):
@@ -110,10 +112,14 @@ class SourceHealth:
     def snapshot(self, now=None):
         now = self.clock() if now is None else now
         return {
-            "name": self.name, "state": self.state,
+            "name": self.name,
+            "state": self.state,
             "consecutive_fails": self.consecutive_fails,
-            "total": self.total, "success": self.success, "fail": self.fail,
-            "skipped": self.skipped, "trips": self.trips,
+            "total": self.total,
+            "success": self.success,
+            "fail": self.fail,
+            "skipped": self.skipped,
+            "trips": self.trips,
             "availability": round(self.availability(), 4),
             "cooldown_remaining": max(0.0, self.open_until - now) if self.state == OPEN else 0.0,
         }
@@ -126,16 +132,28 @@ class DataRouter:
     被熔断（allow=False）的源记 skipped 并直接跳过。
     """
 
-    def __init__(self, sources, fails_threshold=None, cooldown_sec=None,
-                 validator=None, clock=time.monotonic, logger=None, enabled=None):
+    def __init__(
+        self,
+        sources,
+        fails_threshold=None,
+        cooldown_sec=None,
+        validator=None,
+        clock=time.monotonic,
+        logger=None,
+        enabled=None,
+    ):
         self.clock = clock
         self.validator = validator
         self.logger = logger
         self.health = {}
         for name, fn in sources:
             self.health[name] = SourceHealth(
-                name, fails_threshold=fails_threshold, cooldown_sec=cooldown_sec,
-                clock=clock, enabled=enabled)
+                name,
+                fails_threshold=fails_threshold,
+                cooldown_sec=cooldown_sec,
+                clock=clock,
+                enabled=enabled,
+            )
         self._fns = dict(sources)
         self.order = [name for name, _ in sources]
         self.lock = threading.Lock()
@@ -149,8 +167,11 @@ class DataRouter:
                 h.note_skipped()
                 errors[name] = "circuit_open"
                 if self.logger:
-                    self.logger.warning("数据源 %s 熔断冷却中（剩余%.0fs），跳过",
-                                        name, h.snapshot(now)["cooldown_remaining"])
+                    self.logger.warning(
+                        "数据源 %s 熔断冷却中（剩余%.0fs），跳过",
+                        name,
+                        h.snapshot(now)["cooldown_remaining"],
+                    )
                 continue
             tried.append(name)
             try:
@@ -181,8 +202,8 @@ class DataRouter:
 class RouterResult:
     def __init__(self, value, source, tried, health_snapshot):
         self.value = value
-        self.source = source          # 实际成功的源名
-        self.tried = tried            # 本次实际尝试过（未被熔断）的源
+        self.source = source  # 实际成功的源名
+        self.tried = tried  # 本次实际尝试过（未被熔断）的源
         self.health = health_snapshot
 
     def __repr__(self):
@@ -202,8 +223,9 @@ class HealthRegistry:
         with self._lock:
             h = self._sources.get(name)
             if h is None:
-                h = SourceHealth(name, fails_threshold=self._fails_threshold,
-                                 cooldown_sec=self._cooldown)
+                h = SourceHealth(
+                    name, fails_threshold=self._fails_threshold, cooldown_sec=self._cooldown
+                )
                 self._sources[name] = h
             return h
 

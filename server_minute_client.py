@@ -13,12 +13,11 @@
 与 tools/server_collect.py 的区别：本模块由主程序分钟K自采链路调用，
 负责按"单品种单周期"实时拉取（非批量全品种调度），fallback 逻辑内置于 MinuteCollector。
 """
-import time
-import random
+
+import json
 import threading
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
-import re, json
 
 import config
 from utils import LOG
@@ -27,6 +26,7 @@ from utils import LOG
 _lock = threading.Lock()
 _next = 0
 _dead = set()  # 已知失效的服务器（运行中被剔除；下次探测重新评估）
+
 
 def _fetch_via_server(sina_code, period, lmt):
     """从云服务器拉取分钟K：round-robin 选台，失败自动换台重试。

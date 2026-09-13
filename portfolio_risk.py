@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G5（第47轮，研究侧先行）组合层风险度量 portfolio_risk.py：把"一篮子品种的历史日收益 + 一组权重"
 变成可复核的**组合风险数字**——相关矩阵、组合 VaR（历史模拟法 + 参数/方差-协方差法）、预期亏损 ES、
 以及"原油 ±shock 经各品种 beta 传导"的压力情景。纯标准库、零网络、**纯函数不接 main、不改综合分/持仓/sizing**；
@@ -15,6 +14,7 @@ r"""G5（第47轮，研究侧先行）组合层风险度量 portfolio_risk.py：
 本轮只做**只读研究度量**；G5 剩余的 risk_gate 熔断可配置动作、第四种风险平价 sizing、组合历史净值回测留后续轮次，
 且任何接入都须遵循"默认等价旧版、不传不变"。
 """
+
 import math
 
 import portfolio_constructor as pc
@@ -202,8 +202,17 @@ def diversification_benefit(w, C, q=0.95):
 
 
 # =========================== 统一快照 ===========================
-def risk_snapshot(returns_by_asset, w, *, levels=DEFAULT_LEVELS, horizons=(1, 10),
-                  shrink=None, oil_idx=None, sector_of=None, syms=None):
+def risk_snapshot(
+    returns_by_asset,
+    w,
+    *,
+    levels=DEFAULT_LEVELS,
+    horizons=(1, 10),
+    shrink=None,
+    oil_idx=None,
+    sector_of=None,
+    syms=None,
+):
     """给定"按资产"收益序列与权重，一次性产出相关/VaR/压力全部指标。
 
     returns_by_asset[i] = 资产 i 的等长日收益序列；w 与资产同序。shrink 非空时对协方差做对角收缩。
@@ -222,11 +231,19 @@ def risk_snapshot(returns_by_asset, w, *, levels=DEFAULT_LEVELS, horizons=(1, 10
     pv = parametric_var(w, C, levels, horizons)
     benefit, port_v, stand_v = diversification_benefit(w, C, list(levels)[0])
     out = {
-        "n_assets": n, "n_days": T, "w_sum": sum(w), "gross": sum(abs(x) for x in w),
-        "avg_abs_corr": avg_abs_offdiag(R), "avg_signed_corr": avg_signed_offdiag(R),
-        "corr": R, "cov": C,
-        "hist": hv, "param": pv,
-        "div_benefit": benefit, "port_param_var": port_v, "standalone_var": stand_v,
+        "n_assets": n,
+        "n_days": T,
+        "w_sum": sum(w),
+        "gross": sum(abs(x) for x in w),
+        "avg_abs_corr": avg_abs_offdiag(R),
+        "avg_signed_corr": avg_signed_offdiag(R),
+        "corr": R,
+        "cov": C,
+        "hist": hv,
+        "param": pv,
+        "div_benefit": benefit,
+        "port_param_var": port_v,
+        "standalone_var": stand_v,
         "strongest_pairs": top_pairs(syms, R, 8, True),
         "weakest_pairs": top_pairs(syms, R, 8, False),
     }
@@ -242,9 +259,14 @@ def risk_snapshot(returns_by_asset, w, *, levels=DEFAULT_LEVELS, horizons=(1, 10
         scenarios = {}
         for shock in (-0.05, -0.10, 0.05):
             tot, contrib = stress_oil(w, betas, shock)
-            scenarios[shock] = {"total": tot,
-                                "top": [{"sym": syms[i], "beta": betas[i], "pnl": c}
-                                        for i, c in contrib[:6] if abs(c) > 1e-9]}
+            scenarios[shock] = {
+                "total": tot,
+                "top": [
+                    {"sym": syms[i], "beta": betas[i], "pnl": c}
+                    for i, c in contrib[:6]
+                    if abs(c) > 1e-9
+                ],
+            }
         out["oil_stress"] = scenarios
     return out
 
@@ -293,7 +315,7 @@ def selftest():
     assert abs(v10 - v1 * math.sqrt(10)) < 1e-12
 
     # 7) 分散化：两等方差不相关组合的参数VaR必须低于"加权单体(完全相关)"
-    Cind = [[0.0004, 0.0], [0.0, 0.0004]]      # σ=0.02
+    Cind = [[0.0004, 0.0], [0.0, 0.0004]]  # σ=0.02
     ben, portv, stand = diversification_benefit([0.5, 0.5], Cind, 0.95)
     assert portv < stand and ben > 0
     # 完全相关时分散化收益≈0
@@ -305,7 +327,7 @@ def selftest():
     x = [0.01 * ((i % 5) - 2) for i in range(20)]
     y = [2 * v for v in x]
     rets_assets = [y, x]
-    Cb = pc.covariance(rets_assets)           # 资产0=y, 资产1=x(oil idx=1)
+    Cb = pc.covariance(rets_assets)  # 资产0=y, 资产1=x(oil idx=1)
     betas, r2 = oil_betas(Cb, 1)
     assert abs(betas[0] - 2.0) < 1e-9 and abs(r2[0] - 1.0) < 1e-9
     b0, r0 = oil_betas([[0.0]], 0)
@@ -322,15 +344,17 @@ def selftest():
     tp = top_pairs(["a", "b", "c"], R3, 1, True)
     assert tp[0][0] == "a" and tp[0][1] == "b" and abs(tp[0][2] - 0.9) < 1e-12
     secs, block = sector_corr_block(R3, ["a", "b", "c"], lambda s: "X" if s in ("a", "b") else "Y")
-    assert secs == ["X", "Y"] and abs(block[0][0] - 0.9) < 1e-12   # X 板块内只有 a-b
+    assert secs == ["X", "Y"] and abs(block[0][0] - 0.9) < 1e-12  # X 板块内只有 a-b
 
     # 11) risk_snapshot 端到端 + 退化（单资产/零方差不崩）
     import random
+
     random.seed(47)
     common = [random.gauss(0, 1) for _ in range(120)]
     ra = [[0.01 * common[t] + random.gauss(0, 0.004) for t in range(120)] for _ in range(4)]
-    snap = risk_snapshot(ra, [0.25] * 4, oil_idx=0,
-                         sector_of=lambda s: "S", syms=["k0", "k1", "k2", "k3"])
+    snap = risk_snapshot(
+        ra, [0.25] * 4, oil_idx=0, sector_of=lambda s: "S", syms=["k0", "k1", "k2", "k3"]
+    )
     assert snap["n_assets"] == 4 and snap["n_days"] == 120
     assert 0 <= snap["avg_abs_corr"] <= 1
     assert snap["hist"]["levels"][0.95]["var"] >= 0
@@ -338,8 +362,10 @@ def selftest():
     snap1 = risk_snapshot([[0.0] * 10], [1.0])
     assert snap1["param"]["sigma_daily"] == 0.0 and snap1["hist"]["worst"] == 0.0
 
-    print("portfolio_risk selftest ALL PASS（相关阵/平均联动/分位数/组合收益序列/历史VaR-ES/"
-          "参数VaR与√h缩放/分散化收益/原油beta与线性压力/板块块/端到端与零方差退化 共11组）")
+    print(
+        "portfolio_risk selftest ALL PASS（相关阵/平均联动/分位数/组合收益序列/历史VaR-ES/"
+        "参数VaR与√h缩放/分散化收益/原油beta与线性压力/板块块/端到端与零方差退化 共11组）"
+    )
     return 0
 
 

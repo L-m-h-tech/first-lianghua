@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """第57轮 G8 只读 Web/手机看板 tools/web_dashboard.py 的离线单测（纯逻辑，不起 socket）。"""
+
 import os
 import sys
 
@@ -9,7 +9,7 @@ for p in (_ROOT, _TOOLS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import web_dashboard as wd       # noqa: E402
+import web_dashboard as wd  # noqa: E402
 
 
 def test_safe_join_normal():
@@ -55,14 +55,15 @@ def test_list_reports_priority_and_index(tmp_path):
     (tmp_path / "a.json").write_text("{}", encoding="utf-8")
     ent = wd.list_reports(str(tmp_path))
     names = [e[0] for e in ent]
-    assert names[0] == "图表看板.html"          # 入口优先
-    assert names[1:] == sorted(names[1:])       # 其余按名
+    assert names[0] == "图表看板.html"  # 入口优先
+    assert names[1:] == sorted(names[1:])  # 其余按名
     idx = wd.render_index(ent, "tmp")
     assert "viewport" in idx and "只读" in idx and "图表看板.html" in idx
     # 大小/时间字段
     assert "KB" in idx or "B" in idx
     # 空目录
-    empty = tmp_path / "empty"; empty.mkdir()
+    empty = tmp_path / "empty"
+    empty.mkdir()
     assert wd.list_reports(str(empty)) == []
     assert "暂无文件" in wd.render_index([], "empty")
 

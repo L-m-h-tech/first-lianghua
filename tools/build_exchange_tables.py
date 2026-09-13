@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""从信查期货（wj.xcqihuo.cn）API 抓取"交易所标准保证金/手续费"，构建回测运行时 CSV
 data/futures_margins.csv + data/futures_fees.csv（替代原银河期货口径，v2 数据接入）。
 
@@ -23,9 +22,9 @@ data/futures_margins.csv + data/futures_fees.csv（替代原银河期货口径�
   D:\Python\python.exe tools\build_exchange_tables.py --apply    # 确认后正式覆盖 data/futures_*.csv（备份旧表到 data/legacy_galaxy/）
   D:\Python\python.exe tools\build_exchange_tables.py --json data/xcqihuo_raw/contract_20260910.json  # 用本地已落 JSON（离线）
 """
+
 import argparse
 import csv
-import io
 import json
 import shutil
 import sys
@@ -40,33 +39,113 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import config  # noqa: E402
 
-API_URL = ("https://wj.xcqihuo.cn:4433/webroot/service/"
-           "79036642-68d9-4e8e-baef-2f9e336b18c0/contract")
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-MARGIN_FIELDS = ["sym", "name", "exchange", "broker_margin", "exchange_margin",
-                 "limit_basic", "multiplier", "as_of", "source", "note"]
-FEE_FIELDS = ["sym", "name", "exchange", "account_flag", "multiplier",
-              "open_amt_rate", "open_per_lot", "close_amt_rate", "close_per_lot",
-              "today_amt_rate", "today_per_lot", "as_of"]
-ADD_ONE_FEN = 0.01          # 手续费加一分（元/手，固定费部分）
-EXCH_SHORT = {"上海期货交易所": "SHFE", "大连商品交易所": "DCE", "郑州商品交易所": "CZCE",
-              "中国金融期货交易所": "CFFEX", "广州期货交易所": "GFEX",
-              "上海国际能源交易中心": "INE"}
+API_URL = "https://wj.xcqihuo.cn:4433/webroot/service/79036642-68d9-4e8e-baef-2f9e336b18c0/contract"
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+MARGIN_FIELDS = [
+    "sym",
+    "name",
+    "exchange",
+    "broker_margin",
+    "exchange_margin",
+    "limit_basic",
+    "multiplier",
+    "as_of",
+    "source",
+    "note",
+]
+FEE_FIELDS = [
+    "sym",
+    "name",
+    "exchange",
+    "account_flag",
+    "multiplier",
+    "open_amt_rate",
+    "open_per_lot",
+    "close_amt_rate",
+    "close_per_lot",
+    "today_amt_rate",
+    "today_per_lot",
+    "as_of",
+]
+ADD_ONE_FEN = 0.01  # 手续费加一分（元/手，固定费部分）
+EXCH_SHORT = {
+    "上海期货交易所": "SHFE",
+    "大连商品交易所": "DCE",
+    "郑州商品交易所": "CZCE",
+    "中国金融期货交易所": "CFFEX",
+    "广州期货交易所": "GFEX",
+    "上海国际能源交易中心": "INE",
+}
 
 # 手续费表"吨/物理单位"口径乘数（与 build_fee_table.MULTIPLIERS 一致；JD 报价口径=10、吨口径=5）
 FEE_MULTIPLIERS = {
-    "RB": 10, "HC": 10, "SS": 5, "CU": 5, "AL": 5, "AO": 20, "ZN": 5, "PB": 5,
-    "NI": 1, "SN": 1, "AU": 1000, "AG": 15, "RU": 10, "BR": 5, "FU": 10,
-    "BU": 10, "SP": 10,
-    "SC": 1000, "NR": 10, "LU": 10, "BC": 5, "EC": 50,
-    "A": 10, "B": 10, "M": 10, "Y": 10, "P": 10, "C": 10, "CS": 10, "RR": 10,
-    "JD": 5, "LH": 16, "LG": 90, "L": 5, "V": 5, "PP": 5, "EG": 10, "EB": 5,
-    "PG": 20, "J": 100, "JM": 60, "I": 100,
-    "SR": 10, "CF": 5, "CY": 5, "TA": 5, "MA": 10, "PX": 5, "PF": 5,
-    "PR": 15, "SH": 30, "FG": 20, "SA": 20, "UR": 20, "RM": 10, "OI": 10,
-    "PK": 5, "AP": 10, "CJ": 5, "SF": 5, "SM": 5,
-    "SI": 5, "LC": 1, "PS": 3,
+    "RB": 10,
+    "HC": 10,
+    "SS": 5,
+    "CU": 5,
+    "AL": 5,
+    "AO": 20,
+    "ZN": 5,
+    "PB": 5,
+    "NI": 1,
+    "SN": 1,
+    "AU": 1000,
+    "AG": 15,
+    "RU": 10,
+    "BR": 5,
+    "FU": 10,
+    "BU": 10,
+    "SP": 10,
+    "SC": 1000,
+    "NR": 10,
+    "LU": 10,
+    "BC": 5,
+    "EC": 50,
+    "A": 10,
+    "B": 10,
+    "M": 10,
+    "Y": 10,
+    "P": 10,
+    "C": 10,
+    "CS": 10,
+    "RR": 10,
+    "JD": 5,
+    "LH": 16,
+    "LG": 90,
+    "L": 5,
+    "V": 5,
+    "PP": 5,
+    "EG": 10,
+    "EB": 5,
+    "PG": 20,
+    "J": 100,
+    "JM": 60,
+    "I": 100,
+    "SR": 10,
+    "CF": 5,
+    "CY": 5,
+    "TA": 5,
+    "MA": 10,
+    "PX": 5,
+    "PF": 5,
+    "PR": 15,
+    "SH": 30,
+    "FG": 20,
+    "SA": 20,
+    "UR": 20,
+    "RM": 10,
+    "OI": 10,
+    "PK": 5,
+    "AP": 10,
+    "CJ": 5,
+    "SF": 5,
+    "SM": 5,
+    "SI": 5,
+    "LC": 1,
+    "PS": 3,
 }
 
 
@@ -79,8 +158,12 @@ def _num(x):
 
 def fetch(date_str):
     """拉当日全量合约 JSON；失败抛异常（由调用方兜底本地 JSON）。"""
-    resp = requests.get(API_URL, params={"XXX": date_str}, timeout=20,
-                        headers={"User-Agent": UA, "Accept": "application/json"})
+    resp = requests.get(
+        API_URL,
+        params={"XXX": date_str},
+        timeout=20,
+        headers={"User-Agent": UA, "Accept": "application/json"},
+    )
     resp.raise_for_status()
     data = resp.json()
     out = data.get("output")
@@ -106,7 +189,11 @@ def _base_contract(rows):
         # 主力优先；若主力保证金率与最低档差异不大（<1pp），取主力；否则取最低档
         main = next((r for r in rs if r.get("remark") == "主力合约"), rs[0])
         lowest = min(rs, key=lambda x: _num(x.get("buy_margin")))
-        out[sym] = main if _num(main.get("buy_margin")) <= _num(lowest.get("buy_margin")) + 0.01 else lowest
+        out[sym] = (
+            main
+            if _num(main.get("buy_margin")) <= _num(lowest.get("buy_margin")) + 0.01
+            else lowest
+        )
     return out
 
 
@@ -131,27 +218,39 @@ def build_tables(raw_rows, date_str):
         quote_mult = int(_num(r.get("unit")) or 0)
         # 不同月份 buy_margin 上浮情况（主力 vs 全合约众数/最大），写入 note
         mono = sorted({_num(x.get("buy_margin")) for x in by_sym_of(raw_rows, sym)})
-        note = ("交易所标准保证金(信查期货数据)；全品种月份档=%s" %
-                ("/".join("%.2f%%" % (m * 100) for m in mono[:6]) + ("" if len(mono) <= 6 else "…")))
-        margin_rows.append({
-            "sym": sym, "name": cname, "exchange": exchange,
-            "broker_margin": "%.4f" % margin_rate,
-            "exchange_margin": "%.4f" % margin_rate,
-            "limit_basic": ("%.4f" % limit_basic) if limit_basic else "",
-            "multiplier": quote_mult,
-            "as_of": date_str, "source": "交易所标准保证金(信查期货,自动抓取)", "note": note,
-        })
-        fee_rows.append({
-            "sym": sym, "name": cname, "exchange": exchange, "account_flag": "投机",
-            "multiplier": FEE_MULTIPLIERS[sym],
-            "open_amt_rate": _fee(_num(r.get("open_fee_amt")), 7),
-            "open_per_lot": _fee(_num(r.get("open_fee_qty")) + ADD_ONE_FEN, 2),
-            "close_amt_rate": _fee(_num(r.get("offset_fee_amt")), 7),
-            "close_per_lot": _fee(_num(r.get("offset_fee_qty")) + ADD_ONE_FEN, 2),
-            "today_amt_rate": _fee(_num(r.get("short_offset_fee_amt")), 7),
-            "today_per_lot": _fee(_num(r.get("short_offset_fee_qty")) + ADD_ONE_FEN, 2),
-            "as_of": date_str,
-        })
+        note = "交易所标准保证金(信查期货数据)；全品种月份档=%s" % (
+            "/".join("%.2f%%" % (m * 100) for m in mono[:6]) + ("" if len(mono) <= 6 else "…")
+        )
+        margin_rows.append(
+            {
+                "sym": sym,
+                "name": cname,
+                "exchange": exchange,
+                "broker_margin": "%.4f" % margin_rate,
+                "exchange_margin": "%.4f" % margin_rate,
+                "limit_basic": ("%.4f" % limit_basic) if limit_basic else "",
+                "multiplier": quote_mult,
+                "as_of": date_str,
+                "source": "交易所标准保证金(信查期货,自动抓取)",
+                "note": note,
+            }
+        )
+        fee_rows.append(
+            {
+                "sym": sym,
+                "name": cname,
+                "exchange": exchange,
+                "account_flag": "投机",
+                "multiplier": FEE_MULTIPLIERS[sym],
+                "open_amt_rate": _fee(_num(r.get("open_fee_amt")), 7),
+                "open_per_lot": _fee(_num(r.get("open_fee_qty")) + ADD_ONE_FEN, 2),
+                "close_amt_rate": _fee(_num(r.get("offset_fee_amt")), 7),
+                "close_per_lot": _fee(_num(r.get("offset_fee_qty")) + ADD_ONE_FEN, 2),
+                "today_amt_rate": _fee(_num(r.get("short_offset_fee_amt")), 7),
+                "today_per_lot": _fee(_num(r.get("short_offset_fee_qty")) + ADD_ONE_FEN, 2),
+                "as_of": date_str,
+            }
+        )
     return margin_rows, fee_rows
 
 
@@ -179,7 +278,11 @@ def main():
     ap = argparse.ArgumentParser(description="信查期货 API → futures_margins/fees CSV")
     ap.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="交易日 yyyyMMdd")
     ap.add_argument("--json", default=None, help="本地已落 JSON（离线）")
-    ap.add_argument("--apply", action="store_true", help="正式覆盖 data/futures_*.csv（默认预览到 data/xcqihuo_preview/）")
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="正式覆盖 data/futures_*.csv（默认预览到 data/xcqihuo_preview/）",
+    )
     args = ap.parse_args()
 
     raw = load_raw(args.date, args.json)

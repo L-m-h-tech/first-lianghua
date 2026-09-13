@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G13 LLM 第二意见复核适配层（无 key 完全休眠）——第84轮解锁落地。
 
 定位（总纲 G13，铁律第7条）：LLM 只做**第二意见文本复核**，永不改综合分、永不下单、
@@ -18,28 +17,29 @@ FUTURES_MONITOR_LLM_MODEL（默认 deepseek-chat）。守护线程异步调用�
 强制 JSON schema（越界一律裁剪）：direction∈{多,空,中性} / strength∈[1,5] / symbols≤10 /
 uncertainty∈[0,1] / reason≤300字 / agrees_with_lexicon∈bool。
 """
+
 import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
 import http_client
-import threading
 
 LOG = logging.getLogger("llm_reviewer")
 
-_LAST_THREAD = [None]          # 最近一次复核线程引用（--once 模式退出前 join，防守护线程被杀）
+_LAST_THREAD = [None]  # 最近一次复核线程引用（--once 模式退出前 join，防守护线程被杀）
 
-ROOT = Path(__file__).resolve().parent        # 本模块在项目根（区别于 tools/ 的 parents[1]）
+ROOT = Path(__file__).resolve().parent  # 本模块在项目根（区别于 tools/ 的 parents[1]）
 REPORT_TXT = ROOT / "reports" / "llm_review.txt"
 REPORT_JSONL = ROOT / "reports" / "llm_review_history.jsonl"
 
-SCORE_TRIGGER = 6.5          # ②强信号阈值（G13 设计原文）
-DIVERGE_EDGE = 1.5           # ③背离双方的最小绝对值
+SCORE_TRIGGER = 6.5  # ②强信号阈值（G13 设计原文）
+DIVERGE_EDGE = 1.5  # ③背离双方的最小绝对值
 TIMEOUT = 30
-MAX_CONTEXT_SIGNALS = 3      # 上下文只带 |综合分| 最大的前3条（小流量纪律）
+MAX_CONTEXT_SIGNALS = 3  # 上下文只带 |综合分| 最大的前3条（小流量纪律）
 DIRECTIONS = ("多", "空", "中性")
 
 _SYSTEM_PROMPT = (
@@ -57,7 +57,9 @@ def key():
 
 
 def base_url():
-    return (os.environ.get("FUTURES_MONITOR_LLM_BASE_URL") or "https://api.deepseek.com").rstrip("/")
+    return (os.environ.get("FUTURES_MONITOR_LLM_BASE_URL") or "https://api.deepseek.com").rstrip(
+        "/"
+    )
 
 
 def model():
@@ -89,8 +91,9 @@ def diverges(row):
     tech = row.get("tech")
     if not _isnum(news) or not _isnum(tech):
         return False
-    return (news >= DIVERGE_EDGE and tech <= -DIVERGE_EDGE) or \
-           (news <= -DIVERGE_EDGE and tech >= DIVERGE_EDGE)
+    return (news >= DIVERGE_EDGE and tech <= -DIVERGE_EDGE) or (
+        news <= -DIVERGE_EDGE and tech >= DIVERGE_EDGE
+    )
 
 
 def triggers(fut_rows, emergency=None):
@@ -98,9 +101,10 @@ def triggers(fut_rows, emergency=None):
     out = []
     if emergency:
         out.append(("emergency", "①紧急轮动新闻"))
-    strong = sorted((r for r in fut_rows
-                     if _isnum(r.get("score")) and abs(r["score"]) >= SCORE_TRIGGER),
-                    key=lambda r: -abs(r["score"]))
+    strong = sorted(
+        (r for r in fut_rows if _isnum(r.get("score")) and abs(r["score"]) >= SCORE_TRIGGER),
+        key=lambda r: -abs(r["score"]),
+    )
     if strong:
         names = "、".join("%s(%+.1f)" % (r.get("name"), r["score"]) for r in strong[:3])
         out.append(("strong_signal", "②强信号|综合分|≥%.1f：%s" % (SCORE_TRIGGER, names)))
@@ -118,17 +122,24 @@ def build_context(fut_rows, emergency=None):
     signals = []
     for r in rows[:MAX_CONTEXT_SIGNALS]:
         parts = r.get("parts") or {}
-        signals.append({
-            "variety": r.get("name"), "score": r.get("score"),
-            "advice": r.get("advice"), "tech": r.get("tech"),
-            "fundamental": r.get("fundamental"),
-            "news_part": parts.get("新闻消息面"),
-            "diverges": diverges(r),
-        })
-    return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "triggers": triggers(fut_rows, emergency),
-            "emergency": emergency, "signals": signals,
-            "note": "LLM 只做第二意见，不改综合分"}
+        signals.append(
+            {
+                "variety": r.get("name"),
+                "score": r.get("score"),
+                "advice": r.get("advice"),
+                "tech": r.get("tech"),
+                "fundamental": r.get("fundamental"),
+                "news_part": parts.get("新闻消息面"),
+                "diverges": diverges(r),
+            }
+        )
+    return {
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "triggers": triggers(fut_rows, emergency),
+        "emergency": emergency,
+        "signals": signals,
+        "note": "LLM 只做第二意见，不改综合分",
+    }
 
 
 # ---------------- schema 解析与裁剪（验收：越界裁剪/坏 JSON 降级） ----------------
@@ -156,16 +167,20 @@ def parse_review(text):
     symbols = [str(x)[:20] for x in (obj.get("symbols") or [])][:10]
     reason = str(obj.get("reason", ""))[:300]
     agrees = bool(obj.get("agrees_with_lexicon"))
-    return {"direction": direction, "strength": strength, "symbols": symbols,
-            "uncertainty": round(unc, 2), "reason": reason,
-            "agrees_with_lexicon": agrees}
+    return {
+        "direction": direction,
+        "strength": strength,
+        "symbols": symbols,
+        "uncertainty": round(unc, 2),
+        "reason": reason,
+        "agrees_with_lexicon": agrees,
+    }
 
 
 # ---------------- LLM 调用（transport 可注入，测试用 mock） ----------------
 def _default_transport(url, payload, timeout):
     """OpenAI 兼容 /chat/completions 调用（走现有 http_client 连接池，http 为会话实例）。返回 (status, text)。"""
-    headers = {"Content-Type": "application/json",
-               "Authorization": "Bearer %s" % key()}
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer %s" % key()}
     r = http_client.http.post(url, json=payload, headers=headers, timeout=timeout)
     return r.status_code, r.text
 
@@ -180,41 +195,65 @@ def review(fut_rows, emergency=None, transport=None, force=False):
         ctx = build_context(fut_rows, emergency=emergency)
         if not ctx["triggers"]:
             if not force:
-                return None                              # 三类触发器全空：零调用
+                return None  # 三类触发器全空：零调用
             ctx["triggers"] = [("force", "人工强制(--llm-force,无自然触发器)")]
         transport = transport or _default_transport
-        payload = {"model": model(),
-                   "messages": [{"role": "system", "content": _SYSTEM_PROMPT},
-                                {"role": "user", "content": json.dumps(ctx, ensure_ascii=False)}],
-                   "temperature": 0.2, "max_tokens": 512, "stream": False}
+        payload = {
+            "model": model(),
+            "messages": [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(ctx, ensure_ascii=False)},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "stream": False,
+        }
         status, text = transport("%s/chat/completions" % base_url(), payload, TIMEOUT)
         if status != 200:
-            return {"degraded": "http_%d" % status, "trigger_reasons": ctx["triggers"],
-                    "context": ctx}
+            return {
+                "degraded": "http_%d" % status,
+                "trigger_reasons": ctx["triggers"],
+                "context": ctx,
+            }
         try:
             body = json.loads(text)
             content = body["choices"][0]["message"]["content"]
         except Exception:
-            return {"degraded": "bad_response_body", "trigger_reasons": ctx["triggers"],
-                    "context": ctx}
+            return {
+                "degraded": "bad_response_body",
+                "trigger_reasons": ctx["triggers"],
+                "context": ctx,
+            }
         try:
             parsed = parse_review(content)
         except Exception:
-            return {"degraded": "bad_json", "raw": str(content)[:200],
-                    "trigger_reasons": ctx["triggers"], "context": ctx}
-        parsed.update({"trigger_reasons": ctx["triggers"], "model": model(),
-                       "context": ctx, "raw": str(content)[:400]})
+            return {
+                "degraded": "bad_json",
+                "raw": str(content)[:200],
+                "trigger_reasons": ctx["triggers"],
+                "context": ctx,
+            }
+        parsed.update(
+            {
+                "trigger_reasons": ctx["triggers"],
+                "model": model(),
+                "context": ctx,
+                "raw": str(content)[:400],
+            }
+        )
         return parsed
-    except Exception as e:                               # 兜底：异常绝不进主循环
+    except Exception as e:  # 兜底：异常绝不进主循环
         return {"degraded": "exception:%s:%s" % (type(e).__name__, e)}
 
 
 # ---------------- 落盘与异步入口 ----------------
 def render(result):
-    L = ["=" * 96,
-         " G13 LLM 第二意见复核（只读复核，不改综合分/不下单）  生成于 %s"
-         % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         "=" * 96]
+    L = [
+        "=" * 96,
+        " G13 LLM 第二意见复核（只读复核，不改综合分/不下单）  生成于 %s"
+        % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "=" * 96,
+    ]
     if result is None:
         L.append("本轮未触发（无 key / 三类触发器全空）。")
         L.append("=" * 96)
@@ -223,15 +262,21 @@ def render(result):
         L.append("[降级] %s（软降级：本轮无第二意见，主循环不受影响）" % result["degraded"])
     else:
         L.append("触发：%s" % "；".join(d for _c, d in result.get("trigger_reasons", [])))
-        rv = {k: v for k, v in result.items()
-              if k not in ("trigger_reasons", "context", "raw")}
+        rv = {k: v for k, v in result.items() if k not in ("trigger_reasons", "context", "raw")}
         L.append(json.dumps(rv, ensure_ascii=False, indent=1))
     ctx = result.get("context") or {}
     for sig in ctx.get("signals", []) or []:
-        L.append("  上下文·%s 综合分%+.1f tech%s 基本面%s 新闻面%s 建议=%s"
-                 % (sig.get("variety"), sig.get("score") or 0.0,
-                    sig.get("tech"), sig.get("fundamental"),
-                    sig.get("news_part"), sig.get("advice")))
+        L.append(
+            "  上下文·%s 综合分%+.1f tech%s 基本面%s 新闻面%s 建议=%s"
+            % (
+                sig.get("variety"),
+                sig.get("score") or 0.0,
+                sig.get("tech"),
+                sig.get("fundamental"),
+                sig.get("news_part"),
+                sig.get("advice"),
+            )
+        )
     if result is not None and "degraded" not in result:
         L.append("  原始输出(≤400字): %s" % (result.get("raw") or ""))
     L.append("=" * 96)
@@ -243,11 +288,17 @@ def persist(result, txt_path=REPORT_TXT, jsonl_path=REPORT_JSONL):
     os.makedirs(os.path.dirname(str(txt_path)), exist_ok=True)
     with open(txt_path, "w", encoding="utf-8", newline="\n") as fp:
         fp.write(render(result) + "\n")
-    slim = {k: v for k, v in (result or {}).items()
-            if k not in ("context",)}                      # context 已在 txt 里，jsonl 存精简版
+    slim = {
+        k: v for k, v in (result or {}).items() if k not in ("context",)
+    }  # context 已在 txt 里，jsonl 存精简版
     with open(jsonl_path, "a", encoding="utf-8", newline="\n") as fp:
-        fp.write(json.dumps({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                             "review": slim}, ensure_ascii=False) + "\n")
+        fp.write(
+            json.dumps(
+                {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "review": slim},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
 
 # ---------------- 成本节流（第84轮补丁：每日上限 + 同品种同日去重） ----------------
@@ -287,7 +338,9 @@ def _reviewed_varieties_today(jsonl_path=REPORT_JSONL):
                     continue
                 if not rec.get("ts", "").startswith(today):
                     continue
-                for sig in (rec.get("review", {}).get("context", {}) or {}).get("signals", []) or []:
+                for sig in (rec.get("review", {}).get("context", {}) or {}).get(
+                    "signals", []
+                ) or []:
                     if sig.get("variety"):
                         out.add(str(sig["variety"]))
     return out
@@ -321,40 +374,68 @@ def review_async(fut_rows, emergency=None, force=False, transport=None, jsonl_pa
         if r is not None:
             persist(r)
         return r
-    except Exception as e:                               # 双保险：线程内任何异常都不外溢
+    except Exception:  # 双保险：线程内任何异常都不外溢
         try:
             LOG.error("G13 review_async exception swallowed")
         except Exception:
             pass
         return None
 
+
 def selftest():
     """零网络自检：触发器/裁剪/解析/渲染/键缺失（被 pytest 与 --selftest 复用）。"""
-    os.environ["FUTURES_MONITOR_LLM_KEY"] = "test-key"   # 测试用：call-time 读 env
+    os.environ["FUTURES_MONITOR_LLM_KEY"] = "test-key"  # 测试用：call-time 读 env
     os.environ.pop("FUTURES_MONITOR_LLM_BASE_URL", None)
     os.environ.pop("FUTURES_MONITOR_LLM_MODEL", None)
-    rows = [{"name": "螺纹钢", "score": 7.2, "tech": 2.0, "fundamental": 1.0,
-             "parts": {"新闻消息面": 2.5}, "advice": "买入"},
-            {"name": "铜", "score": -3.0, "tech": -2.5, "fundamental": 0.5,
-             "parts": {"新闻消息面": 2.0}, "advice": "卖出"}]
+    rows = [
+        {
+            "name": "螺纹钢",
+            "score": 7.2,
+            "tech": 2.0,
+            "fundamental": 1.0,
+            "parts": {"新闻消息面": 2.5},
+            "advice": "买入",
+        },
+        {
+            "name": "铜",
+            "score": -3.0,
+            "tech": -2.5,
+            "fundamental": 0.5,
+            "parts": {"新闻消息面": 2.0},
+            "advice": "卖出",
+        },
+    ]
     tg = triggers(rows, emergency=None)
-    assert ("strong_signal", ) == (tg[0][0], ) and ("divergence", ) == (tg[1][0], )
-    assert triggers([{"score": 1.0}], emergency=None) == []          # 未触发
+    assert (tg[0][0],) == ("strong_signal",) and (tg[1][0],) == ("divergence",)
+    assert triggers([{"score": 1.0}], emergency=None) == []  # 未触发
     # 裁剪：越界 direction/strength/uncertainty、超长 symbols/reason
-    bad = '{"direction":"暴涨","strength":9,"symbols":["%s" % i for i in range(0)],' \
-          '"uncertainty":5,"reason":"x"*999,"agrees_with_lexicon":"yes"}'
-    bad = '{"direction":"暴涨","strength":9,"symbols":["a","b"],"uncertainty":5,' \
-          '"reason":"' + "x" * 999 + '","agrees_with_lexicon":"yes"}'
+    bad = (
+        '{"direction":"暴涨","strength":9,"symbols":["%s" % i for i in range(0)],'
+        '"uncertainty":5,"reason":"x"*999,"agrees_with_lexicon":"yes"}'
+    )
+    bad = (
+        '{"direction":"暴涨","strength":9,"symbols":["a","b"],"uncertainty":5,'
+        '"reason":"' + "x" * 999 + '","agrees_with_lexicon":"yes"}'
+    )
     p = parse_review(bad)
     assert p["direction"] == "中性" and p["strength"] == 5 and p["uncertainty"] == 1.0
     assert len(p["symbols"]) <= 10 and len(p["reason"]) <= 300 and p["agrees_with_lexicon"] is True
     # 坏 JSON / 非200 / 异常 → 降级 dict
-    assert review(rows, transport=lambda u, p, t: (200, "not json"))["degraded"] == "bad_response_body"
-    assert review(rows, transport=lambda u, p, t:
-                  (200, '{"choices":[{"message":{"content":"not json"}}]}'))["degraded"] == "bad_json"
+    assert (
+        review(rows, transport=lambda u, p, t: (200, "not json"))["degraded"] == "bad_response_body"
+    )
+    assert (
+        review(
+            rows,
+            transport=lambda u, p, t: (200, '{"choices":[{"message":{"content":"not json"}}]}'),
+        )["degraded"]
+        == "bad_json"
+    )
     assert review(rows, transport=lambda u, p, t: (503, "x"))["degraded"] == "http_503"
+
     def _boom(url, payload, timeout):
         raise RuntimeError("boom")
+
     assert "exception:RuntimeError" in review(rows, transport=_boom)["degraded"]
     # codefence 包裹也能解析
     ok = parse_review('```json\n{"direction":"多","strength":4}\n```')
@@ -364,8 +445,10 @@ def selftest():
     # 无 key 路径：enabled()=False、review()=None（零请求零开销，G13 验收第一条）
     os.environ.pop("FUTURES_MONITOR_LLM_KEY", None)
     assert enabled() is False and review(rows) is None
-    print("llm_reviewer selftest ALL PASS（触发器三类/裁剪/坏JSON与HTTP与异常三降级/"
-          "codefence解析/渲染 共5组）")
+    print(
+        "llm_reviewer selftest ALL PASS（触发器三类/裁剪/坏JSON与HTTP与异常三降级/"
+        "codefence解析/渲染 共5组）"
+    )
     return 0
 
 

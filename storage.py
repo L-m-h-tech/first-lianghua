@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """P1-8/9 SQLite 结构化存储与信号效果追踪。
 
 零新增依赖（Python 标准库 sqlite3），承担四类长期数据：
@@ -10,6 +9,7 @@
 signal_outcomes 记录可交易信号在 30分钟/2小时/次日 三个周期后的实际方向收益，
 供 reports/signal_tracking.txt 与每日复盘统计胜率、平均收益和多空命中率。
 """
+
 import hashlib
 import json
 import os
@@ -39,12 +39,14 @@ def _dt(value):
 
 def _json(value):
     """JSON 序列化，兼容 datetime/tuple；失败时保留字符串，不允许拖垮主循环。"""
+
     def default(obj):
         if isinstance(obj, datetime):
             return obj.strftime("%Y-%m-%d %H:%M:%S")
         if isinstance(obj, (set, tuple)):
             return list(obj)
         return str(obj)
+
     try:
         return json.dumps(value, ensure_ascii=False, default=default)
     except Exception:
@@ -307,7 +309,10 @@ class MonitorDB:
             self.conn.commit()
             # G17（第98轮）：期权链表补 pcr_vol 列
             try:
-                cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(option_chains)").fetchall()}
+                cols = {
+                    r["name"]
+                    for r in self.conn.execute("PRAGMA table_info(option_chains)").fetchall()
+                }
                 if "pcr_vol" not in cols:
                     self.conn.execute("ALTER TABLE option_chains ADD COLUMN pcr_vol REAL")
             except Exception:
@@ -316,8 +321,10 @@ class MonitorDB:
             # paper_orders/paper_trades 增 contract_code/main_month 记录具体开平仓合约）
             for _tbl in ("paper_orders", "paper_trades"):
                 try:
-                    cols = {r["name"] for r in self.conn.execute(
-                        f"PRAGMA table_info({_tbl})").fetchall()}
+                    cols = {
+                        r["name"]
+                        for r in self.conn.execute(f"PRAGMA table_info({_tbl})").fetchall()
+                    }
                     for _col in ("contract_code", "main_month"):
                         if _col not in cols:
                             self.conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} TEXT")
@@ -343,19 +350,35 @@ class MonitorDB:
             if self._last_quote_sig.get(code) == sig:
                 continue
             row_sigs[code] = sig
-            rows.append((ts, cycle, name, code, meta.get("sym"),
-                         meta.get("ex"), meta.get("cat"), price,
-                         float(q.get("chg_pct") or 0.0), float(q.get("open") or 0.0),
-                         float(q.get("high") or 0.0), float(q.get("low") or 0.0),
-                         float(q.get("prev_settle") or 0.0),
-                         volume, open_interest, now_real))
+            rows.append(
+                (
+                    ts,
+                    cycle,
+                    name,
+                    code,
+                    meta.get("sym"),
+                    meta.get("ex"),
+                    meta.get("cat"),
+                    price,
+                    float(q.get("chg_pct") or 0.0),
+                    float(q.get("open") or 0.0),
+                    float(q.get("high") or 0.0),
+                    float(q.get("low") or 0.0),
+                    float(q.get("prev_settle") or 0.0),
+                    volume,
+                    open_interest,
+                    now_real,
+                )
+            )
         if not rows:
             return 0
         with self.lock:
             self.conn.executemany(
                 """INSERT INTO quotes(ts,cycle,variety,code,sym,exchange,cat,price,chg_pct,
                    open,high,low,prev_settle,volume,open_interest,created_real)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
             self.conn.commit()
         self._last_quote_sig.update(row_sigs)
         return len(rows)
@@ -367,6 +390,7 @@ class MonitorDB:
             return 0
         # 延迟导入，避免 storage <-> factors 初始化循环
         import factors
+
         n = 0
         now_real = datetime.now().timestamp()
         with self.lock:
@@ -376,16 +400,27 @@ class MonitorDB:
                     continue
                 dt = _dt(item.get("time"))
                 weight = factors._lex_weight(content, None)
-                h = hashlib.md5((item.get("source", "") + "|" + content[:200]).encode("utf-8")).hexdigest()
+                h = hashlib.md5(
+                    (item.get("source", "") + "|" + content[:200]).encode("utf-8")
+                ).hexdigest()
                 try:
                     cur = self.conn.execute(
                         """INSERT OR IGNORE INTO news(ts,source,content,weight,confidence,
                            important,doubtful,content_hash,raw_json,created_real)
                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                        (dt.strftime("%Y-%m-%d %H:%M:%S"), item.get("source", ""), content,
-                         float(weight), float(item.get("confidence", 1.0)),
-                         1 if item.get("important") else 0,
-                         1 if item.get("doubtful") else 0, h, _json(item), now_real))
+                        (
+                            dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            item.get("source", ""),
+                            content,
+                            float(weight),
+                            float(item.get("confidence", 1.0)),
+                            1 if item.get("important") else 0,
+                            1 if item.get("doubtful") else 0,
+                            h,
+                            _json(item),
+                            now_real,
+                        ),
+                    )
                     n += int(cur.rowcount or 0)
                 except sqlite3.Error:
                     continue
@@ -410,7 +445,7 @@ class MonitorDB:
         day = dt.strftime("%Y-%m-%d")
         n = 0
         with self.lock:
-            self._ensure_signals_sent_col()          # 第135轮：老库 ALTER 加 sent_json（幂等）
+            self._ensure_signals_sent_col()  # 第135轮：老库 ALTER 加 sent_json（幂等）
             for r in fut_rows:
                 score = float(r.get("score", 0.0))
                 # signals 表保存“可交易信号”；中性行每分钟都会批量出现，只保留在行情表/文本报告中，避免数据库空转膨胀。
@@ -418,13 +453,16 @@ class MonitorDB:
                     continue
                 direction, dir_int = self._direction(score)
                 band = score_band_name(score)
-                sent_json = _json(self._sentiment_of(r))     # 第135轮：情绪聚合独立存列（raw_json 瘦身后 ML 仍可用）
+                sent_json = _json(
+                    self._sentiment_of(r)
+                )  # 第135轮：情绪聚合独立存列（raw_json 瘦身后 ML 仍可用）
                 # 第135轮根因修复：同 (品种,方向,分档,当天) 已有行 → UPDATE 保 id（外键稳定）
                 # 而非每轮纯 INSERT——非中性信号从"每轮 N 行"压到"每天每键 1 行"，挡 signals 膨胀。
                 existing = self.conn.execute(
                     """SELECT id FROM signals WHERE variety=? AND direction_int=?
                        AND score_band=? AND substr(ts,1,10)=? LIMIT 1""",
-                    (r.get("name"), dir_int, band, day)).fetchone()
+                    (r.get("name"), dir_int, band, day),
+                ).fetchone()
                 if existing:
                     signal_id = existing[0]
                     cur = self.conn.execute(
@@ -433,13 +471,29 @@ class MonitorDB:
                            main_month=?, volume=?, open_interest=?, parts_json=?, flow_json=?,
                            raw_json=?, sent_json=?, created_real=?
                            WHERE id=?""",
-                        (ts, cycle, float(r.get("price") or 0), float(r.get("chg") or 0), score,
-                         r.get("label"), r.get("advice"), float(r.get("stop") or 0),
-                         float(r.get("target") or 0), float(r.get("atr") or 0),
-                         r.get("contract_code", ""), r.get("main_month", ""),
-                         float(r.get("volume") or 0), float(r.get("open_interest") or 0),
-                         _json(r.get("parts") or {}), _json(r.get("flow") or {}),
-                         _json(r), sent_json, now_real, signal_id))
+                        (
+                            ts,
+                            cycle,
+                            float(r.get("price") or 0),
+                            float(r.get("chg") or 0),
+                            score,
+                            r.get("label"),
+                            r.get("advice"),
+                            float(r.get("stop") or 0),
+                            float(r.get("target") or 0),
+                            float(r.get("atr") or 0),
+                            r.get("contract_code", ""),
+                            r.get("main_month", ""),
+                            float(r.get("volume") or 0),
+                            float(r.get("open_interest") or 0),
+                            _json(r.get("parts") or {}),
+                            _json(r.get("flow") or {}),
+                            _json(r),
+                            sent_json,
+                            now_real,
+                            signal_id,
+                        ),
+                    )
                 else:
                     cur = self.conn.execute(
                         """INSERT INTO signals(ts,cycle,variety,code,sym,exchange,cat,price,chg_pct,
@@ -447,14 +501,36 @@ class MonitorDB:
                            contract_code,main_month,volume,open_interest,parts_json,flow_json,
                            raw_json,sent_json,created_real)
                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (ts, cycle, r.get("name"), r.get("code"), r.get("sym"), r.get("ex"),
-                         r.get("cat"), float(r.get("price") or 0), float(r.get("chg") or 0), score,
-                         direction, dir_int, r.get("label"), band,
-                         r.get("advice"), float(r.get("stop") or 0), float(r.get("target") or 0),
-                         float(r.get("atr") or 0), r.get("contract_code", ""),
-                         r.get("main_month", ""), float(r.get("volume") or 0),
-                         float(r.get("open_interest") or 0), _json(r.get("parts") or {}),
-                         _json(r.get("flow") or {}), _json(r), sent_json, now_real))
+                        (
+                            ts,
+                            cycle,
+                            r.get("name"),
+                            r.get("code"),
+                            r.get("sym"),
+                            r.get("ex"),
+                            r.get("cat"),
+                            float(r.get("price") or 0),
+                            float(r.get("chg") or 0),
+                            score,
+                            direction,
+                            dir_int,
+                            r.get("label"),
+                            band,
+                            r.get("advice"),
+                            float(r.get("stop") or 0),
+                            float(r.get("target") or 0),
+                            float(r.get("atr") or 0),
+                            r.get("contract_code", ""),
+                            r.get("main_month", ""),
+                            float(r.get("volume") or 0),
+                            float(r.get("open_interest") or 0),
+                            _json(r.get("parts") or {}),
+                            _json(r.get("flow") or {}),
+                            _json(r),
+                            sent_json,
+                            now_real,
+                        ),
+                    )
                     signal_id = cur.lastrowid
                 if abs(score) >= config.SCORE_NEUTRAL:
                     self._create_outcomes_for_signal(signal_id, r, dt, direction, dir_int)
@@ -468,6 +544,7 @@ class MonitorDB:
         同口径，写入独立 sent_json 列，避免瘦身 raw_json 后 ML 特征丢失）。"""
         try:
             import factors
+
             raw = row.get("hits") if isinstance(row, dict) else {}
             facs = []
             for item in raw or []:
@@ -481,8 +558,10 @@ class MonitorDB:
                     facs.append(f)
             if not facs:
                 return {}
-            return {k: round(sum(f[k] for f in facs) / len(facs), 4)
-                    for k in ("strength", "uncertainty", "relevance", "forward")}
+            return {
+                k: round(sum(f[k] for f in facs) / len(facs), 4)
+                for k in ("strength", "uncertainty", "relevance", "forward")
+            }
         except Exception:
             return {}
 
@@ -502,7 +581,8 @@ class MonitorDB:
             """SELECT o.id FROM signal_outcomes o JOIN signals s ON s.id=o.signal_id
                WHERE s.variety=? AND o.direction_int=? AND o.score_band=?
                  AND o.status='pending' LIMIT 1""",
-            (row.get("name"), dir_int, band)).fetchone()
+            (row.get("name"), dir_int, band),
+        ).fetchone()
         if existed:
             return
         entry_ts = entry_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -516,9 +596,21 @@ class MonitorDB:
                    direction,direction_int,score,score_band,entry_ts,entry_price,due_ts,
                    status,created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?)""",
-                (signal_id, row.get("name"), row.get("code"), int(horizon), direction,
-                 dir_int, score, band, entry_ts, entry_price,
-                 due_dt.strftime("%Y-%m-%d %H:%M:%S"), datetime.now().timestamp()))
+                (
+                    signal_id,
+                    row.get("name"),
+                    row.get("code"),
+                    int(horizon),
+                    direction,
+                    dir_int,
+                    score,
+                    band,
+                    entry_ts,
+                    entry_price,
+                    due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    datetime.now().timestamp(),
+                ),
+            )
 
     # ---------------- 写入：期权 ----------------
 
@@ -533,15 +625,30 @@ class MonitorDB:
                        score,underlying_price,iv,iv_ratio,delta,gamma,vega,theta_day,prem,
                        contract,verdict,all_pass,checks_json,legs_json,greeks_json,raw_json,created_real)
                        VALUES(?,?, 'single', ?, '单腿期权', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (ts, cycle, o.get("name"), o.get("direction"),
-                     float(o.get("score") or 0), float(o.get("underlying_price") or 0),
-                     float(o.get("iv") or 0), float(o.get("iv_ratio") or 0),
-                     float(o.get("delta") or 0), float(o.get("gamma") or 0),
-                     float(o.get("vega") or 0), float(o.get("theta_day") or 0),
-                     float(o.get("prem") or 0), o.get("opt_code", ""), o.get("verdict", ""),
-                     1 if o.get("all_pass") else 0, _json(o.get("checks") or []),
-                     _json([]), _json({k: o.get(k) for k in ("delta", "gamma", "vega", "theta_day")}),
-                     _json(o), now_real))
+                    (
+                        ts,
+                        cycle,
+                        o.get("name"),
+                        o.get("direction"),
+                        float(o.get("score") or 0),
+                        float(o.get("underlying_price") or 0),
+                        float(o.get("iv") or 0),
+                        float(o.get("iv_ratio") or 0),
+                        float(o.get("delta") or 0),
+                        float(o.get("gamma") or 0),
+                        float(o.get("vega") or 0),
+                        float(o.get("theta_day") or 0),
+                        float(o.get("prem") or 0),
+                        o.get("opt_code", ""),
+                        o.get("verdict", ""),
+                        1 if o.get("all_pass") else 0,
+                        _json(o.get("checks") or []),
+                        _json([]),
+                        _json({k: o.get(k) for k in ("delta", "gamma", "vega", "theta_day")}),
+                        _json(o),
+                        now_real,
+                    ),
+                )
                 n += 1
             for s in strat_rows or []:
                 fr = fut_map.get(s.get("variety")) or {}
@@ -550,17 +657,44 @@ class MonitorDB:
                        score,underlying_price,delta,gamma,vega,theta_day,net,max_profit,max_loss,
                        verdict,all_pass,checks_json,legs_json,greeks_json,raw_json,created_real)
                        VALUES(?,?, 'strategy', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (ts, cycle, s.get("variety"), s.get("name"),
-                     "多头" if s.get("direction", 0) > 0 else ("空头" if s.get("direction", 0) < 0 else "中性"),
-                     float(fr.get("score") or 0), float(fr.get("price") or 0),
-                     float(s.get("delta") or 0), float(s.get("gamma") or 0),
-                     float(s.get("vega") or 0), float(s.get("theta_day") or 0), float(s.get("net") or 0),
-                     None if s.get("max_profit") is None else float(s.get("max_profit")),
-                     None if s.get("max_loss") is None else float(s.get("max_loss")),
-                     s.get("verdict", ""), 1 if s.get("all_pass") else 0,
-                     _json(s.get("checks") or []), _json(s.get("legs") or []),
-                     _json({k: s.get(k) for k in ("delta", "gamma", "vega", "theta_day", "margin_points", "margin_note")}),
-                     _json(s), now_real))
+                    (
+                        ts,
+                        cycle,
+                        s.get("variety"),
+                        s.get("name"),
+                        "多头"
+                        if s.get("direction", 0) > 0
+                        else ("空头" if s.get("direction", 0) < 0 else "中性"),
+                        float(fr.get("score") or 0),
+                        float(fr.get("price") or 0),
+                        float(s.get("delta") or 0),
+                        float(s.get("gamma") or 0),
+                        float(s.get("vega") or 0),
+                        float(s.get("theta_day") or 0),
+                        float(s.get("net") or 0),
+                        None if s.get("max_profit") is None else float(s.get("max_profit")),
+                        None if s.get("max_loss") is None else float(s.get("max_loss")),
+                        s.get("verdict", ""),
+                        1 if s.get("all_pass") else 0,
+                        _json(s.get("checks") or []),
+                        _json(s.get("legs") or []),
+                        _json(
+                            {
+                                k: s.get(k)
+                                for k in (
+                                    "delta",
+                                    "gamma",
+                                    "vega",
+                                    "theta_day",
+                                    "margin_points",
+                                    "margin_note",
+                                )
+                            }
+                        ),
+                        _json(s),
+                        now_real,
+                    ),
+                )
                 n += 1
             self.conn.commit()
         return n
@@ -583,11 +717,24 @@ class MonitorDB:
                        n_call,n_put,call_oi,put_oi,pcr_oi,atm_strike,
                        max_call_strike,max_put_strike,raw_json,created_real)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (ts, cycle, ch.get("sym"), variety, ch.get("label"),
-                     int(ch.get("n_call", 0)), int(ch.get("n_put", 0)),
-                     float(ch.get("call_oi", 0)), float(ch.get("put_oi", 0)), float(pcr),
-                     ch.get("atm_strike"), ch.get("max_call_oi_strike"),
-                     ch.get("max_put_oi_strike"), _json(ch), now_real))
+                    (
+                        ts,
+                        cycle,
+                        ch.get("sym"),
+                        variety,
+                        ch.get("label"),
+                        int(ch.get("n_call", 0)),
+                        int(ch.get("n_put", 0)),
+                        float(ch.get("call_oi", 0)),
+                        float(ch.get("put_oi", 0)),
+                        float(pcr),
+                        ch.get("atm_strike"),
+                        ch.get("max_call_oi_strike"),
+                        ch.get("max_put_oi_strike"),
+                        _json(ch),
+                        now_real,
+                    ),
+                )
                 n += 1
             self.conn.commit()
         return n
@@ -601,7 +748,8 @@ class MonitorDB:
         with self.lock:
             rows = self.conn.execute(
                 "SELECT pcr_oi FROM option_chains WHERE sym=? AND ts>=? AND pcr_oi IS NOT NULL",
-                (sym, since)).fetchall()
+                (sym, since),
+            ).fetchall()
         hist = [r["pcr_oi"] for r in rows]
         if len(hist) < 10:
             return None
@@ -612,16 +760,20 @@ class MonitorDB:
 
     def insert_fundamentals(self, ts, rows):
         """rows: [(variety_name, sym, fund_pack)]，fund_pack 由 fundamental_factors.build_fundamental 产出。
-        同一(sym,trade_date)覆盖更新（INSERT OR REPLACE），日频数据量小、长期保留用于分位回看。"""
+        同一(sym,trade_date)覆盖更新（INSERT OR REPLACE），日频数据量小、长期保留用于分位回看。
+        第145轮 #9 PIT对齐：trade_date 用数据日（pack["as_of"]=各子项最晚数据日期），
+        而非采集日——基本面数据滞后公布，确保回测按 trade_date ≤ bar_date 过滤不会前视。"""
         if not rows:
             return 0
         now_real = datetime.now().timestamp()
-        trade_date = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")
         n = 0
         with self.lock:
             for variety, sym, pack in rows:
                 if not pack:
                     continue
+                # PIT：用子项最晚数据日期作为 trade_date，None 时回退采集日
+                trade_date = pack.get("as_of") or today
                 sub = pack.get("sub") or {}
                 inv = sub.get("库存仓单") or {}
                 rk = sub.get("龙虎榜") or {}
@@ -632,11 +784,26 @@ class MonitorDB:
                        inv_pct,inv_wow,inv_n,rank_long,rank_short,rank_net,rank_delta,
                        carry,basis_rate,fund_score,raw_json,created_real)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (ts, trade_date, sym, variety,
-                     inv.get("current"), inv.get("pct"), inv.get("wow"),
-                     inv.get("n"), rk.get("long"), rk.get("short"), rk.get("net"),
-                     rk.get("delta"), cy.get("annual_carry"), bs.get("basis_rate"),
-                     float(pack.get("score") or 0), _json(pack), now_real))
+                    (
+                        ts,
+                        trade_date,
+                        sym,
+                        variety,
+                        inv.get("current"),
+                        inv.get("pct"),
+                        inv.get("wow"),
+                        inv.get("n"),
+                        rk.get("long"),
+                        rk.get("short"),
+                        rk.get("net"),
+                        rk.get("delta"),
+                        cy.get("annual_carry"),
+                        bs.get("basis_rate"),
+                        float(pack.get("score") or 0),
+                        _json(pack),
+                        now_real,
+                    ),
+                )
                 n += 1
             self.conn.commit()
         return n
@@ -644,13 +811,40 @@ class MonitorDB:
     def latest_fundamentals(self):
         """取最近一个交易日的全部品种基本面快照 {sym: pack_dict}，供程序重启后当日复用。"""
         with self.lock:
-            row = self.conn.execute(
-                "SELECT MAX(trade_date) AS d FROM fundamentals").fetchone()
+            row = self.conn.execute("SELECT MAX(trade_date) AS d FROM fundamentals").fetchone()
             if not row or not row["d"]:
                 return {}
             rows = self.conn.execute(
-                "SELECT sym,raw_json FROM fundamentals WHERE trade_date=?", (row["d"],)).fetchall()
+                "SELECT sym,raw_json FROM fundamentals WHERE trade_date=?", (row["d"],)
+            ).fetchall()
         import json as _json_mod
+
+        out = {}
+        for r in rows:
+            try:
+                out[r["sym"]] = _json_mod.loads(r["raw_json"])
+            except Exception:
+                continue
+        return out
+
+    def fundamentals_asof(self, trade_day):
+        """第145轮 #9 PIT对齐：返回 trade_date ≤ trade_day 的最近一基本面快照 {sym: pack_dict}。
+
+        trade_day: 'YYYY-MM-DD'（回测/研究的目标交易日）。基本面数据滞后公布，
+        trade_date 已按数据日（子项最晚日期）写入——按 ≤ 过滤即不会前视未来数据。
+        无任何 ≤ trade_day 的数据时返回 {}。"""
+        import json as _json_mod
+
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT MAX(trade_date) AS d FROM fundamentals WHERE trade_date<=?",
+                (str(trade_day)[:10],),
+            ).fetchone()
+            if not row or not row["d"]:
+                return {}
+            rows = self.conn.execute(
+                "SELECT sym,raw_json FROM fundamentals WHERE trade_date=?", (row["d"],)
+            ).fetchall()
         out = {}
         for r in rows:
             try:
@@ -674,11 +868,22 @@ class MonitorDB:
                     """INSERT OR IGNORE INTO minute_bars(sym,contract,exchange,period,bar_dt,
                        trade_date,o,h,l,c,v,amount,created_real)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (b.get("sym"), b.get("contract"), b.get("exchange"), int(b.get("period", 0)),
-                     b.get("dt"), b.get("trade_date") or str(b.get("dt", ""))[:10],
-                     float(b.get("o") or 0), float(b.get("h") or 0), float(b.get("l") or 0),
-                     float(b.get("c") or 0), float(b.get("v") or 0), float(b.get("amount") or 0),
-                     now_real))
+                    (
+                        b.get("sym"),
+                        b.get("contract"),
+                        b.get("exchange"),
+                        int(b.get("period", 0)),
+                        b.get("dt"),
+                        b.get("trade_date") or str(b.get("dt", ""))[:10],
+                        float(b.get("o") or 0),
+                        float(b.get("h") or 0),
+                        float(b.get("l") or 0),
+                        float(b.get("c") or 0),
+                        float(b.get("v") or 0),
+                        float(b.get("amount") or 0),
+                        now_real,
+                    ),
+                )
                 n += int(cur.rowcount or 0)
             self.conn.commit()
         return n
@@ -696,23 +901,40 @@ class MonitorDB:
                        bid, ask, latest, bid_vol, ask_vol, spread, spread_bp,
                        prev_settle, oi, volume, created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [(r.get("sym"), r.get("variety"), r.get("bucket"),
-                  r.get("quote_date"), r.get("quote_time"), r.get("collected_at"),
-                  float(r.get("bid") or 0), float(r.get("ask") or 0), float(r.get("latest") or 0),
-                  float(r.get("bid_vol") or 0), float(r.get("ask_vol") or 0),
-                  float(r.get("spread") or 0), float(r.get("spread_bp") or 0),
-                  float(r.get("prev_settle") or 0), float(r.get("oi") or 0),
-                  float(r.get("volume") or 0), r.get("created_real") or 0.0)
-                 for r in rows])
+                [
+                    (
+                        r.get("sym"),
+                        r.get("variety"),
+                        r.get("bucket"),
+                        r.get("quote_date"),
+                        r.get("quote_time"),
+                        r.get("collected_at"),
+                        float(r.get("bid") or 0),
+                        float(r.get("ask") or 0),
+                        float(r.get("latest") or 0),
+                        float(r.get("bid_vol") or 0),
+                        float(r.get("ask_vol") or 0),
+                        float(r.get("spread") or 0),
+                        float(r.get("spread_bp") or 0),
+                        float(r.get("prev_settle") or 0),
+                        float(r.get("oi") or 0),
+                        float(r.get("volume") or 0),
+                        r.get("created_real") or 0.0,
+                    )
+                    for r in rows
+                ],
+            )
             self.conn.commit()
             return cur.rowcount if cur.rowcount else len(rows)
 
     def recent_tick_snapshots(self, days=30, sym=None, limit=5000):
         """按需读取一档盘口快照（G14 统计用），升序返回 dict 列表。"""
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        sql = ("SELECT sym, variety, bucket, quote_date, quote_time, collected_at,"
-               " bid, ask, latest, bid_vol, ask_vol, spread, spread_bp, oi, volume"
-               " FROM tick_snapshots WHERE collected_at >= ?")
+        sql = (
+            "SELECT sym, variety, bucket, quote_date, quote_time, collected_at,"
+            " bid, ask, latest, bid_vol, ask_vol, spread, spread_bp, oi, volume"
+            " FROM tick_snapshots WHERE collected_at >= ?"
+        )
         args = [cutoff]
         if sym:
             sql += " AND sym = ?"
@@ -743,7 +965,9 @@ class MonitorDB:
                 continue
             bps_sorted = sorted(bps)
             n = len(bps_sorted)
-            median = bps_sorted[n // 2] if n % 2 else (bps_sorted[n // 2 - 1] + bps_sorted[n // 2]) / 2.0
+            median = (
+                bps_sorted[n // 2] if n % 2 else (bps_sorted[n // 2 - 1] + bps_sorted[n // 2]) / 2.0
+            )
             out[sym] = {
                 "spread_bp_avg": round(sum(bps) / n, 4),
                 "spread_bp_median": round(median, 4),
@@ -757,8 +981,10 @@ class MonitorDB:
         供第15轮主连分钟拼接+比例复权（backtest.ratio_adjusted_bars）。
         修复（第121轮）：原 ASC+LIMIT 取最旧 N 根导致日内回测跑在陈旧数据上；
         改为先 DESC+LIMIT 取最新 N 根，再 ASC 还原时间顺序。"""
-        sql = ("SELECT sym,contract,exchange,period,bar_dt AS dt,trade_date,"
-               "o,h,l,c,v,amount FROM minute_bars WHERE sym=? AND period=?")
+        sql = (
+            "SELECT sym,contract,exchange,period,bar_dt AS dt,trade_date,"
+            "o,h,l,c,v,amount FROM minute_bars WHERE sym=? AND period=?"
+        )
         args = [str(sym).upper(), int(period)]
         if since:
             sql += " AND bar_dt>=?"
@@ -767,8 +993,10 @@ class MonitorDB:
             sql += " ORDER BY bar_dt DESC, contract DESC LIMIT ?"
             args.append(int(limit))
             sql_inner = sql
-            sql = ("SELECT sym,contract,exchange,period,dt,trade_date,"
-                   "o,h,l,c,v,amount FROM (" + sql_inner + ") ORDER BY dt ASC, contract ASC")
+            sql = (
+                "SELECT sym,contract,exchange,period,dt,trade_date,"
+                "o,h,l,c,v,amount FROM (" + sql_inner + ") ORDER BY dt ASC, contract ASC"
+            )
         else:
             sql += " ORDER BY bar_dt ASC, contract ASC"
         with self.lock:
@@ -782,23 +1010,31 @@ class MonitorDB:
             rows = self.conn.execute(
                 """SELECT period, COUNT(*) AS n, COUNT(DISTINCT contract) AS nc,
                           MIN(bar_dt) AS first, MAX(bar_dt) AS last
-                   FROM minute_bars GROUP BY period ORDER BY period""").fetchall()
+                   FROM minute_bars GROUP BY period ORDER BY period"""
+            ).fetchall()
         for r in rows:
-            out[int(r["period"])] = {"bars": r["n"], "contracts": r["nc"],
-                                     "first": r["first"], "last": r["last"]}
+            out[int(r["period"])] = {
+                "bars": r["n"],
+                "contracts": r["nc"],
+                "first": r["first"],
+                "last": r["last"],
+            }
         return out
 
     # ---------------- WP-F2 A3/B2：历史信号-结果配对（校准器与因子IC评估共用） ----------------
 
     def _outcome_join_sql(self, where_extra=""):
-        return ("""SELECT o.direction_int AS direction_int, o.score AS score,
+        return (
+            """SELECT o.direction_int AS direction_int, o.score AS score,
                           o.score_band AS score_band, o.horizon_min AS horizon_min,
                           o.ret AS ret, o.hit AS hit, o.status AS status,
                           o.entry_ts AS entry_ts, o.eval_ts AS eval_ts,
                           o.variety AS variety, s.parts_json AS parts_json
                    FROM signal_outcomes o JOIN signals s ON s.id=o.signal_id
-                   WHERE o.status IN ('hit','miss','flat') """ + where_extra +
-                " ORDER BY o.eval_ts ASC")
+                   WHERE o.status IN ('hit','miss','flat') """
+            + where_extra
+            + " ORDER BY o.eval_ts ASC"
+        )
 
     def calibration_pairs(self, horizon=None, days=None):
         """已评估信号与其发出时因子拆分的配对样本（供 signal_calibrator 贝叶斯胜率统计）。
@@ -845,12 +1081,28 @@ class MonitorDB:
                        direction,entry_price,atr,tp_price,sl_price,exit_dt,exit_price,label,
                        exit_reason,bars_held,ret_dir,tech_score,features_json,created_real)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (r.get("sym"), r.get("variety"), int(r.get("period", 0)),
-                     r.get("bar_dt"), r.get("trade_date"), int(r.get("direction", 0)),
-                     r.get("entry_price"), r.get("atr"), r.get("tp_price"), r.get("sl_price"),
-                     r.get("exit_dt"), r.get("exit_price"), int(r.get("label", 0)),
-                     r.get("exit_reason"), int(r.get("bars_held", 0)), r.get("ret_dir"),
-                     r.get("tech_score"), _json(r.get("features") or {}), now_real))
+                    (
+                        r.get("sym"),
+                        r.get("variety"),
+                        int(r.get("period", 0)),
+                        r.get("bar_dt"),
+                        r.get("trade_date"),
+                        int(r.get("direction", 0)),
+                        r.get("entry_price"),
+                        r.get("atr"),
+                        r.get("tp_price"),
+                        r.get("sl_price"),
+                        r.get("exit_dt"),
+                        r.get("exit_price"),
+                        int(r.get("label", 0)),
+                        r.get("exit_reason"),
+                        int(r.get("bars_held", 0)),
+                        r.get("ret_dir"),
+                        r.get("tech_score"),
+                        _json(r.get("features") or {}),
+                        now_real,
+                    ),
+                )
                 n += 1
             self.conn.commit()
         return n
@@ -896,10 +1148,20 @@ class MonitorDB:
                 self.conn.execute(
                     """INSERT OR REPLACE INTO data_health(ts,source,req,ok,fail,stale,jump,
                        latency_ms,state,note,created_real) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    (ts, str(r.get("source"))[:40], int(r.get("req", 0)), int(r.get("ok", 0)),
-                     int(r.get("fail", 0)), int(r.get("stale", 0)), int(r.get("jump", 0)),
-                     r.get("latency_ms"), str(r.get("state") or ""),
-                     str(r.get("note") or "")[:200], now_real))
+                    (
+                        ts,
+                        str(r.get("source"))[:40],
+                        int(r.get("req", 0)),
+                        int(r.get("ok", 0)),
+                        int(r.get("fail", 0)),
+                        int(r.get("stale", 0)),
+                        int(r.get("jump", 0)),
+                        r.get("latency_ms"),
+                        str(r.get("state") or ""),
+                        str(r.get("note") or "")[:200],
+                        now_real,
+                    ),
+                )
                 n += 1
             self.conn.commit()
         return n
@@ -909,7 +1171,8 @@ class MonitorDB:
         with self.lock:
             rows = self.conn.execute(
                 "SELECT * FROM data_health ORDER BY created_real DESC, source ASC LIMIT ?",
-                (int(limit),)).fetchall()
+                (int(limit),),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ---------------- 写入：回测留档（G4） ----------------
@@ -926,14 +1189,23 @@ class MonitorDB:
                 """INSERT INTO backtest_runs(run_ts,kind,fill_mode,cost_mode,n_symbols,n_trades,
                    sample_days,params_json,metrics_json,cumulative,max_dd,sharpe,win_rate,created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (str(run.get("run_ts"))[:19], str(run.get("kind") or "daily")[:20],
-                 str(run.get("fill_mode") or "")[:20], str(run.get("cost_mode") or "")[:60],
-                 int(run.get("n_symbols") or 0), int(run.get("n_trades") or 0),
-                 int(run.get("sample_days") or 0),
-                 _json(params) if params is not None else None,
-                 _json(metrics) if metrics is not None else None,
-                 run.get("cumulative"), run.get("max_dd"),
-                 run.get("sharpe"), run.get("win_rate"), now_real))
+                (
+                    str(run.get("run_ts"))[:19],
+                    str(run.get("kind") or "daily")[:20],
+                    str(run.get("fill_mode") or "")[:20],
+                    str(run.get("cost_mode") or "")[:60],
+                    int(run.get("n_symbols") or 0),
+                    int(run.get("n_trades") or 0),
+                    int(run.get("sample_days") or 0),
+                    _json(params) if params is not None else None,
+                    _json(metrics) if metrics is not None else None,
+                    run.get("cumulative"),
+                    run.get("max_dd"),
+                    run.get("sharpe"),
+                    run.get("win_rate"),
+                    now_real,
+                ),
+            )
             self.conn.commit()
             return cur.lastrowid
 
@@ -943,7 +1215,8 @@ class MonitorDB:
             rows = self.conn.execute(
                 """SELECT * FROM backtest_runs WHERE kind=?
                    ORDER BY created_real ASC, id ASC LIMIT ?""",
-                (str(kind or "daily"), int(limit))).fetchall()
+                (str(kind or "daily"), int(limit)),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ---------------- G1 纸面交易（paper_orders/paper_trades/paper_equity） ----------------
@@ -958,21 +1231,32 @@ class MonitorDB:
                    signal_price,score,band,fill_mode,status,fill_ts,fill_price,raw_price,
                    reason,order_ref,pos_ref,contract_code,main_month,raw_json,created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (str(order.get("ts"))[:19], str(order.get("sym") or "")[:16],
-                 str(order.get("name") or "")[:24], str(order.get("sector") or "")[:16],
-                 str(order.get("action") or "")[:20], str(order.get("side") or "")[:8],
-                 order.get("direction"), int(order.get("lots") or 0),
-                 order.get("signal_price"), order.get("score"),
-                 str(order.get("band") or "")[:8], str(order.get("fill_mode") or "")[:8],
-                 str(order.get("status") or "pending")[:12],
-                 str(order.get("fill_ts") or "")[:19] if order.get("fill_ts") else None,
-                 order.get("fill_price"), order.get("raw_price"),
-                 str(order.get("reason") or "")[:80],
-                 str(order.get("order_ref") or "")[:40],
-                 str(order.get("pos_ref") or "")[:40],
-                 str(order.get("contract_code") or "")[:20],
-                 str(order.get("main_month") or "")[:8],
-                 _json(order["raw"]) if order.get("raw") is not None else None, now_real))
+                (
+                    str(order.get("ts"))[:19],
+                    str(order.get("sym") or "")[:16],
+                    str(order.get("name") or "")[:24],
+                    str(order.get("sector") or "")[:16],
+                    str(order.get("action") or "")[:20],
+                    str(order.get("side") or "")[:8],
+                    order.get("direction"),
+                    int(order.get("lots") or 0),
+                    order.get("signal_price"),
+                    order.get("score"),
+                    str(order.get("band") or "")[:8],
+                    str(order.get("fill_mode") or "")[:8],
+                    str(order.get("status") or "pending")[:12],
+                    str(order.get("fill_ts") or "")[:19] if order.get("fill_ts") else None,
+                    order.get("fill_price"),
+                    order.get("raw_price"),
+                    str(order.get("reason") or "")[:80],
+                    str(order.get("order_ref") or "")[:40],
+                    str(order.get("pos_ref") or "")[:40],
+                    str(order.get("contract_code") or "")[:20],
+                    str(order.get("main_month") or "")[:8],
+                    _json(order["raw"]) if order.get("raw") is not None else None,
+                    now_real,
+                ),
+            )
             self.conn.commit()
             return cur.lastrowid
 
@@ -991,8 +1275,7 @@ class MonitorDB:
             return 0
         vals.append(order_id)
         with self.lock:
-            cur = self.conn.execute(
-                f"UPDATE paper_orders SET {', '.join(sets)} WHERE id=?", vals)
+            cur = self.conn.execute(f"UPDATE paper_orders SET {', '.join(sets)} WHERE id=?", vals)
             self.conn.commit()
             return cur.rowcount
 
@@ -1006,18 +1289,35 @@ class MonitorDB:
                    forced,order_id,entry_ts,entry_price,score,margin_rate,
                    contract_code,main_month,created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (str(t.get("ts"))[:19], str(t.get("pos_ref") or "")[:40],
-                 str(t.get("sym") or "")[:16], str(t.get("name") or "")[:24],
-                 str(t.get("sector") or "")[:16], str(t.get("side") or "")[:8],
-                 str(t.get("dir_text") or "")[:4], t.get("direction"),
-                 int(t.get("lots") or 0), t.get("price"), t.get("raw_price"),
-                 t.get("notional"), t.get("slip_yuan"), t.get("fee_yuan"), t.get("realized_yuan"),
-                 str(t.get("leg") or "")[:8], str(t.get("reason") or "")[:40],
-                 1 if t.get("forced") else 0, t.get("order_id"),
-                 str(t.get("entry_ts") or "")[:19] if t.get("entry_ts") else None,
-                 t.get("entry_price"), t.get("score"), t.get("margin_rate"),
-                 str(t.get("contract_code") or "")[:20],
-                 str(t.get("main_month") or "")[:8], now_real))
+                (
+                    str(t.get("ts"))[:19],
+                    str(t.get("pos_ref") or "")[:40],
+                    str(t.get("sym") or "")[:16],
+                    str(t.get("name") or "")[:24],
+                    str(t.get("sector") or "")[:16],
+                    str(t.get("side") or "")[:8],
+                    str(t.get("dir_text") or "")[:4],
+                    t.get("direction"),
+                    int(t.get("lots") or 0),
+                    t.get("price"),
+                    t.get("raw_price"),
+                    t.get("notional"),
+                    t.get("slip_yuan"),
+                    t.get("fee_yuan"),
+                    t.get("realized_yuan"),
+                    str(t.get("leg") or "")[:8],
+                    str(t.get("reason") or "")[:40],
+                    1 if t.get("forced") else 0,
+                    t.get("order_id"),
+                    str(t.get("entry_ts") or "")[:19] if t.get("entry_ts") else None,
+                    t.get("entry_price"),
+                    t.get("score"),
+                    t.get("margin_rate"),
+                    str(t.get("contract_code") or "")[:20],
+                    str(t.get("main_month") or "")[:8],
+                    now_real,
+                ),
+            )
             self.conn.commit()
             return cur.lastrowid
 
@@ -1030,12 +1330,23 @@ class MonitorDB:
                    margin_used,available,risk_degree,drawdown,n_positions,realized,fees_paid,
                    n_trades,positions_json,created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (str(snap.get("ts"))[:19], snap.get("static_equity"), snap.get("float_pnl"),
-                 snap.get("equity"), snap.get("margin_used"), snap.get("available"),
-                 snap.get("risk_degree"), snap.get("drawdown"), int(snap.get("n_positions") or 0),
-                 snap.get("realized"), snap.get("fees_paid"), int(snap.get("n_trades") or 0),
-                 _json(snap["positions"]) if snap.get("positions") is not None else None,
-                 now_real))
+                (
+                    str(snap.get("ts"))[:19],
+                    snap.get("static_equity"),
+                    snap.get("float_pnl"),
+                    snap.get("equity"),
+                    snap.get("margin_used"),
+                    snap.get("available"),
+                    snap.get("risk_degree"),
+                    snap.get("drawdown"),
+                    int(snap.get("n_positions") or 0),
+                    snap.get("realized"),
+                    snap.get("fees_paid"),
+                    int(snap.get("n_trades") or 0),
+                    _json(snap["positions"]) if snap.get("positions") is not None else None,
+                    now_real,
+                ),
+            )
             self.conn.commit()
 
     def paper_open_position_trades(self):
@@ -1051,7 +1362,8 @@ class MonitorDB:
                    FROM paper_trades t WHERE t.pos_ref IS NOT NULL AND t.pos_ref != ''
                    GROUP BY t.pos_ref
                    HAVING SUM(CASE WHEN t.side='open' THEN COALESCE(t.lots,0)
-                                   ELSE -COALESCE(t.lots,0) END) > 0""").fetchall()
+                                   ELSE -COALESCE(t.lots,0) END) > 0"""
+            ).fetchall()
             pos_refs = [r["pos_ref"] for r in net]
             if not pos_refs:
                 return []
@@ -1062,7 +1374,9 @@ class MonitorDB:
                     AND t.pos_ref IN ({marks}) AND t.id = (
                         SELECT MIN(id) FROM paper_trades o
                         WHERE o.pos_ref=t.pos_ref AND o.side='open')
-                    ORDER BY t.id ASC""", pos_refs).fetchall()
+                    ORDER BY t.id ASC""",
+                pos_refs,
+            ).fetchall()
             out = []
             net_map = {r["pos_ref"]: r["net_lots"] for r in net}
             for t in opens:
@@ -1076,26 +1390,30 @@ class MonitorDB:
         with self.lock:
             row = self.conn.execute(
                 """SELECT COALESCE(SUM(realized_yuan),0.0) AS realized,
-                          COALESCE(SUM(fee_yuan),0.0) AS fees FROM paper_trades""").fetchone()
+                          COALESCE(SUM(fee_yuan),0.0) AS fees FROM paper_trades"""
+            ).fetchone()
         return float(row["realized"]), float(row["fees"])
 
     def paper_last_equity(self):
         """最近一条权益快照（无则 None）。"""
         with self.lock:
             row = self.conn.execute(
-                "SELECT * FROM paper_equity ORDER BY id DESC LIMIT 1").fetchone()
+                "SELECT * FROM paper_equity ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         return dict(row) if row else None
 
     def paper_orders_recent(self, limit=200):
         with self.lock:
             rows = self.conn.execute(
-                "SELECT * FROM paper_orders ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+                "SELECT * FROM paper_orders ORDER BY id DESC LIMIT ?", (int(limit),)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def paper_trades_recent(self, limit=500):
         with self.lock:
             rows = self.conn.execute(
-                "SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+                "SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?", (int(limit),)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def paper_equity_series(self, limit=2000):
@@ -1105,7 +1423,9 @@ class MonitorDB:
             rows = self.conn.execute(
                 """SELECT * FROM (
                        SELECT * FROM paper_equity ORDER BY id DESC LIMIT ?
-                   ) ORDER BY id ASC""", (int(limit),)).fetchall()
+                   ) ORDER BY id ASC""",
+                (int(limit),),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def paper_order_status_counts(self):
@@ -1114,7 +1434,8 @@ class MonitorDB:
         out = {"pending": 0, "filled": 0, "blocked": 0, "rejected": 0, "cancelled": 0}
         with self.lock:
             rows = self.conn.execute(
-                "SELECT status, COUNT(*) AS n FROM paper_orders GROUP BY status").fetchall()
+                "SELECT status, COUNT(*) AS n FROM paper_orders GROUP BY status"
+            ).fetchall()
         for r in rows:
             if r["status"] in out:
                 out[r["status"]] = int(r["n"])
@@ -1131,18 +1452,35 @@ class MonitorDB:
                    direction,lots,strike,cp,expiry,entry_prem,fill_prem,fill_ts,option_code,legs_json,
                    notional,margin_used,fee_yuan,realized_yuan,status,entry_score,fill_mode,created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (str(t.get("ts"))[:19], str(account)[:24], str(t.get("pos_ref") or "")[:40],
-                 str(t.get("sym") or "")[:16], str(t.get("name") or "")[:24],
-                 str(t.get("variety") or "")[:24], str(t.get("action") or "")[:20],
-                 str(t.get("side") or "")[:8], t.get("direction"),
-                 int(t.get("lots") or 1), t.get("strike"), str(t.get("cp") or "")[:4],
-                 str(t.get("expiry") or "")[:8], t.get("entry_prem"), t.get("fill_prem"),
-                 str(t.get("fill_ts") or "")[:19] if t.get("fill_ts") else None,
-                 str(t.get("option_code") or "")[:40],
-                 _json(t["legs"]) if t.get("legs") is not None else None,
-                 t.get("notional"), t.get("margin_used"), t.get("fee_yuan"),
-                 t.get("realized_yuan"), str(t.get("status") or "open")[:12],
-                 t.get("entry_score"), str(t.get("fill_mode") or "")[:8], now_real))
+                (
+                    str(t.get("ts"))[:19],
+                    str(account)[:24],
+                    str(t.get("pos_ref") or "")[:40],
+                    str(t.get("sym") or "")[:16],
+                    str(t.get("name") or "")[:24],
+                    str(t.get("variety") or "")[:24],
+                    str(t.get("action") or "")[:20],
+                    str(t.get("side") or "")[:8],
+                    t.get("direction"),
+                    int(t.get("lots") or 1),
+                    t.get("strike"),
+                    str(t.get("cp") or "")[:4],
+                    str(t.get("expiry") or "")[:8],
+                    t.get("entry_prem"),
+                    t.get("fill_prem"),
+                    str(t.get("fill_ts") or "")[:19] if t.get("fill_ts") else None,
+                    str(t.get("option_code") or "")[:40],
+                    _json(t["legs"]) if t.get("legs") is not None else None,
+                    t.get("notional"),
+                    t.get("margin_used"),
+                    t.get("fee_yuan"),
+                    t.get("realized_yuan"),
+                    str(t.get("status") or "open")[:12],
+                    t.get("entry_score"),
+                    str(t.get("fill_mode") or "")[:8],
+                    now_real,
+                ),
+            )
             self.conn.commit()
             return cur.lastrowid
 
@@ -1154,7 +1492,9 @@ class MonitorDB:
                    WHERE t.account=? AND t.side='open' AND NOT EXISTS(
                        SELECT 1 FROM paper_option_trades c
                        WHERE c.pos_ref=t.pos_ref AND c.side='close' AND c.account=t.account)
-                   ORDER BY t.id ASC""", (str(account),)).fetchall()
+                   ORDER BY t.id ASC""",
+                (str(account),),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def paper_option_realized_fees(self, account):
@@ -1167,7 +1507,9 @@ class MonitorDB:
                 """SELECT COALESCE(SUM(CASE WHEN action='close'
                                 THEN realized_yuan + COALESCE(fee_yuan,0.0) ELSE realized_yuan END),0.0) AS realized,
                           COALESCE(SUM(fee_yuan),0.0) AS fees
-                   FROM paper_option_trades WHERE account=?""", (str(account),)).fetchone()
+                   FROM paper_option_trades WHERE account=?""",
+                (str(account),),
+            ).fetchone()
         return float(row["realized"]), float(row["fees"])
 
     def insert_paper_option_equity(self, account, snap):
@@ -1179,11 +1521,22 @@ class MonitorDB:
                    equity,margin_used,available,risk_degree,drawdown,n_positions,realized,fees_paid,
                    created_real)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (str(snap.get("ts"))[:19], str(account)[:24], snap.get("static_equity"),
-                 snap.get("float_pnl"), snap.get("equity"), snap.get("margin_used"),
-                 snap.get("available"), snap.get("risk_degree"), snap.get("drawdown"),
-                 int(snap.get("n_positions") or 0), snap.get("realized"), snap.get("fees_paid"),
-                 now_real))
+                (
+                    str(snap.get("ts"))[:19],
+                    str(account)[:24],
+                    snap.get("static_equity"),
+                    snap.get("float_pnl"),
+                    snap.get("equity"),
+                    snap.get("margin_used"),
+                    snap.get("available"),
+                    snap.get("risk_degree"),
+                    snap.get("drawdown"),
+                    int(snap.get("n_positions") or 0),
+                    snap.get("realized"),
+                    snap.get("fees_paid"),
+                    now_real,
+                ),
+            )
             self.conn.commit()
 
     def paper_option_equity_series(self, account, limit=2000):
@@ -1192,7 +1545,9 @@ class MonitorDB:
             rows = self.conn.execute(
                 """SELECT * FROM (
                        SELECT * FROM paper_option_equity WHERE account=? ORDER BY id DESC LIMIT ?
-                   ) ORDER BY id ASC""", (str(account), int(limit))).fetchall()
+                   ) ORDER BY id ASC""",
+                (str(account), int(limit)),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def paper_option_trades_recent(self, account, limit=500):
@@ -1200,7 +1555,8 @@ class MonitorDB:
         with self.lock:
             rows = self.conn.execute(
                 """SELECT * FROM paper_option_trades WHERE account=? ORDER BY id DESC LIMIT ?""",
-                (str(account), int(limit))).fetchall()
+                (str(account), int(limit)),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ---------------- 信号到期评估 ----------------
@@ -1212,7 +1568,9 @@ class MonitorDB:
         with self.lock:
             pending = self.conn.execute(
                 """SELECT o.*, s.code FROM signal_outcomes o JOIN signals s ON s.id=o.signal_id
-                   WHERE o.status='pending' AND o.due_ts<=?""", (now_s,)).fetchall()
+                   WHERE o.status='pending' AND o.due_ts<=?""",
+                (now_s,),
+            ).fetchall()
             for row in pending:
                 due = _dt(row["due_ts"])
                 overdue_sec = (now - due).total_seconds()
@@ -1227,14 +1585,20 @@ class MonitorDB:
                         continue
                     self.conn.execute(
                         """UPDATE signal_outcomes SET eval_ts=?,exit_price=0,ret=0,hit=0,status='expired'
-                           WHERE id=?""", (now_s, row["id"]))
+                           WHERE id=?""",
+                        (now_s, row["id"]),
+                    )
                     updated += 1
                     continue
                 same_price = abs(exit_price - entry_price) < 1e-12
                 meta = _CODE_TO_META.get(row["code"])
                 variety_active = is_variety_trading(meta) if meta else False
                 # 休市/接口返回旧价时等待；若该品种自身正在交易且价格确实没动，则按“打平”及时评估。
-                if same_price and not variety_active and (now - due).total_seconds() < config.SIGNAL_OUTCOME_MAX_WAIT_SEC:
+                if (
+                    same_price
+                    and not variety_active
+                    and (now - due).total_seconds() < config.SIGNAL_OUTCOME_MAX_WAIT_SEC
+                ):
                     continue
                 if same_price and not variety_active:
                     status, hit, ret = "expired", 0, 0.0
@@ -1250,7 +1614,9 @@ class MonitorDB:
                         status, hit = "flat", 0
                 self.conn.execute(
                     """UPDATE signal_outcomes SET eval_ts=?,exit_price=?,ret=?,hit=?,status=?
-                       WHERE id=?""", (now_s, exit_price, ret, hit, status, row["id"]))
+                       WHERE id=?""",
+                    (now_s, exit_price, ret, hit, status, row["id"]),
+                )
                 updated += 1
             if updated:
                 self.conn.commit()
@@ -1272,13 +1638,16 @@ class MonitorDB:
                    FROM signal_outcomes
                    WHERE status IN ('hit','miss','flat','expired') AND eval_ts>=?
                    GROUP BY horizon_min,score_band,direction
-                   ORDER BY horizon_min,score_band,direction""", (since,)).fetchall()
+                   ORDER BY horizon_min,score_band,direction""",
+                (since,),
+            ).fetchall()
             return [dict(r) for r in rows]
 
     def pending_count(self):
         with self.lock:
             return self.conn.execute(
-                "SELECT COUNT(*) AS n FROM signal_outcomes WHERE status='pending'").fetchone()["n"]
+                "SELECT COUNT(*) AS n FROM signal_outcomes WHERE status='pending'"
+            ).fetchone()["n"]
 
     def recent_outcomes(self, limit=15):
         with self.lock:
@@ -1286,47 +1655,82 @@ class MonitorDB:
                 """SELECT variety,horizon_min,direction,score,score_band,entry_ts,entry_price,
                           eval_ts,exit_price,ret,hit,status
                    FROM signal_outcomes WHERE status IN ('hit','miss','flat','expired')
-                   ORDER BY eval_ts DESC,id DESC LIMIT ?""", (int(limit),)).fetchall()
+                   ORDER BY eval_ts DESC,id DESC LIMIT ?""",
+                (int(limit),),
+            ).fetchall()
             return [dict(r) for r in rows]
 
     def table_counts(self):
         out = {}
         with self.lock:
-            for table in ("quotes", "signals", "news", "options", "signal_outcomes", "option_chains", "fundamentals", "minute_bars", "ml_samples", "data_health", "backtest_runs", "paper_orders", "paper_trades", "paper_equity", "tick_snapshots"):
+            for table in (
+                "quotes",
+                "signals",
+                "news",
+                "options",
+                "signal_outcomes",
+                "option_chains",
+                "fundamentals",
+                "minute_bars",
+                "ml_samples",
+                "data_health",
+                "backtest_runs",
+                "paper_orders",
+                "paper_trades",
+                "paper_equity",
+                "tick_snapshots",
+            ):
                 out[table] = self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
         return out
 
     def prune(self):
         """高频明细默认保留半年；可交易信号及其效果追踪长期保留用于调参。"""
-        cutoff = (datetime.now() - timedelta(days=config.DB_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (datetime.now() - timedelta(days=config.DB_RETENTION_DAYS)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         with self.lock:
             self.conn.execute("DELETE FROM quotes WHERE ts < ?", (cutoff,))
             self.conn.execute("DELETE FROM news WHERE ts < ?", (cutoff,))
             self.conn.execute("DELETE FROM options WHERE ts < ?", (cutoff,))
             self.conn.execute("DELETE FROM option_chains WHERE ts < ?", (cutoff,))
-            mb_cut = (datetime.now() - timedelta(days=config.MINUTE_BARS_RETENTION_DAYS)).strftime("%Y-%m-%d")
+            mb_cut = (datetime.now() - timedelta(days=config.MINUTE_BARS_RETENTION_DAYS)).strftime(
+                "%Y-%m-%d"
+            )
             self.conn.execute("DELETE FROM minute_bars WHERE trade_date < ?", (mb_cut,))
             # 中性信号不产生 outcome，无需长期保留；非中性信号被 signal_outcomes 外键引用，长期保留。
             self.conn.execute(
                 "DELETE FROM signals WHERE ts < ? AND ABS(score) < ?",
-                (cutoff, config.SCORE_NEUTRAL))
+                (cutoff, config.SCORE_NEUTRAL),
+            )
             # 第135轮瘦身 a'：非中性信号保留主字段/parts_json/sent_json（ML 特征仍在），
             # 只把超过保留期的 raw_json 置空（丢新闻原文全文 hits + 展示性瞬态键），挡 signals 膨胀。
-            rj_cut = (datetime.now() - timedelta(days=config.SIGNALS_RAWJSON_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            rj_cut = (
+                datetime.now() - timedelta(days=config.SIGNALS_RAWJSON_RETENTION_DAYS)
+            ).strftime("%Y-%m-%d %H:%M:%S")
             self.conn.execute(
-                "UPDATE signals SET raw_json=NULL WHERE ts < ? AND raw_json IS NOT NULL",
-                (rj_cut,))
+                "UPDATE signals SET raw_json=NULL WHERE ts < ? AND raw_json IS NOT NULL", (rj_cut,)
+            )
             # ml_samples 是监督学习样本资产，按更长的保留期清理（默认约10年，近似长期保留）。
-            ml_cut = (datetime.now() - timedelta(days=config.ML_SAMPLES_RETENTION_DAYS)).strftime("%Y-%m-%d")
+            ml_cut = (datetime.now() - timedelta(days=config.ML_SAMPLES_RETENTION_DAYS)).strftime(
+                "%Y-%m-%d"
+            )
             self.conn.execute("DELETE FROM ml_samples WHERE bar_dt < ?", (ml_cut,))
-            dh_cut = (datetime.now() - timedelta(days=config.DATA_HEALTH_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            dh_cut = (datetime.now() - timedelta(days=config.DATA_HEALTH_RETENTION_DAYS)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             self.conn.execute("DELETE FROM data_health WHERE ts < ?", (dh_cut,))
-            btr_cut = (datetime.now() - timedelta(days=config.BACKTEST_RUNS_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            btr_cut = (
+                datetime.now() - timedelta(days=config.BACKTEST_RUNS_RETENTION_DAYS)
+            ).strftime("%Y-%m-%d %H:%M:%S")
             self.conn.execute("DELETE FROM backtest_runs WHERE run_ts < ?", (btr_cut,))
-            paper_cut = (datetime.now() - timedelta(days=config.PAPER_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            paper_cut = (datetime.now() - timedelta(days=config.PAPER_RETENTION_DAYS)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             self.conn.execute("DELETE FROM paper_orders WHERE ts < ?", (paper_cut,))
             self.conn.execute("DELETE FROM paper_trades WHERE ts < ?", (paper_cut,))
             self.conn.execute("DELETE FROM paper_equity WHERE ts < ?", (paper_cut,))
-            snap_cut = (datetime.now() - timedelta(days=config.SNAPSHOT_RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+            snap_cut = (datetime.now() - timedelta(days=config.SNAPSHOT_RETENTION_DAYS)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
             self.conn.execute("DELETE FROM tick_snapshots WHERE collected_at < ?", (snap_cut,))
             self.conn.commit()

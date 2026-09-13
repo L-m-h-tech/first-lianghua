@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """交易日历（P0-3）：解决"只按 weekday 判休市"的两个问题——
   1) 周一~周五的法定节假日仍在空转（应判休市）；
   2) 调休补班的周末交易所其实仍休市（不能判成交易日）。
@@ -18,6 +17,7 @@
 【维护】每年 12 月证监会发布次年休市安排后，把区间补进 STATIC_HOLIDAYS 即可；
 不更新也只是次年新节假日期间按工作日误判，动态日 K 会在节假日发生后自动校正。
 """
+
 import json
 import logging
 import os
@@ -29,10 +29,10 @@ from datetime import date, datetime, timedelta
 import config
 from http_client import http
 
-LOG = logging.getLogger("monitor")    # 与 utils.LOG 同名，共享日志配置（避免与 utils 循环导入）
+LOG = logging.getLogger("monitor")  # 与 utils.LOG 同名，共享日志配置（避免与 utils 循环导入）
 # 可重入锁：ensure() 持锁后会调用同样需要锁的 refresh()，必须用 RLock 避免线程自死锁
 _lock = threading.RLock()
-_dates = None            # set[date]：动态日 K 得到的交易日
+_dates = None  # set[date]：动态日 K 得到的交易日
 _max_cached = None
 _last_refresh_try = 0.0
 _warned_fallback = False
@@ -40,13 +40,13 @@ _warned_fallback = False
 # 静态法定休市区间（自然日，含首尾）。来源：证监会《关于2026年部分节假日放假和休市安排的通知》
 # （证监办发〔2025〕130号，深交所/上交所2025-12-22发布）。周末本就恒休，列入仅为完整。
 STATIC_HOLIDAY_RANGES = [
-    (date(2026, 1, 1), date(2026, 1, 3)),     # 元旦
-    (date(2026, 2, 15), date(2026, 2, 23)),   # 春节
-    (date(2026, 4, 4), date(2026, 4, 6)),     # 清明节
-    (date(2026, 5, 1), date(2026, 5, 5)),     # 劳动节
-    (date(2026, 6, 19), date(2026, 6, 21)),   # 端午节
-    (date(2026, 9, 25), date(2026, 9, 27)),   # 中秋节
-    (date(2026, 10, 1), date(2026, 10, 7)),   # 国庆节
+    (date(2026, 1, 1), date(2026, 1, 3)),  # 元旦
+    (date(2026, 2, 15), date(2026, 2, 23)),  # 春节
+    (date(2026, 4, 4), date(2026, 4, 6)),  # 清明节
+    (date(2026, 5, 1), date(2026, 5, 5)),  # 劳动节
+    (date(2026, 6, 19), date(2026, 6, 21)),  # 端午节
+    (date(2026, 9, 25), date(2026, 9, 27)),  # 中秋节
+    (date(2026, 10, 1), date(2026, 10, 7)),  # 国庆节
 ]
 
 
@@ -62,8 +62,10 @@ STATIC_HOLIDAYS = {d for a, b in STATIC_HOLIDAY_RANGES for d in _daterange(a, b)
 
 def _fetch_sina():
     """主源：新浪螺纹主连 RB0 日 K（jsonp），返回 [date,...]；期货交易日历"""
-    url = ("https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
-           "var%20t=/InnerFuturesNewService.getDailyKLine?symbol=RB0")
+    url = (
+        "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
+        "var%20t=/InnerFuturesNewService.getDailyKLine?symbol=RB0"
+    )
     r = http.get(url, headers=config.HEADERS_SINA, timeout=8)
     m = re.search(r"(\[.*\])", r.text, re.S)
     if not m:
@@ -75,9 +77,11 @@ def _fetch_sina():
 def _fetch_eastmoney():
     """备源：东财上证指数日 K（偶发限流，失败由上层兜底）"""
     y = date.today().year
-    url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?"
-           "secid=1.000001&fields1=f1,f2,f3&fields2=f51&klt=101&fqt=1"
-           f"&beg={y - 1}0101&end={y + 1}1231")
+    url = (
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?"
+        "secid=1.000001&fields1=f1,f2,f3&fields2=f51&klt=101&fqt=1"
+        f"&beg={y - 1}0101&end={y + 1}1231"
+    )
     r = http.get(url, headers=config.HEADERS_COMMON, timeout=6)
     ks = (r.json().get("data") or {}).get("klines") or []
     return [datetime.strptime(str(k)[:10], "%Y-%m-%d").date() for k in ks]
@@ -87,7 +91,7 @@ def _fetch_dynamic_dates():
     """依次尝试主/备动态源，返回交易日列表；全失败抛异常"""
     errs = []
     for fetcher in (_fetch_sina, _fetch_eastmoney):
-        for _ in range(2):                       # 每个源最多重试1次（应对偶发断连）
+        for _ in range(2):  # 每个源最多重试1次（应对偶发断连）
             try:
                 ds = fetcher()
                 if len(ds) >= 50:
@@ -140,9 +144,9 @@ def refresh(force=False):
     with _lock:
         try:
             fetched = _fetch_dynamic_dates()
-            cutoff = date.today() - timedelta(days=800)   # 只缓存近2年多，避免文件过大
+            cutoff = date.today() - timedelta(days=800)  # 只缓存近2年多，避免文件过大
             ds = {d for d in fetched if d >= cutoff}
-            if len(ds) < 50:                              # 异常响应保护
+            if len(ds) < 50:  # 异常响应保护
                 raise RuntimeError("动态交易日条数异常(%d)" % len(ds))
             if _dates:
                 ds |= {d for d in _dates if d >= cutoff}
@@ -150,8 +154,12 @@ def refresh(force=False):
             _max_cached = max(ds)
             _last_refresh_try = time.time()
             _save_cache(ds)
-            LOG.info("交易日历已更新：动态日K至 %s（共%d个交易日，静态休市%d天）",
-                     _max_cached, len(ds), len(STATIC_HOLIDAYS))
+            LOG.info(
+                "交易日历已更新：动态日K至 %s（共%d个交易日，静态休市%d天）",
+                _max_cached,
+                len(ds),
+                len(STATIC_HOLIDAYS),
+            )
             return True
         except Exception as e:
             _last_refresh_try = time.time()
@@ -167,7 +175,7 @@ def ensure():
         fresh = _max_cached and (date.today() - _max_cached).days <= 7
         if fresh:
             return True
-        if time.time() - _last_refresh_try < 3600:    # 刷新失败后1小时内不反复重试
+        if time.time() - _last_refresh_try < 3600:  # 刷新失败后1小时内不反复重试
             return True
         refresh()
         return _dates is not None
@@ -180,8 +188,10 @@ def ensure():
         if _dates:
             return True
         if not _warned_fallback:
-            LOG.warning("动态交易日历不可用（无缓存且联网失败），改用静态休市表+周末规则；"
-                        "恢复网络后重启即可自动校正")
+            LOG.warning(
+                "动态交易日历不可用（无缓存且联网失败），改用静态休市表+周末规则；"
+                "恢复网络后重启即可自动校正"
+            )
             _warned_fallback = True
         return False
 
@@ -202,8 +212,8 @@ def is_trade_day(d=None):
         if d in _dates:
             return True
         if d <= _max_cached:
-            return False                            # 已覆盖但不是交易日 = 临时休市
-    return d.weekday() < 5                          # 未来工作日兜底
+            return False  # 已覆盖但不是交易日 = 临时休市
+    return d.weekday() < 5  # 未来工作日兜底
 
 
 def next_trade_day(d, max_step=15):

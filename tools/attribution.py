@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G28（第35轮）因子收益归因 + BHB 板块归因（复盘"钱是谁赚的"，研究/复盘侧，不接常驻、不改综合分）。
 
 第33轮全网对标把"复盘归因"列为五环节最后一块短板：本项目综合分由 9 个 part 相加（新闻/原油联动/
@@ -32,6 +31,7 @@ r"""G28（第35轮）因子收益归因 + BHB 板块归因（复盘"钱是谁赚
   D:\Python\python.exe tools\attribution.py --days 365      # 近365天
   D:\Python\python.exe tools\attribution.py --selftest      # 零网络/零DB合成断言
 """
+
 import argparse
 import json
 import math
@@ -44,9 +44,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+import factor_eval as fe  # noqa: E402
+from tsmom_eval import _solve  # noqa: E402
+
 import config  # noqa: E402
-import factor_eval as fe  # noqa: E402  复用 pearson/spearman/_canon，不重造轮子
-from tsmom_eval import _solve  # noqa: E402  复用高斯消元
 
 HORIZON_LABEL = {30: "30分钟", 120: "2小时", 1440: "次日"}
 
@@ -89,7 +90,7 @@ def _ols_detail(X, y, beta):
         sigma2 = sse / (n - p)
         for j in range(p):
             ej = [1.0 if a == j else 0.0 for a in range(p)]
-            col = _solve(XtX, ej)          # (X'X)^-1 的第 j 列
+            col = _solve(XtX, ej)  # (X'X)^-1 的第 j 列
             if col is not None and col[j] > 1e-14 and sigma2 > 0:
                 tstats[j] = beta[j] / math.sqrt(sigma2 * col[j])
     return {"r2": r2, "tstats": tstats}
@@ -104,8 +105,18 @@ def factor_attribution(events, factor_keys, x_eps=0.05):
               rows[{factor,n,beta,tstat,mean_x,contrib,share,ic,win_support,avg_support,avg_against}]。
     """
     n = len(events)
-    out = {"n": n, "used": [], "dropped": [], "rows": [], "alpha": None, "mean_y": 0.0,
-           "closure_resid": None, "r2": 0.0, "beta": {}, "mean_x": {}}
+    out = {
+        "n": n,
+        "used": [],
+        "dropped": [],
+        "rows": [],
+        "alpha": None,
+        "mean_y": 0.0,
+        "closure_resid": None,
+        "r2": 0.0,
+        "beta": {},
+        "mean_x": {},
+    }
     if n == 0:
         return out
     ys = [float(e["y"]) for e in events]
@@ -132,8 +143,7 @@ def factor_attribution(events, factor_keys, x_eps=0.05):
         if beta is not None:
             break
         # 仍奇异（多重共线）：剔除平均绝对暴露最小的一列再试
-        abs_mean = sorted(range(len(used)),
-                          key=lambda j: abs(_mean([r[j] for r in X])))
+        abs_mean = sorted(range(len(used)), key=lambda j: abs(_mean([r[j] for r in X])))
         out["dropped"].append(used.pop(abs_mean[0]))
         beta = None
 
@@ -165,14 +175,20 @@ def factor_attribution(events, factor_keys, x_eps=0.05):
         aga = [(col[i], ys[i]) for i in range(n) if col[i] < -x_eps]
         win = (sum(1 for _, yy in sup if yy > 0) / len(sup)) if sup else None
         ic = fe.pearson(col, ys)
-        out["rows"].append({
-            "factor": f, "n": sum(1 for v in col if abs(v) > 1e-12),
-            "beta": bj, "tstat": detail["tstats"][j + 1],
-            "mean_x": mx, "contrib": contrib, "ic": ic,
-            "win_support": win,
-            "avg_support": _mean([yy for _, yy in sup]) if sup else None,
-            "avg_against": _mean([yy for _, yy in aga]) if aga else None,
-        })
+        out["rows"].append(
+            {
+                "factor": f,
+                "n": sum(1 for v in col if abs(v) > 1e-12),
+                "beta": bj,
+                "tstat": detail["tstats"][j + 1],
+                "mean_x": mx,
+                "contrib": contrib,
+                "ic": ic,
+                "win_support": win,
+                "avg_support": _mean([yy for _, yy in sup]) if sup else None,
+                "avg_against": _mean([yy for _, yy in aga]) if aga else None,
+            }
+        )
     closed = alpha + contrib_sum
     out["closure_resid"] = mean_y - closed
     # 占比（以 |平均收益| 为分母；平均收益≈0 时占比记 None）
@@ -210,19 +226,36 @@ def bhb(sector_stats, bench_weights):
         alloc = (wp - wb) * rb
         select = wb * (rp - rb)
         inter = (wp - wb) * (rp - rb)
-        rows.append({"sector": s, "wp": wp, "wb": wb, "rp": rp, "rb": rb,
-                     "alloc": alloc, "select": select, "inter": inter,
-                     "effect": alloc + select + inter})
+        rows.append(
+            {
+                "sector": s,
+                "wp": wp,
+                "wb": wb,
+                "rp": rp,
+                "rb": rb,
+                "alloc": alloc,
+                "select": select,
+                "inter": inter,
+                "effect": alloc + select + inter,
+            }
+        )
         port_ret += wp * rp
         bench_ret += wb * rb
     alloc_t = sum(r["alloc"] for r in rows)
     select_t = sum(r["select"] for r in rows)
     inter_t = sum(r["inter"] for r in rows)
     total = alloc_t + select_t + inter_t
-    return {"sectors": rows, "alloc": alloc_t, "select": select_t, "inter": inter_t,
-            "total": total, "port_ret": port_ret, "bench_ret": bench_ret,
-            "excess": port_ret - bench_ret,
-            "closure_resid": (port_ret - bench_ret) - total}
+    return {
+        "sectors": rows,
+        "alloc": alloc_t,
+        "select": select_t,
+        "inter": inter_t,
+        "total": total,
+        "port_ret": port_ret,
+        "bench_ret": bench_ret,
+        "excess": port_ret - bench_ret,
+        "closure_resid": (port_ret - bench_ret) - total,
+    }
 
 
 def events_to_sector_stats(events):
@@ -235,8 +268,12 @@ def events_to_sector_stats(events):
     for s, es in by.items():
         ys = [float(e["y"]) for e in es]
         raw = [float(e["y"]) / (1 if e.get("dir", 1) == 0 else e.get("dir", 1)) for e in es]
-        stats[s] = {"n": len(es), "wp": len(es) / n if n else 0.0,
-                    "rp": _mean(ys), "rb": _mean(raw)}
+        stats[s] = {
+            "n": len(es),
+            "wp": len(es) / n if n else 0.0,
+            "rp": _mean(ys),
+            "rb": _mean(raw),
+        }
     return stats
 
 
@@ -265,12 +302,18 @@ def factor_curve(events, attr, factor_keys):
         y = float(e["y"])
         fac_now = sum(beta[f] * float(e["x"].get(f, 0.0)) for f in used)
         cum_t += y
-        cum_res += y - fac_now        # OLS 截距口径残差逐笔累计，末端合计=n·α，与因子项闭合
+        cum_res += y - fac_now  # OLS 截距口径残差逐笔累计，末端合计=n·α，与因子项闭合
         for f in used:
             cum_f[f] += beta[f] * float(e["x"].get(f, 0.0))
-        row = {"idx": i, "ts": e.get("ts", ""), "sym": e.get("sym", ""),
-               "sector": e.get("sector", ""), "y": y, "cum_total": cum_t,
-               "cum_alpha": cum_res}
+        row = {
+            "idx": i,
+            "ts": e.get("ts", ""),
+            "sym": e.get("sym", ""),
+            "sector": e.get("sector", ""),
+            "y": y,
+            "cum_total": cum_t,
+            "cum_alpha": cum_res,
+        }
         for f in factor_keys:
             row["cum_" + f] = cum_f.get(f, 0.0)
         rows.append(row)
@@ -281,8 +324,10 @@ def group_mean(events, key):
     g = defaultdict(list)
     for e in events:
         g[e.get(key) or "未知"].append(float(e["y"]))
-    return {k: {"n": len(v), "mean_y": _mean(v),
-                "win": sum(1 for x in v if x > 0) / len(v)} for k, v in sorted(g.items())}
+    return {
+        k: {"n": len(v), "mean_y": _mean(v), "win": sum(1 for x in v if x > 0) / len(v)}
+        for k, v in sorted(g.items())
+    }
 
 
 # =========================== 数据装载（只读 DB，纯自有、零网络） ===========================
@@ -300,14 +345,20 @@ def parse_event_row(row, factor_keys):
     x = {}
     for k, v in parts.items():
         try:
-            x[fe._canon(k)] = float(v) * d       # meta-labeling 方向化暴露
+            x[fe._canon(k)] = float(v) * d  # meta-labeling 方向化暴露
         except (TypeError, ValueError):
             continue
-    return {"y": y, "x": x, "dir": d,
-            "sector": row.get("cat") or "未知", "sym": row.get("sym") or "",
-            "band": row.get("score_band") or "", "score": row.get("score"),
-            "ts": row.get("entry_ts") or row.get("eval_ts") or "",
-            "horizon": int(row.get("horizon_min", 0))}
+    return {
+        "y": y,
+        "x": x,
+        "dir": d,
+        "sector": row.get("cat") or "未知",
+        "sym": row.get("sym") or "",
+        "band": row.get("score_band") or "",
+        "score": row.get("score"),
+        "ts": row.get("entry_ts") or row.get("eval_ts") or "",
+        "horizon": int(row.get("horizon_min", 0)),
+    }
 
 
 def load_events(db_path, horizons=(30, 120, 1440), days=None):
@@ -316,16 +367,20 @@ def load_events(db_path, horizons=(30, 120, 1440), days=None):
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     ph = ",".join("?" * len(horizons))
-    sql = ("SELECT o.direction_int,o.score,o.score_band,o.horizon_min,o.ret,o.status,"
-           "o.entry_ts,o.eval_ts,o.variety,s.cat,s.sym,s.parts_json "
-           "FROM signal_outcomes o JOIN signals s ON s.id=o.signal_id "
-           "WHERE o.status IN ('hit','miss','flat') AND o.horizon_min IN (%s)" % ph)
+    sql = (
+        "SELECT o.direction_int,o.score,o.score_band,o.horizon_min,o.ret,o.status,"
+        "o.entry_ts,o.eval_ts,o.variety,s.cat,s.sym,s.parts_json "
+        "FROM signal_outcomes o JOIN signals s ON s.id=o.signal_id "
+        "WHERE o.status IN ('hit','miss','flat') AND o.horizon_min IN (%s)" % ph
+    )
     args = [int(h) for h in horizons]
     if days:
         sql += " AND o.eval_ts>=?"
-        args.append((datetime.now()
-                     .fromtimestamp(datetime.now().timestamp() - int(days) * 86400)
-                     ).strftime("%Y-%m-%d %H:%M:%S"))
+        args.append(
+            (datetime.now().fromtimestamp(datetime.now().timestamp() - int(days) * 86400)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
     sql += " ORDER BY o.eval_ts ASC"
     rows = conn.execute(sql, args).fetchall()
     conn.close()
@@ -347,8 +402,15 @@ def split_events_by_mask(events, mask):
     返回 (kept, excluded, stats)：kept=有掩码覆盖且可交易日的事件；excluded=[(event, reason)]，
     reason∈locked/near_delivery/no_mask（品种不在面板或日期无覆盖）；stats 汇总计数与覆盖率。"""
     kept, excluded = [], []
-    stats = {"n_total": len(events), "n_locked": 0, "n_near_delivery": 0,
-             "n_no_mask": 0, "n_kept": 0, "n_excluded": 0, "coverage": None}
+    stats = {
+        "n_total": len(events),
+        "n_locked": 0,
+        "n_near_delivery": 0,
+        "n_no_mask": 0,
+        "n_kept": 0,
+        "n_excluded": 0,
+        "coverage": None,
+    }
     for e in events:
         sym = e.get("sym") or ""
         info = (mask or {}).get(sym, {}).get((e.get("ts") or "")[:10])
@@ -372,22 +434,40 @@ def split_events_by_mask(events, mask):
 def mask_compare_horizon(events, kept, keys, oos_ratio, x_eps, min_sample=40):
     """全量 vs 仅可交易日事件的归因对照摘要（纯函数）：n/mean_y/α 与 β 符号一致率。"""
     full = factor_attribution(events, keys, x_eps=x_eps)
-    out = {"n_total": len(events), "n_kept": len(kept),
-           "coverage": (len(kept) / len(events)) if events else None,
-           "mean_y_full": full.get("mean_y"), "alpha_full": full.get("alpha"),
-           "beta_full": {k: full["beta"][k] for k in full.get("used", [])}}
+    out = {
+        "n_total": len(events),
+        "n_kept": len(kept),
+        "coverage": (len(kept) / len(events)) if events else None,
+        "mean_y_full": full.get("mean_y"),
+        "alpha_full": full.get("alpha"),
+        "beta_full": {k: full["beta"][k] for k in full.get("used", [])},
+    }
     if len(kept) >= min_sample:
         katt = factor_attribution(kept, keys, x_eps=x_eps)
-        out.update({"mean_y_kept": katt.get("mean_y"), "alpha_kept": katt.get("alpha"),
-                    "beta_kept": {k: katt["beta"][k] for k in katt.get("used", [])},
-                    "enough": True})
+        out.update(
+            {
+                "mean_y_kept": katt.get("mean_y"),
+                "alpha_kept": katt.get("alpha"),
+                "beta_kept": {k: katt["beta"][k] for k in katt.get("used", [])},
+                "enough": True,
+            }
+        )
         common = [k for k in out["beta_kept"] if k in out["beta_full"]]
-        out["beta_sign_agree"] = (sum(1 for k in common
-                                      if out["beta_full"][k] * out["beta_kept"][k] > 0) / len(common)
-                                  if common else None)
+        out["beta_sign_agree"] = (
+            sum(1 for k in common if out["beta_full"][k] * out["beta_kept"][k] > 0) / len(common)
+            if common
+            else None
+        )
     else:
-        out.update({"mean_y_kept": None, "alpha_kept": None, "beta_kept": {},
-                    "beta_sign_agree": None, "enough": False})
+        out.update(
+            {
+                "mean_y_kept": None,
+                "alpha_kept": None,
+                "beta_kept": {},
+                "beta_sign_agree": None,
+                "enough": False,
+            }
+        )
     return out
 
 
@@ -415,8 +495,16 @@ def monthly_bhb(events):
         stats = events_to_sector_stats(es)
         wb = universe_sector_weights(list(stats.keys()))
         r = bhb(stats, wb)
-        out.append({"month": m, "n": len(es), "alloc": r["alloc"], "select": r["select"],
-                    "inter": r["inter"], "excess": r["excess"]})
+        out.append(
+            {
+                "month": m,
+                "n": len(es),
+                "alloc": r["alloc"],
+                "select": r["select"],
+                "inter": r["inter"],
+                "excess": r["excess"],
+            }
+        )
     return out
 
 
@@ -425,7 +513,9 @@ def attribute_horizon(events, factor_keys, oos_ratio=0.3, x_eps=0.05):
     attr = factor_attribution(events, factor_keys, x_eps=x_eps)
     is_ev, oos_ev = is_oos_split(events, oos_ratio)
     attr["is"] = factor_attribution(is_ev, attr["used"], x_eps=x_eps) if len(is_ev) >= 10 else None
-    attr["oos"] = factor_attribution(oos_ev, attr["used"], x_eps=x_eps) if len(oos_ev) >= 10 else None
+    attr["oos"] = (
+        factor_attribution(oos_ev, attr["used"], x_eps=x_eps) if len(oos_ev) >= 10 else None
+    )
     stats = events_to_sector_stats(events)
     wb = universe_sector_weights(list(stats.keys()))
     attr["bhb"] = bhb(stats, wb)
@@ -439,8 +529,12 @@ def build_report(data, factor_keys, main_h, days=None, mask_compare=None):
     L = []
     L.append("因子收益归因 + BHB 板块归因报告（G28 复盘）  生成于 %s" % _now())
     L.append("=" * 104)
-    L.append("数据：signals.parts_json ⨝ signal_outcomes（hit/miss/flat 有效样本，只读 monitor.db，纯标准库）；")
-    L.append("因子暴露=part×信号方向（meta-labeling，同 factor_eval），y=方向收益；加法归因 mean(y)=α+Σβ·mean(x) 严格闭合。")
+    L.append(
+        "数据：signals.parts_json ⨝ signal_outcomes（hit/miss/flat 有效样本，只读 monitor.db，纯标准库）；"
+    )
+    L.append(
+        "因子暴露=part×信号方向（meta-labeling，同 factor_eval），y=方向收益；加法归因 mean(y)=α+Σβ·mean(x) 严格闭合。"
+    )
     if days:
         L.append("样本窗口：近 %d 天。" % days)
     L.append("")
@@ -448,44 +542,87 @@ def build_report(data, factor_keys, main_h, days=None, mask_compare=None):
 
     for h in sorted(data):
         events = data[h]
-        L.append("%s %s%s   有效事件 n=%d" % (
-            "=" * 10, HORIZON_LABEL.get(h, h),
-            ("（主周期）" if h == main_h else "（对照周期）"), len(events)))
+        L.append(
+            "%s %s%s   有效事件 n=%d"
+            % (
+                "=" * 10,
+                HORIZON_LABEL.get(h, h),
+                ("（主周期）" if h == main_h else "（对照周期）"),
+                len(events),
+            )
+        )
         if len(events) < config.ATTR_MIN_SAMPLE:
-            L.append("  样本不足（n=%d<%d），只计数不下结论。" % (len(events), config.ATTR_MIN_SAMPLE))
+            L.append(
+                "  样本不足（n=%d<%d），只计数不下结论。" % (len(events), config.ATTR_MIN_SAMPLE)
+            )
             L.append("")
             sidecar["horizons"][h] = {"n": len(events), "enough": False}
             continue
-        a = attribute_horizon(events, factor_keys,
-                              oos_ratio=config.ATTR_OOS_RATIO, x_eps=config.ATTR_X_EPS)
+        a = attribute_horizon(
+            events, factor_keys, oos_ratio=config.ATTR_OOS_RATIO, x_eps=config.ATTR_X_EPS
+        )
         # ---- 二、因子归因表 ----
         L.append("一、多因子加法归因（OLS：β=每单位方向化暴露的边际方向收益；贡献=β×平均暴露）")
-        L.append("  %-8s %5s %10s %7s %10s %9s %8s %10s %10s" %
-                 ("因子", "n", "β", "t值", "平均暴露", "贡献", "占比", "IC", "支持胜率"))
+        L.append(
+            "  %-8s %5s %10s %7s %10s %9s %8s %10s %10s"
+            % ("因子", "n", "β", "t值", "平均暴露", "贡献", "占比", "IC", "支持胜率")
+        )
         for r in a["rows"]:
             share = ("%.0f%%" % (r["share"] * 100)) if r.get("share") is not None else "--"
-            L.append("  %-8s %5d %10s %7s %10s %9s %9s %8s %10s" %
-                     (r["factor"], r["n"], _num(r["beta"], 5), _num(r["tstat"], 2),
-                      _num(r["mean_x"], 3), _pct(r["contrib"], 3), share,
-                      _num(r["ic"], 3), _win(r["win_support"])))
-        L.append("  %-8s %5s %10s %7s %10s %9s" %
-                 ("残差α", a["n"], _num(a["alpha"], 5), "--", "--", _pct(a["alpha"], 3)))
-        L.append("  平均方向收益合计 %s = 残差α %s + Σ因子贡献 %s；闭合误差 %.2e；OLS R²=%.3f" %
-                 (_pct(a["mean_y"], 3), _pct(a["alpha"], 3), _pct(a["contrib_sum"], 3),
-                  a["closure_resid"], a["r2"]))
+            L.append(
+                "  %-8s %5d %10s %7s %10s %9s %9s %8s %10s"
+                % (
+                    r["factor"],
+                    r["n"],
+                    _num(r["beta"], 5),
+                    _num(r["tstat"], 2),
+                    _num(r["mean_x"], 3),
+                    _pct(r["contrib"], 3),
+                    share,
+                    _num(r["ic"], 3),
+                    _win(r["win_support"]),
+                )
+            )
+        L.append(
+            "  %-8s %5s %10s %7s %10s %9s"
+            % ("残差α", a["n"], _num(a["alpha"], 5), "--", "--", _pct(a["alpha"], 3))
+        )
+        L.append(
+            "  平均方向收益合计 %s = 残差α %s + Σ因子贡献 %s；闭合误差 %.2e；OLS R²=%.3f"
+            % (
+                _pct(a["mean_y"], 3),
+                _pct(a["alpha"], 3),
+                _pct(a["contrib_sum"], 3),
+                a["closure_resid"],
+                a["r2"],
+            )
+        )
         if a["dropped"]:
-            L.append("  注：零方差/共线未入模因子：%s（样本中几乎不出现，不参与回归）" % "、".join(a["dropped"]))
+            L.append(
+                "  注：零方差/共线未入模因子：%s（样本中几乎不出现，不参与回归）"
+                % "、".join(a["dropped"])
+            )
         # 支持/反对对照
-        L.append("  因子支持(x>%.2f) vs 反对(x<-%.2f) 平均方向收益：" %
-                 (config.ATTR_X_EPS, config.ATTR_X_EPS))
+        L.append(
+            "  因子支持(x>%.2f) vs 反对(x<-%.2f) 平均方向收益："
+            % (config.ATTR_X_EPS, config.ATTR_X_EPS)
+        )
         for r in a["rows"]:
-            L.append("    %-8s 支持 %s（%s）/ 反对 %s" %
-                     (r["factor"], _pct(r["avg_support"], 3), _win(r["win_support"]),
-                      _pct(r["avg_against"], 3)))
+            L.append(
+                "    %-8s 支持 %s（%s）/ 反对 %s"
+                % (
+                    r["factor"],
+                    _pct(r["avg_support"], 3),
+                    _win(r["win_support"]),
+                    _pct(r["avg_against"], 3),
+                )
+            )
         # ---- IS/OOS 稳健 ----
         if a["is"] and a["oos"]:
-            L.append("二、IS(前%.0f%%)/OOS(后%.0f%%) β方向一致性（防过拟合）" %
-                     ((1 - config.ATTR_OOS_RATIO) * 100, config.ATTR_OOS_RATIO * 100))
+            L.append(
+                "二、IS(前%.0f%%)/OOS(后%.0f%%) β方向一致性（防过拟合）"
+                % ((1 - config.ATTR_OOS_RATIO) * 100, config.ATTR_OOS_RATIO * 100)
+            )
             agree = 0
             tot = 0
             for f in a["used"]:
@@ -495,73 +632,153 @@ def build_report(data, factor_keys, main_h, days=None, mask_compare=None):
                     tot += 1
                     if bi * bo >= 0:
                         agree += 1
-                    L.append("    %-8s IS β=%s  OOS β=%s  %s" %
-                             (f, _num(bi, 5), _num(bo, 5),
-                              "同向" if bi * bo >= 0 else "翻转✗"))
+                    L.append(
+                        "    %-8s IS β=%s  OOS β=%s  %s"
+                        % (f, _num(bi, 5), _num(bo, 5), "同向" if bi * bo >= 0 else "翻转✗")
+                    )
             L.append("  β方向一致 %d/%d（OOS 翻转越多说明该因子贡献越不稳）。" % (agree, tot))
         # ---- 三、多空/分档 ----
         L.append("三、分组平均方向收益（交叉验证）")
         dirm = {1: "做多", -1: "做空"}
-        L.append("  按方向：" + "；".join(
-            "%s n=%d 均收%s 胜率%s" %
-            (dirm.get(int(k), k), v["n"], _pct(v["mean_y"], 3), _win(v["win"]))
-            for k, v in a["by_dir"].items()))
-        L.append("  按分档：" + "；".join(
-            "%s n=%d 均收%s" % (k, v["n"], _pct(v["mean_y"], 3))
-            for k, v in a["by_band"].items()))
+        L.append(
+            "  按方向："
+            + "；".join(
+                "%s n=%d 均收%s 胜率%s"
+                % (dirm.get(int(k), k), v["n"], _pct(v["mean_y"], 3), _win(v["win"]))
+                for k, v in a["by_dir"].items()
+            )
+        )
+        L.append(
+            "  按分档："
+            + "；".join(
+                "%s n=%d 均收%s" % (k, v["n"], _pct(v["mean_y"], 3))
+                for k, v in a["by_band"].items()
+            )
+        )
         # ---- 四、BHB ----
         b = a["bhb"]
         L.append("四、BHB 板块归因（基准=全市场品种板块只数占比×板块无方向均涨；组合=实际信号）")
-        L.append("  %-8s %7s %7s %10s %10s %10s %10s %10s" %
-                 ("板块", "w_p", "w_b", "R_p", "R_b", "配置AR", "选择SR", "交互IR"))
+        L.append(
+            "  %-8s %7s %7s %10s %10s %10s %10s %10s"
+            % ("板块", "w_p", "w_b", "R_p", "R_b", "配置AR", "选择SR", "交互IR")
+        )
         for r in b["sectors"]:
-            L.append("  %-8s %7.3f %7.3f %10s %10s %10s %10s %10s" %
-                     (r["sector"], r["wp"], r["wb"], _pct(r["rp"], 3), _pct(r["rb"], 3),
-                      _pct(r["alloc"], 3), _pct(r["select"], 3), _pct(r["inter"], 3)))
-        L.append("  合计：配置 %s + 选择 %s + 交互 %s = %s；组合 %s − 基准 %s = 超额 %s；闭合误差 %.2e" %
-                 (_pct(b["alloc"], 3), _pct(b["select"], 3), _pct(b["inter"], 3),
-                  _pct(b["total"], 3), _pct(b["port_ret"], 3), _pct(b["bench_ret"], 3),
-                  _pct(b["excess"], 3), b["closure_resid"]))
+            L.append(
+                "  %-8s %7.3f %7.3f %10s %10s %10s %10s %10s"
+                % (
+                    r["sector"],
+                    r["wp"],
+                    r["wb"],
+                    _pct(r["rp"], 3),
+                    _pct(r["rb"], 3),
+                    _pct(r["alloc"], 3),
+                    _pct(r["select"], 3),
+                    _pct(r["inter"], 3),
+                )
+            )
+        L.append(
+            "  合计：配置 %s + 选择 %s + 交互 %s = %s；组合 %s − 基准 %s = 超额 %s；闭合误差 %.2e"
+            % (
+                _pct(b["alloc"], 3),
+                _pct(b["select"], 3),
+                _pct(b["inter"], 3),
+                _pct(b["total"], 3),
+                _pct(b["port_ret"], 3),
+                _pct(b["bench_ret"], 3),
+                _pct(b["excess"], 3),
+                b["closure_resid"],
+            )
+        )
         # ---- 五、月度 BHB ----
         mb = a["monthly_bhb"]
         if mb:
             L.append("五、月度 BHB 三效应序列（累计归因曲线另见 attribution_curve.csv）")
-            L.append("  " + " ".join("%s:配置%s/选择%s/超额%s" %
-                                     (m["month"][2:], _pct(m["alloc"], 2),
-                                      _pct(m["select"], 2), _pct(m["excess"], 2))
-                                     for m in mb[-10:]))
+            L.append(
+                "  "
+                + " ".join(
+                    "%s:配置%s/选择%s/超额%s"
+                    % (
+                        m["month"][2:],
+                        _pct(m["alloc"], 2),
+                        _pct(m["select"], 2),
+                        _pct(m["excess"], 2),
+                    )
+                    for m in mb[-10:]
+                )
+            )
         L.append("")
         sidecar["horizons"][h] = {
-            "n": a["n"], "enough": True, "mean_y": a["mean_y"], "alpha": a["alpha"],
-            "r2": a["r2"], "closure_resid": a["closure_resid"],
-            "used": a["used"], "dropped": a["dropped"],
-            "factors": a["rows"], "bhb": {k: v for k, v in b.items() if k != "sectors"},
-            "bhb_sectors": b["sectors"], "monthly_bhb": mb,
+            "n": a["n"],
+            "enough": True,
+            "mean_y": a["mean_y"],
+            "alpha": a["alpha"],
+            "r2": a["r2"],
+            "closure_resid": a["closure_resid"],
+            "used": a["used"],
+            "dropped": a["dropped"],
+            "factors": a["rows"],
+            "bhb": {k: v for k, v in b.items() if k != "sectors"},
+            "bhb_sectors": b["sectors"],
+            "monthly_bhb": mb,
             "by_dir": {str(k): v for k, v in a["by_dir"].items()},
-            "by_band": a["by_band"]}
+            "by_band": a["by_band"],
+        }
 
     # ---- 六、可交易性掩码对照（G22续/G28续，第73轮：剔除锁板/临交割/无覆盖事件后的归因） ----
     if mask_compare:
-        L.append("六、可交易性掩码对照（--mask-compare）：剔除锁板/临近交割/无掩码覆盖事件后重跑归因，")
-        L.append("   回答\"已实现盈亏归因是否被不可交易日的信号污染\"；掩码=tools/tradable_mask（research_panel 锁板+交割日历）。")
-        L.append("  %-10s %8s %8s %8s %10s %10s %10s %10s %12s"
-                 % ("周期", "全量n", "保留n", "覆盖率", "全量meanY", "掩码meanY", "全量α", "掩码α", "β符号一致率"))
+        L.append(
+            "六、可交易性掩码对照（--mask-compare）：剔除锁板/临近交割/无掩码覆盖事件后重跑归因，"
+        )
+        L.append(
+            '   回答"已实现盈亏归因是否被不可交易日的信号污染"；掩码=tools/tradable_mask（research_panel 锁板+交割日历）。'
+        )
+        L.append(
+            "  %-10s %8s %8s %8s %10s %10s %10s %10s %12s"
+            % (
+                "周期",
+                "全量n",
+                "保留n",
+                "覆盖率",
+                "全量meanY",
+                "掩码meanY",
+                "全量α",
+                "掩码α",
+                "β符号一致率",
+            )
+        )
         sidecar["mask_compare"] = {}
         for h in mask_compare.get("per_h", {}):
             mc = mask_compare["per_h"][h]
             st = mc["stats"]
-            L.append("  %-10s %8d %8d %8s %10s %10s %10s %10s %12s"
-                     % (HORIZON_LABEL.get(h, h), mc["n_total"], mc["n_kept"],
-                        _win(mc["coverage"]), _pct(mc["mean_y_full"]), _pct(mc["mean_y_kept"]),
-                        _num(mc["alpha_full"]), _num(mc["alpha_kept"]),
-                        _win(mc.get("beta_sign_agree"))))
-            L.append("    剔除明细：锁板%d / 临交割%d / 无掩码覆盖%d（无覆盖=品种不在面板或日期缺掩码，两类诚实分列）"
-                     % (st["n_locked"], st["n_near_delivery"], st["n_no_mask"]))
+            L.append(
+                "  %-10s %8d %8d %8s %10s %10s %10s %10s %12s"
+                % (
+                    HORIZON_LABEL.get(h, h),
+                    mc["n_total"],
+                    mc["n_kept"],
+                    _win(mc["coverage"]),
+                    _pct(mc["mean_y_full"]),
+                    _pct(mc["mean_y_kept"]),
+                    _num(mc["alpha_full"]),
+                    _num(mc["alpha_kept"]),
+                    _win(mc.get("beta_sign_agree")),
+                )
+            )
+            L.append(
+                "    剔除明细：锁板%d / 临交割%d / 无掩码覆盖%d（无覆盖=品种不在面板或日期缺掩码，两类诚实分列）"
+                % (st["n_locked"], st["n_near_delivery"], st["n_no_mask"])
+            )
             sidecar["mask_compare"][h] = mc
         L.append("")
-    L.append("诚实边界：①样本为实盘监控自 2026-08 起积累的信号事件，时段/品种分布有偏、非连续组合；")
-    L.append("②OLS 为线性加法归因，不刻画因子交互/非线性，β 是相关而非因果；③BHB 基准为事件条件下的")
-    L.append("板块无方向均涨，不是逐日连续基准，板块结论用于定位结构而非可交易收益；本报告不改任何线上权重。")
+    L.append(
+        "诚实边界：①样本为实盘监控自 2026-08 起积累的信号事件，时段/品种分布有偏、非连续组合；"
+    )
+    L.append(
+        "②OLS 为线性加法归因，不刻画因子交互/非线性，β 是相关而非因果；③BHB 基准为事件条件下的"
+    )
+    L.append(
+        "板块无方向均涨，不是逐日连续基准，板块结论用于定位结构而非可交易收益；本报告不改任何线上权重。"
+    )
     return "\n".join(L) + "\n", sidecar
 
 
@@ -582,14 +799,18 @@ def _json_safe(o):
 
 
 def write_curve(path, rows, factor_keys):
-    head = ["idx", "ts", "sym", "sector", "y", "cum_total", "cum_alpha"] + \
-           ["cum_" + f for f in factor_keys]
+    head = ["idx", "ts", "sym", "sector", "y", "cum_total", "cum_alpha"] + [
+        "cum_" + f for f in factor_keys
+    ]
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         fh.write(",".join(head) + "\n")
         for r in rows:
             vals = [r.get("idx"), r.get("ts"), r.get("sym"), r.get("sector")]
-            vals += ["%.6f" % r.get("y", 0.0), "%.6f" % r.get("cum_total", 0.0),
-                     "%.6f" % r.get("cum_alpha", 0.0)]
+            vals += [
+                "%.6f" % r.get("y", 0.0),
+                "%.6f" % r.get("cum_total", 0.0),
+                "%.6f" % r.get("cum_alpha", 0.0),
+            ]
             vals += ["%.6f" % r.get("cum_" + f, 0.0) for f in factor_keys]
             fh.write(",".join(str(v) for v in vals) + "\n")
 
@@ -603,8 +824,11 @@ def run(argv=None):
     ap.add_argument("--out", default=config.ATTR_FILE)
     ap.add_argument("--json", dest="json_out", default=config.ATTR_JSON)
     ap.add_argument("--curve", default=config.ATTR_CURVE)
-    ap.add_argument("--mask-compare", action="store_true",
-                    help="第73轮：按 tools/tradable_mask 可交易性掩码剔除锁板/临交割事件后重跑归因对照")
+    ap.add_argument(
+        "--mask-compare",
+        action="store_true",
+        help="第73轮：按 tools/tradable_mask 可交易性掩码剔除锁板/临交割事件后重跑归因对照",
+    )
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -617,6 +841,7 @@ def run(argv=None):
     if args.mask_compare:
         try:
             import tradable_mask as tmask
+
             con = sqlite3.connect(str(ROOT / "cache" / "research_panel.db"))
             rows_by_date = defaultdict(dict)
             for row in con.execute("SELECT sym,date,c,h,l FROM research_panel ORDER BY sym,date"):
@@ -626,17 +851,23 @@ def run(argv=None):
             per_h = {}
             for h in horizons:
                 kept, _exc, stats = split_events_by_mask(data.get(h, []), panel_mask)
-                mc = mask_compare_horizon(data.get(h, []), kept, factor_keys,
-                                          config.ATTR_OOS_RATIO, config.ATTR_X_EPS,
-                                          min_sample=config.ATTR_MIN_SAMPLE)
+                mc = mask_compare_horizon(
+                    data.get(h, []),
+                    kept,
+                    factor_keys,
+                    config.ATTR_OOS_RATIO,
+                    config.ATTR_X_EPS,
+                    min_sample=config.ATTR_MIN_SAMPLE,
+                )
                 mc["stats"] = stats
                 per_h[h] = mc
-            mask_compare = {"per_h": per_h}      # 正文保持全量口径（跨轮可比），掩码对照只在第六节
+            mask_compare = {"per_h": per_h}  # 正文保持全量口径（跨轮可比），掩码对照只在第六节
         except Exception as me:
             print("掩码对照构建失败（软降级，仅出全量口径）：%r" % (me,))
             mask_compare = None
-    text, sidecar = build_report(data, factor_keys, args.main_horizon, args.days or None,
-                                 mask_compare=mask_compare)
+    text, sidecar = build_report(
+        data, factor_keys, args.main_horizon, args.days or None, mask_compare=mask_compare
+    )
     with open(args.out, "w", encoding="utf-8-sig") as fh:
         fh.write(text)
     with open(args.json_out, "w", encoding="utf-8") as fh:
@@ -644,8 +875,9 @@ def run(argv=None):
     # 主周期累计归因曲线
     main_events = data.get(args.main_horizon, [])
     if len(main_events) >= config.ATTR_MIN_SAMPLE:
-        a = attribute_horizon(main_events, factor_keys,
-                              oos_ratio=config.ATTR_OOS_RATIO, x_eps=config.ATTR_X_EPS)
+        a = attribute_horizon(
+            main_events, factor_keys, oos_ratio=config.ATTR_OOS_RATIO, x_eps=config.ATTR_X_EPS
+        )
         write_curve(args.curve, factor_curve(main_events, a, factor_keys), factor_keys)
     for h in horizons:
         print("%s n=%d" % (HORIZON_LABEL.get(h, h), len(data.get(h, []))))
@@ -662,9 +894,16 @@ def selftest():
     keys = ["A", "B", "C"]
 
     # 1) 方向化暴露符号：做空时正 part → 负暴露（parse 层）
-    row = {"direction_int": -1, "ret": -0.01, "parts_json": json.dumps({"A": 2.0}),
-           "cat": "有色", "sym": "CU", "score_band": "轻仓", "entry_ts": "2026-01-01",
-           "horizon_min": 1440}
+    row = {
+        "direction_int": -1,
+        "ret": -0.01,
+        "parts_json": json.dumps({"A": 2.0}),
+        "cat": "有色",
+        "sym": "CU",
+        "score_band": "轻仓",
+        "entry_ts": "2026-01-01",
+        "horizon_min": 1440,
+    }
     e = parse_event_row(row, keys)
     assert e["x"]["A"] == -2.0 and abs(e["y"] + 0.01) < 1e-12 and e["dir"] == -1
     # 动态原油键归一
@@ -679,13 +918,18 @@ def selftest():
     for i in range(40):
         a = (i % 5) - 2
         b = ((i * 3) % 7) - 3
-        evs.append(_ev(0.001 + 2.0 * a - 1.0 * b, {"A": float(a), "B": float(b), "C": 0.0},
-                       ts="2026-%02d-%02d" % (i // 28 + 1, i % 28 + 1)))
+        evs.append(
+            _ev(
+                0.001 + 2.0 * a - 1.0 * b,
+                {"A": float(a), "B": float(b), "C": 0.0},
+                ts="2026-%02d-%02d" % (i // 28 + 1, i % 28 + 1),
+            )
+        )
     att = factor_attribution(evs, keys, x_eps=0.05)
-    assert "C" in att["dropped"]                       # 零方差列被剔除
+    assert "C" in att["dropped"]  # 零方差列被剔除
     assert abs(att["alpha"] - 0.001) < 1e-9, att
     assert abs(att["beta"]["A"] - 2.0) < 1e-9 and abs(att["beta"]["B"] + 1.0) < 1e-9
-    assert abs(att["closure_resid"]) < 1e-12, att      # 严格闭合
+    assert abs(att["closure_resid"]) < 1e-12, att  # 严格闭合
     assert att["r2"] > 0.999
 
     # 3) 空样本 / 全零方差安全降级，不抛异常
@@ -697,23 +941,25 @@ def selftest():
     # 4) BHB 手算两板块 + 恒等式闭合
     #   板块1: wp=0.6,wb=0.5,rp=0.10,rb=0.08 → AR=.1*.08=.008 SR=.5*.02=.01 IR=.1*.02=.002
     #   板块2: wp=0.4,wb=0.5,rp=0.02,rb=0.04 → AR=-.1*.04=-.004 SR=.5*(-.02)=-.01 IR=(-.1)*(-.02)=.002
-    stats = {"S1": {"wp": 0.6, "rp": 0.10, "rb": 0.08},
-             "S2": {"wp": 0.4, "rp": 0.02, "rb": 0.04}}
+    stats = {"S1": {"wp": 0.6, "rp": 0.10, "rb": 0.08}, "S2": {"wp": 0.4, "rp": 0.02, "rb": 0.04}}
     wb = {"S1": 0.5, "S2": 0.5}
     r = bhb(stats, wb)
     assert abs(r["sectors"][0]["alloc"] - 0.008) < 1e-12
     assert abs(r["sectors"][0]["select"] - 0.010) < 1e-12
     assert abs(r["sectors"][0]["inter"] - 0.002) < 1e-12
     assert abs(r["sectors"][1]["alloc"] + 0.004) < 1e-12
-    assert abs(r["port_ret"] - 0.068) < 1e-12        # .6*.1+.4*.02
-    assert abs(r["bench_ret"] - 0.060) < 1e-12       # .5*.08+.5*.04
+    assert abs(r["port_ret"] - 0.068) < 1e-12  # .6*.1+.4*.02
+    assert abs(r["bench_ret"] - 0.060) < 1e-12  # .5*.08+.5*.04
     assert abs(r["excess"] - 0.008) < 1e-12
-    assert abs(r["closure_resid"]) < 1e-12           # AR+SR+IR=excess
+    assert abs(r["closure_resid"]) < 1e-12  # AR+SR+IR=excess
     assert abs(r["total"] - (0.008 - 0.004 + 0.010 - 0.010 + 0.002 + 0.002)) < 1e-12
 
     # 5) events_to_sector_stats：wp 归一、rb=无方向均涨（rp=方向化）
-    es = [_ev(0.02, {"A": 1}, "S1", d=1), _ev(0.04, {"A": 1}, "S1", d=1),
-          _ev(-0.02, {"A": 1}, "S2", d=-1)]
+    es = [
+        _ev(0.02, {"A": 1}, "S1", d=1),
+        _ev(0.04, {"A": 1}, "S1", d=1),
+        _ev(-0.02, {"A": 1}, "S2", d=-1),
+    ]
     st = events_to_sector_stats(es)
     assert abs(st["S1"]["wp"] - 2 / 3) < 1e-12
     assert abs(st["S1"]["rp"] - 0.03) < 1e-12
@@ -739,16 +985,22 @@ def selftest():
     assert "BHB" in text and "闭合误差" in text
     assert sc["horizons"][1440]["enough"] is True
     assert abs(sc["horizons"][1440]["bhb"]["closure_resid"]) < 1e-12
-    json.dumps(_json_safe(sc), allow_nan=False)       # sidecar 必须 JSON 安全（无 NaN）
+    json.dumps(_json_safe(sc), allow_nan=False)  # sidecar 必须 JSON 安全（无 NaN）
 
     # 9) 第73轮 掩码拆分：锁板/临交割剔除、无覆盖分列、coverage 正确
-    msk = {"RB": {"2026-01-01": {"locked": True, "near_delivery": False, "tradable": False},
-                  "2026-01-02": {"locked": False, "near_delivery": True, "tradable": False},
-                  "2026-01-03": {"locked": False, "near_delivery": False, "tradable": True}}}
-    evs9 = [_ev(0.01, {"A": 1.0}, ts="2026-01-01 09:00:00", sym="RB"),
-            _ev(0.01, {"A": 1.0}, ts="2026-01-02 09:00:00", sym="RB"),
-            _ev(0.01, {"A": 1.0}, ts="2026-01-03 09:00:00", sym="RB"),
-            _ev(0.01, {"A": 1.0}, ts="2026-01-03 09:00:00", sym="XX")]
+    msk = {
+        "RB": {
+            "2026-01-01": {"locked": True, "near_delivery": False, "tradable": False},
+            "2026-01-02": {"locked": False, "near_delivery": True, "tradable": False},
+            "2026-01-03": {"locked": False, "near_delivery": False, "tradable": True},
+        }
+    }
+    evs9 = [
+        _ev(0.01, {"A": 1.0}, ts="2026-01-01 09:00:00", sym="RB"),
+        _ev(0.01, {"A": 1.0}, ts="2026-01-02 09:00:00", sym="RB"),
+        _ev(0.01, {"A": 1.0}, ts="2026-01-03 09:00:00", sym="RB"),
+        _ev(0.01, {"A": 1.0}, ts="2026-01-03 09:00:00", sym="XX"),
+    ]
     kept9, exc9, st9 = split_events_by_mask(evs9, msk)
     assert st9["n_total"] == 4 and st9["n_locked"] == 1 and st9["n_near_delivery"] == 1
     assert st9["n_no_mask"] == 1 and st9["n_kept"] == 1 and st9["n_excluded"] == 3
@@ -759,25 +1011,46 @@ def selftest():
     # 10) 掩码对照摘要：保留样本足够且暴露有方差时出 β 符号一致率；空事件 coverage=None
     mc9 = mask_compare_horizon(evs9, kept9, ["A"], oos_ratio=0.3, x_eps=0.05, min_sample=2)
     assert mc9["n_total"] == 4 and mc9["n_kept"] == 1 and mc9["enough"] is False
-    kept_vary = [_ev(0.01 + 0.01 * (i % 3), {"A": float((i % 3) - 1)},
-                     ts="2026-01-03 09:00:00", sym="RB") for i in range(6)]
-    mc10 = mask_compare_horizon(evs9 + kept_vary, kept_vary, ["A"], oos_ratio=0.3,
-                                x_eps=0.05, min_sample=2)
+    kept_vary = [
+        _ev(0.01 + 0.01 * (i % 3), {"A": float((i % 3) - 1)}, ts="2026-01-03 09:00:00", sym="RB")
+        for i in range(6)
+    ]
+    mc10 = mask_compare_horizon(
+        evs9 + kept_vary, kept_vary, ["A"], oos_ratio=0.3, x_eps=0.05, min_sample=2
+    )
     assert mc10["enough"] is True and mc10["beta_sign_agree"] is not None
     assert split_events_by_mask([], msk)[2]["coverage"] is None
     # 11) build_report 掩码对照段渲染 + sidecar 键
-    text_m, sc_m = build_report(data, ["A", "B", "C"], 1440,
-                                mask_compare={"per_h": {1440: dict(
-                                    mask_compare_horizon(data[1440], data[1440][:80], ["A", "B", "C"],
-                                                         0.3, 0.05, min_sample=40),
-                                    stats={"n_total": 80, "n_locked": 1, "n_near_delivery": 2,
-                                           "n_no_mask": 3, "n_kept": 74, "n_excluded": 6,
-                                           "coverage": 0.925})}})
+    text_m, sc_m = build_report(
+        data,
+        ["A", "B", "C"],
+        1440,
+        mask_compare={
+            "per_h": {
+                1440: dict(
+                    mask_compare_horizon(
+                        data[1440], data[1440][:80], ["A", "B", "C"], 0.3, 0.05, min_sample=40
+                    ),
+                    stats={
+                        "n_total": 80,
+                        "n_locked": 1,
+                        "n_near_delivery": 2,
+                        "n_no_mask": 3,
+                        "n_kept": 74,
+                        "n_excluded": 6,
+                        "coverage": 0.925,
+                    },
+                )
+            }
+        },
+    )
     assert "可交易性掩码对照" in text_m and "剔除明细" in text_m
     json.dumps(_json_safe(sc_m), allow_nan=False)
 
-    print("attribution selftest ALL PASS（方向化暴露/OLS恢复与闭合/零方差安全/"
-          "BHB手算与恒等式/板块统计/累计曲线闭合/IS-OOS/报告结构/掩码拆分/掩码对照摘要/掩码报告渲染 共11组）")
+    print(
+        "attribution selftest ALL PASS（方向化暴露/OLS恢复与闭合/零方差安全/"
+        "BHB手算与恒等式/板块统计/累计曲线闭合/IS-OOS/报告结构/掩码拆分/掩码对照摘要/掩码报告渲染 共11组）"
+    )
     return 0
 
 

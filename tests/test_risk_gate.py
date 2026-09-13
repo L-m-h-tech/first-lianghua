@@ -1,14 +1,24 @@
-# -*- coding: utf-8 -*-
 """独立风控闸门回归（第18轮 A2，pass/warn/veto；默认只标注不改分）。"""
+
 import config
 import risk_gate
-from risk_gate import PASS, WARN, VETO
+from risk_gate import PASS, VETO, WARN
 
 
 def base_row(**kw):
-    row = {"score": 3.0, "price": 3500.0, "chg": 0.001, "volume": 100000,
-           "conf": 80, "hv_percentile": 0.5, "flow": {}, "risks": [],
-           "month_note": "", "label": "偏多", "advice": "x"}
+    row = {
+        "score": 3.0,
+        "price": 3500.0,
+        "chg": 0.001,
+        "volume": 100000,
+        "conf": 80,
+        "hv_percentile": 0.5,
+        "flow": {},
+        "risks": [],
+        "month_note": "",
+        "label": "偏多",
+        "advice": "x",
+    }
     row.update(kw)
     return row
 
@@ -74,7 +84,7 @@ def test_apply_gate_default_no_downgrade(monkeypatch):
     monkeypatch.setattr(config, "RISK_GATE_AUTO_DOWNGRADE", False)
     row = risk_gate.apply_gate(base_row(price=0))
     assert row["risk"]["level"] == VETO
-    assert row["label"] == "偏多"                       # 默认不改标签
+    assert row["label"] == "偏多"  # 默认不改标签
     assert "label_before_gate" not in row
 
 
@@ -93,6 +103,7 @@ def test_level_rank():
 
 
 # ---------- 第138轮 E5：动态黑名单 ----------
+
 
 def test_blacklist_block_after_fail_rounds():
     st = {}
@@ -122,7 +133,7 @@ def test_blacklist_ok_resets_fail_streak():
     st = {}
     risk_gate.record_streak(st, "CU", ok=False)
     risk_gate.record_streak(st, "CU", ok=False)
-    risk_gate.record_streak(st, "CU", ok=True)      # 一轮有效 → fail_streak 清零
+    risk_gate.record_streak(st, "CU", ok=True)  # 一轮有效 → fail_streak 清零
     for _ in range(2):
         risk_gate.record_streak(st, "CU", ok=False)
     assert risk_gate.is_blocked(st, "CU") is False  # 需重新累积 3 轮
@@ -132,8 +143,14 @@ def test_evaluate_respects_blacklist():
     st = {}
     for _ in range(3):
         risk_gate.record_streak(st, "RB", ok=False)
-    row = {"score": 6.0, "price": 3000.0, "volume": 1000, "sym": "RB", "chg": 0.01,
-           "_blacklist": st}
+    row = {
+        "score": 6.0,
+        "price": 3000.0,
+        "volume": 1000,
+        "sym": "RB",
+        "chg": 0.01,
+        "_blacklist": st,
+    }
     g = risk_gate.evaluate(row)
     assert g["level"] == risk_gate.VETO
     assert any("黑名单" in r for r in g["reasons"])

@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """第57轮 G2第一切片 factor_plugin 插件宿主的单测：契约校验/注册表/隔离求值/catalog一致性/主链零接入。"""
+
 import os
 import sys
 
@@ -9,7 +9,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import factor_plugin as fp       # noqa: E402
+import factor_plugin as fp  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +68,7 @@ def test_evaluate_isolation():
 def test_wrap_function():
     def f(ctx):
         return 7
+
     fp.register(fp.wrap_function("wf", f, meta={"external": True}))
     assert fp.evaluate({}, "wf") == (7, None)
 
@@ -105,13 +106,20 @@ def test_example_plugins_values():
 
 def test_main_chain_plugin_boundary():
     """G2 切片铁律：main.py 永不接插件层；analyzer 第60轮最后一切片起仅允许函数内惰性 import、受默认关开关门控。"""
-    main_src = open(os.path.join(_ROOT, "main.py", ), "r", encoding="utf-8").read()
+    main_src = open(
+        os.path.join(
+            _ROOT,
+            "main.py",
+        ),
+        encoding="utf-8",
+    ).read()
     assert "factor_plugin" not in main_src and "factor_parts" not in main_src
-    az = open(os.path.join(_ROOT, "analyzer.py"), "r", encoding="utf-8").read()
+    az = open(os.path.join(_ROOT, "analyzer.py"), encoding="utf-8").read()
     # 不得有模块顶层 import（行首无缩进）插件层
     for line in az.splitlines():
         if line.startswith(("import ", "from ")):
             assert "factor_plugin" not in line and "factor_parts" not in line
     # 最后一切片必须有开关（第61轮起默认开）与回退 helper
     import config
+
     assert config.PLUGIN_PARTS_ENABLED is True and "_parts_via_plugins" in az

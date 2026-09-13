@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""成交量 PCR 采集器 tools/pcr_vol_collector.py（第132轮，研究侧）。
 
 补齐期权成交量 PCR 数据源（option_chains.pcr_vol 预留字段的独立日表实现）：
@@ -26,13 +25,13 @@ source 字段记录实际来源（akshare/tqsdk），便于后续口径对照。
 CLI: python tools/pcr_vol_collector.py [--backfill 15] [--syms RB,MA,SR] [--limit 0]
      [--selftest]
 """
+
 import argparse
-import json
 import os
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -40,11 +39,13 @@ for _p in (_ROOT, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import config                     # noqa: E402  （导入即 load_dotenv：TQ_ACCOUNT/TQ_PASSWORD）
+import config  # noqa: E402
 
 # vendor 路径（与 backup_sources 同款候选）
-for _v in (os.path.join(os.path.dirname(os.path.dirname(config.BASE_DIR)), "vendor"),
-           os.path.join(os.path.dirname(config.BASE_DIR), "vendor")):
+for _v in (
+    os.path.join(os.path.dirname(os.path.dirname(config.BASE_DIR)), "vendor"),
+    os.path.join(os.path.dirname(config.BASE_DIR), "vendor"),
+):
     if _v and os.path.isdir(_v) and _v not in sys.path:
         sys.path.insert(0, _v)
 
@@ -84,19 +85,23 @@ def _tq_symbols(ex, sym, expiry):
     sym_u, sym_l = sym.upper(), sym.lower()
     ex = str(ex).upper()
     if ex == "CZCE":
-        return ["CZCE.%s%s" % (sym_u, str(expiry)[1:]), "CZCE.%s%s" % (sym_u, expiry),
-                "CZCE.%s%s" % (sym_l, expiry)]
+        return [
+            "CZCE.%s%s" % (sym_u, str(expiry)[1:]),
+            "CZCE.%s%s" % (sym_u, expiry),
+            "CZCE.%s%s" % (sym_l, expiry),
+        ]
     return ["%s.%s%s" % (ex, sym_l, expiry)]
 
 
 def _retry(fn, attempts=3, delays=(3, 6)):
     """天勤合约服务/行情查询重试（周六晚例行维护窗口服务不稳；TqTimeoutError 常见）。"""
     import time as _time
+
     last = None
     for k in range(attempts):
         try:
             return fn()
-        except Exception as e:                    # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             last = e
             if k < attempts - 1:
                 _time.sleep(delays[min(k, len(delays) - 1)])
@@ -104,9 +109,13 @@ def _retry(fn, attempts=3, delays=(3, 6)):
 
 
 # ---------------- AKShare 交易所快源（第133轮） ----------------
-_EX_FN = {"SHFE": "option_hist_shfe", "CZCE": "option_hist_czce",
-          "DCE": "option_hist_dce", "GFEX": "option_hist_gfex"}
-_AK_NAME_FIX = {"热卷": "热轧卷板"}          # config 中文名与交易所期权品种名的实测差异
+_EX_FN = {
+    "SHFE": "option_hist_shfe",
+    "CZCE": "option_hist_czce",
+    "DCE": "option_hist_dce",
+    "GFEX": "option_hist_gfex",
+}
+_AK_NAME_FIX = {"热卷": "热轧卷板"}  # config 中文名与交易所期权品种名的实测差异
 
 
 def _ak_option_name(sym):
@@ -122,6 +131,7 @@ def _parse_contract(code):
     """期权合约代码 → (品种前缀大写, C/P, 行权价)；不匹配返 None。
     兼容 rb2610C2600 / MA610C2100 / m2611-C-3100（大商所连字符式）。"""
     import re
+
     m = re.match(r"^([A-Za-z]{1,3})(\d{3,4})[-]?([CP])[-]?(\d+(\.\d+)?)$", str(code or "").strip())
     if not m:
         return None
@@ -146,6 +156,7 @@ def akshare_variety_day(sym, ex, date_ymd):
         return None
     try:
         import akshare as ak
+
         fn = getattr(ak, fn_name, None)
         if fn is None:
             return None
@@ -218,10 +229,18 @@ def collect_variety(api, sym, ex, expiry, days, source="tqsdk", today=None):
     out = []
     for d in sorted(set(call_daily) | set(put_daily))[-days:]:
         cv, pv = call_daily.get(d, 0.0), put_daily.get(d, 0.0)
-        out.append({"sym": sym, "trade_date": d, "call_vol": cv, "put_vol": pv,
-                    "pcr_vol": round(pv / cv, 4) if cv > 0 else None,
-                    "n_calls": len(ids_c), "n_puts": len(ids_p),
-                    "source": source})
+        out.append(
+            {
+                "sym": sym,
+                "trade_date": d,
+                "call_vol": cv,
+                "put_vol": pv,
+                "pcr_vol": round(pv / cv, 4) if cv > 0 else None,
+                "n_calls": len(ids_c),
+                "n_puts": len(ids_p),
+                "source": source,
+            }
+        )
     return out
 
 
@@ -233,11 +252,22 @@ def write_rows(db, rows):
         conn.executescript(_PCR_VOL_DDL)
         n = 0
         for r in rows:
-            conn.execute("""INSERT OR REPLACE INTO option_pcr_vol
+            conn.execute(
+                """INSERT OR REPLACE INTO option_pcr_vol
                 (sym, trade_date, call_vol, put_vol, pcr_vol, n_calls, n_puts, source, created_real)
                 VALUES(?,?,?,?,?,?,?,?,?)""",
-                (r["sym"], r["trade_date"], r["call_vol"], r["put_vol"], r["pcr_vol"],
-                 r["n_calls"], r["n_puts"], r["source"], datetime.now().timestamp()))
+                (
+                    r["sym"],
+                    r["trade_date"],
+                    r["call_vol"],
+                    r["put_vol"],
+                    r["pcr_vol"],
+                    r["n_calls"],
+                    r["n_puts"],
+                    r["source"],
+                    datetime.now().timestamp(),
+                ),
+            )
             n += 1
         conn.commit()
         return n
@@ -264,13 +294,18 @@ def latest_expiries(monitor_db, syms=None):
 
 def recent_trading_days(monitor_db, n):
     """minute_bars(period=60) 的最近 n 个交易日（只读、离线——有 60m bar 的日必是交易日）。"""
-    rows = _q(monitor_db, """SELECT DISTINCT substr(bar_dt,1,10) d FROM minute_bars
-                             WHERE period=60 ORDER BY d DESC LIMIT ?""", (n,))
+    rows = _q(
+        monitor_db,
+        """SELECT DISTINCT substr(bar_dt,1,10) d FROM minute_bars
+                             WHERE period=60 ORDER BY d DESC LIMIT ?""",
+        (n,),
+    )
     return sorted(r[0] for r in rows)
 
 
 def _default_tq_api():
     from tqsdk import TqApi, TqAuth
+
     acc = (os.environ.get("TQ_ACCOUNT"), os.environ.get("TQ_PASSWORD"))
     return TqApi(auth=TqAuth(*acc), disable_print=True) if all(acc) else TqApi(disable_print=True)
 
@@ -280,8 +315,9 @@ def _ak_day(sym, ex, date_ymd):
     return akshare_variety_day(sym, ex, date_ymd)
 
 
-def run(backfill=1, syms=None, limit=0, monitor_db=None, mode="fast",
-        api_factory=None, ak_day_fn=None):
+def run(
+    backfill=1, syms=None, limit=0, monitor_db=None, mode="fast", api_factory=None, ak_day_fn=None
+):
     """成交量 PCR 采集。mode:
       - "fast"（默认，第133轮协同）：AKShare 交易所日行情批量快源（品种级×日期级，
         一次调用覆盖全合约）→ 未覆盖的 (品种,日期) 缺口由天勤逐合约补齐；
@@ -294,8 +330,10 @@ def run(backfill=1, syms=None, limit=0, monitor_db=None, mode="fast",
     if limit > 0:
         expiries = dict(list(expiries.items())[:limit])
     # sym(大写) -> 交易所：VARIETIES 键为中文品种名，需按值反查
-    ex_of = {str(vc.get("sym", "")).upper(): str(vc.get("ex", "")).upper()
-             for vc in config.VARIETIES.values()}
+    ex_of = {
+        str(vc.get("sym", "")).upper(): str(vc.get("ex", "")).upper()
+        for vc in config.VARIETIES.values()
+    }
     all_rows, errors = [], {}
 
     if mode == "tqsdk":
@@ -306,34 +344,53 @@ def run(backfill=1, syms=None, limit=0, monitor_db=None, mode="fast",
                     rows = collect_variety(api, sym, ex_of.get(sym, ""), expiry, backfill)
                     all_rows.extend(rows)
                     last = rows[-1] if rows else {}
-                    print("  %-4s %s: %d 日（最新 %s pcr_vol=%s）" % (
-                        sym, expiry, len(rows), last.get("trade_date"), last.get("pcr_vol")))
+                    print(
+                        "  %-4s %s: %d 日（最新 %s pcr_vol=%s）"
+                        % (sym, expiry, len(rows), last.get("trade_date"), last.get("pcr_vol"))
+                    )
                 except Exception as e:
                     errors[sym] = "%s: %s" % (type(e).__name__, str(e)[:400])
                     print("  %-4s %s: 失败 [%s] %s" % (sym, expiry, type(e).__name__, str(e)[:300]))
         finally:
             api.close()
         n = write_rows(monitor_db, all_rows)
-        return {"written": n, "mode": mode, "n_syms": len(expiries),
-                "ok_syms": len(expiries) - len(errors), "errors": errors, "rows": all_rows}
+        return {
+            "written": n,
+            "mode": mode,
+            "n_syms": len(expiries),
+            "ok_syms": len(expiries) - len(errors),
+            "errors": errors,
+            "rows": all_rows,
+        }
 
     # ---- fast 协同模式（第133轮） ----
     from concurrent.futures import ThreadPoolExecutor
+
     dates = recent_trading_days(monitor_db, backfill)
     if not dates:
         raise SystemExit("minute_bars 无交易日可推——先让主链积累分钟数据")
-    print("快模式: %d 个交易日 × %d 品种，AKShare 批量优先、天勤补缺口" % (len(dates), len(expiries)))
+    print(
+        "快模式: %d 个交易日 × %d 品种，AKShare 批量优先、天勤补缺口" % (len(dates), len(expiries))
+    )
 
     ak_day = ak_day_fn or _ak_day
     pairs = [(d, sym) for d in dates for sym in expiries]
-    ak_covered = {}                       # (sym, date) -> {call,put}
+    ak_covered = {}  # (sym, date) -> {call,put}
     with ThreadPoolExecutor(max_workers=6) as pool:
-        for (d, sym), r in zip(pairs, pool.map(lambda p: ak_day(p[1], ex_of.get(p[1], ""), p[0]), pairs)):
+        for (d, sym), r in zip(
+            pairs, pool.map(lambda p: ak_day(p[1], ex_of.get(p[1], ""), p[0]), pairs), strict=False
+        ):
             if r is not None:
-                ak_covered[(sym, d)] = {"call_vol": r[0], "put_vol": r[1],
-                                        "pcr_vol": round(r[1] / r[0], 4) if r[0] > 0 else None,
-                                        "sym": sym, "trade_date": d, "source": "akshare",
-                                        "n_calls": None, "n_puts": None}
+                ak_covered[(sym, d)] = {
+                    "call_vol": r[0],
+                    "put_vol": r[1],
+                    "pcr_vol": round(r[1] / r[0], 4) if r[0] > 0 else None,
+                    "sym": sym,
+                    "trade_date": d,
+                    "source": "akshare",
+                    "n_calls": None,
+                    "n_puts": None,
+                }
     print("  AKShare 覆盖 %d/%d 个 (品种,日期) 对" % (len(ak_covered), len(pairs)))
 
     # 天勤补缺口：按品种分组（一次 collect_variety 拿全日期，只写缺失对）
@@ -348,40 +405,67 @@ def run(backfill=1, syms=None, limit=0, monitor_db=None, mode="fast",
         try:
             for sym, want in sorted(missing_by_sym.items()):
                 try:
-                    rows = collect_variety(api, sym, ex_of.get(sym, ""), expiries[sym],
-                                           max(backfill, len(want) + 5),
-                                           today=max(dates))
+                    rows = collect_variety(
+                        api,
+                        sym,
+                        ex_of.get(sym, ""),
+                        expiries[sym],
+                        max(backfill, len(want) + 5),
+                        today=max(dates),
+                    )
                     for r in rows:
                         if r["trade_date"] in want:
                             r["source"] = "tqsdk"
                             tq_rows.append(r)
                             n_tq += 1
-                    print("  %-4s %s: 天勤补 %d/%d 日" % (
-                        sym, expiries[sym], min(n_tq, len(want)), len(want)))
+                    print(
+                        "  %-4s %s: 天勤补 %d/%d 日"
+                        % (sym, expiries[sym], min(n_tq, len(want)), len(want))
+                    )
                 except Exception as e:
                     errors[sym] = "%s: %s" % (type(e).__name__, str(e)[:400])
-                    print("  %-4s %s: 天勤补位失败 [%s] %s" % (
-                        sym, expiries[sym], type(e).__name__, str(e)[:200]))
+                    print(
+                        "  %-4s %s: 天勤补位失败 [%s] %s"
+                        % (sym, expiries[sym], type(e).__name__, str(e)[:200])
+                    )
         finally:
             api.close()
     n = write_rows(monitor_db, list(ak_covered.values()) + tq_rows)
-    return {"written": n, "mode": mode, "n_syms": len(expiries),
-            "ak_pairs": len(ak_covered), "tq_rows": n_tq,
-            "ok_syms": len(expiries) - len(errors), "errors": errors,
-            "dates": dates}
+    return {
+        "written": n,
+        "mode": mode,
+        "n_syms": len(expiries),
+        "ak_pairs": len(ak_covered),
+        "tq_rows": n_tq,
+        "ok_syms": len(expiries) - len(errors),
+        "errors": errors,
+        "dates": dates,
+    }
 
 
 def render(res):
-    L = ["成交量 PCR 采集（第132轮建能力 / 第133轮三源协同——不接因子/综合分）", "=" * 60,
-         "生成: %s ｜ 模式 %s ｜ 品种 %d（成功 %d，失败 %d）｜ 入库 %d 行" % (
-             res["generated"], res["mode"], res["n_syms"], res["ok_syms"],
-             len(res["errors"]), res["written"])]
+    L = [
+        "成交量 PCR 采集（第132轮建能力 / 第133轮三源协同——不接因子/综合分）",
+        "=" * 60,
+        "生成: %s ｜ 模式 %s ｜ 品种 %d（成功 %d，失败 %d）｜ 入库 %d 行"
+        % (
+            res["generated"],
+            res["mode"],
+            res["n_syms"],
+            res["ok_syms"],
+            len(res["errors"]),
+            res["written"],
+        ),
+    ]
     if res["mode"] == "fast":
-        L.append("AKShare 批量覆盖 %d 个 (品种,日期) ｜ 天勤补缺口 %d 行" % (
-            res.get("ak_pairs", 0), res.get("tq_rows", 0)))
+        L.append(
+            "AKShare 批量覆盖 %d 个 (品种,日期) ｜ 天勤补缺口 %d 行"
+            % (res.get("ak_pairs", 0), res.get("tq_rows", 0))
+        )
     if res["errors"]:
-        L.append("失败: " + "; ".join("%s:%s" % (k, v[:50]) for k, v in
-                                      list(res["errors"].items())[:8]))
+        L.append(
+            "失败: " + "; ".join("%s:%s" % (k, v[:50]) for k, v in list(res["errors"].items())[:8])
+        )
     L.append("用途：成交量 PCR=日内情绪（持仓量 PCR=慢变量）；是否做成因子等第129轮 PCR 影子")
     L.append("体检决策依据到位后由用户拍板——本采集器只保证数据在库（option_pcr_vol 表）。")
     return "\n".join(L)
@@ -390,52 +474,65 @@ def render(res):
 def selftest():
     """零网络合成断言：ns→日期/郑商所符号/日合计与 PCR/落库幂等。"""
     import tempfile
+
     # ① ns → 北京日期
     assert _ns_to_date(1788970000 * 1e9)[:10] >= "2026-09"
+
     # 周末占位行过滤：未来日期的零量行不得入库（2026-09-12 周六实测混入 09-14）
     class _Api:
         def query_options(self, under, option_class=None):
             return ["X"]
+
         def get_kline_serial(self, oid, duration_seconds, data_length):
             import pandas as _pd
-            return _pd.DataFrame([
-                {"datetime": 1789056000 * 1e9, "volume": 8.0},    # 09-11（周五，真实）
-                {"datetime": 1789342400 * 1e9, "volume": 0.0},    # 09-14（周一，未来占位）
-            ])
+
+            return _pd.DataFrame(
+                [
+                    {"datetime": 1789056000 * 1e9, "volume": 8.0},  # 09-11（周五，真实）
+                    {"datetime": 1789342400 * 1e9, "volume": 0.0},  # 09-14（周一，未来占位）
+                ]
+            )
+
     rows = collect_variety(_Api(), "RB", "SHFE", "2611", days=5, today="2026-09-12")
     assert all(r["trade_date"] <= "2026-09-12" for r in rows), rows
     assert len(rows) == 1 and rows[0]["call_vol"] == 8.0
     # ② 合约符号
     assert _tq_symbols("SHFE", "RB", "2611") == ["SHFE.rb2611"]
-    assert _tq_symbols("CZCE", "SR", "2611")[0] == "CZCE.SR611"   # 3位月优先
+    assert _tq_symbols("CZCE", "SR", "2611")[0] == "CZCE.SR611"  # 3位月优先
     assert _tq_symbols("CZCE", "SR", "2611")[1] == "CZCE.SR2611"  # 4位月候选
     assert _tq_symbols("DCE", "m", "2611") == ["DCE.m2611"]
+
     # ③ 按日合计 + PCR（合成 kline 行）
     class _FakeApi:
         def query_options(self, under, option_class=None):
             calls = ["SHFE.rb2611C100"]
             puts = ["SHFE.rb2611P100"]
             return puts if option_class == "PUT" else calls
+
         def get_kline_serial(self, oid, duration_seconds, data_length):
-            import pandas as pd
-            data = {"SHFE.rb2611C100": [(1788900000 * 1e9, 10.0), (1788986400 * 1e9, 20.0)],
-                    "SHFE.rb2611P100": [(1788900000 * 1e9, 5.0), (1788986400 * 1e9, 0.0)]}
+            data = {
+                "SHFE.rb2611C100": [(1788900000 * 1e9, 10.0), (1788986400 * 1e9, 20.0)],
+                "SHFE.rb2611P100": [(1788900000 * 1e9, 5.0), (1788986400 * 1e9, 0.0)],
+            }
             import pandas as _pd
+
             rows = data[oid]
             return _pd.DataFrame([{"datetime": d, "volume": v} for d, v in rows])
+
     rows = collect_variety(_FakeApi(), "RB", "SHFE", "2611", days=5, source="tqsdk")
     by_d = {r["trade_date"]: r for r in rows}
     assert len(rows) == 2 and rows[0]["call_vol"] == 10.0 and rows[0]["put_vol"] == 5.0
     assert abs(rows[0]["pcr_vol"] - 0.5) < 1e-9
-    assert rows[1]["pcr_vol"] is None or rows[1]["pcr_vol"] == 0.0   # call=0 → None
+    assert rows[1]["pcr_vol"] is None or rows[1]["pcr_vol"] == 0.0  # call=0 → None
     # ④ 落库幂等（tmp 库）
     tmp = os.path.join(tempfile.mkdtemp(prefix="pcrvol_"), "m.db")
     assert write_rows(tmp, rows) == 2
-    assert write_rows(tmp, rows) == 2                                 # REPLACE 幂等
+    assert write_rows(tmp, rows) == 2  # REPLACE 幂等
     conn = sqlite3.connect(tmp)
     n = conn.execute("SELECT COUNT(*) FROM option_pcr_vol").fetchone()[0]
     conn.close()
     assert n == 2
+
     # ⑤ fast 协同编排：AKShare 只覆盖 RB → MA 落天勤补位（fake 注入，零网络）
     def fake_ak(sym, ex, date_ymd):
         return (10.0, 5.0) if sym == "RB" else None
@@ -449,28 +546,40 @@ def selftest():
 
         def get_kline_serial(self, oid, duration_seconds, data_length):
             import pandas as _pd
-            return _pd.DataFrame([{"datetime": 1789056000 * 1e9, "volume": 4.0},
-                                  {"datetime": 1789342400 * 1e9, "volume": 0.0}])
+
+            return _pd.DataFrame(
+                [
+                    {"datetime": 1789056000 * 1e9, "volume": 4.0},
+                    {"datetime": 1789342400 * 1e9, "volume": 0.0},
+                ]
+            )
 
     tmp2 = os.path.join(tempfile.mkdtemp(prefix="pcrvol2_"), "m2.db")
     conn = sqlite3.connect(tmp2)
-    conn.executescript(_PCR_VOL_DDL)               # 先建表：latest_expiries 以只读打开，文件须存在
-    conn.execute("CREATE TABLE option_chains(id INTEGER PRIMARY KEY, ts TEXT, cycle INTEGER,"
-                 " sym TEXT, expiry TEXT, put_oi REAL, call_oi REAL, pcr_oi REAL)")
-    conn.execute("CREATE TABLE minute_bars(id INTEGER PRIMARY KEY, sym TEXT, period INTEGER,"
-                 " bar_dt TEXT, c REAL)")
+    conn.executescript(_PCR_VOL_DDL)  # 先建表：latest_expiries 以只读打开，文件须存在
+    conn.execute(
+        "CREATE TABLE option_chains(id INTEGER PRIMARY KEY, ts TEXT, cycle INTEGER,"
+        " sym TEXT, expiry TEXT, put_oi REAL, call_oi REAL, pcr_oi REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE minute_bars(id INTEGER PRIMARY KEY, sym TEXT, period INTEGER,"
+        " bar_dt TEXT, c REAL)"
+    )
     for d in ("2026-09-10", "2026-09-11"):
         for s in ("RB", "MA"):
-            conn.execute("INSERT INTO minute_bars(sym,period,bar_dt,c) VALUES(?,60,?,1)",
-                         (s, d + " 23:00"))
-    conn.execute("INSERT INTO option_chains(ts,cycle,sym,expiry,put_oi,call_oi,pcr_oi)"
-                 " VALUES('2026-09-11 23:00:03',1,'RB','2611',1,2,0.5),"
-                 "('2026-09-11 23:00:03',1,'MA','2611',1,2,0.5)")
+            conn.execute(
+                "INSERT INTO minute_bars(sym,period,bar_dt,c) VALUES(?,60,?,1)", (s, d + " 23:00")
+            )
+    conn.execute(
+        "INSERT INTO option_chains(ts,cycle,sym,expiry,put_oi,call_oi,pcr_oi)"
+        " VALUES('2026-09-11 23:00:03',1,'RB','2611',1,2,0.5),"
+        "('2026-09-11 23:00:03',1,'MA','2611',1,2,0.5)"
+    )
     conn.commit()
     conn.close()
     res = run(backfill=2, monitor_db=tmp2, mode="fast", api_factory=_TqApi, ak_day_fn=fake_ak)
-    assert res["ak_pairs"] == 2, res          # RB 两天被 AKShare 覆盖
-    assert res["tq_rows"] == 1, res           # MA 09-11 落天勤；09-10 天勤无数据 → 诚实缺口不编造
+    assert res["ak_pairs"] == 2, res  # RB 两天被 AKShare 覆盖
+    assert res["tq_rows"] == 1, res  # MA 09-11 落天勤；09-10 天勤无数据 → 诚实缺口不编造
     conn = sqlite3.connect(tmp2)
     srcs = dict(conn.execute("SELECT sym, source FROM option_pcr_vol"))
     dates_ma = [r[0] for r in conn.execute("SELECT trade_date FROM option_pcr_vol WHERE sym='MA'")]
@@ -483,10 +592,15 @@ def selftest():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="成交量 PCR 采集器（天勤TqSdk，研究侧）")
-    ap.add_argument("--backfill", type=int, default=1,
-                    help="fast模式默认1=增量最新交易日；tqsdk模式建议15")
-    ap.add_argument("--mode", choices=("fast", "tqsdk"), default="fast",
-                    help="fast=AKShare批量+天勤补缺口（默认）；tqsdk=全品种逐合约日K（旧路径）")
+    ap.add_argument(
+        "--backfill", type=int, default=1, help="fast模式默认1=增量最新交易日；tqsdk模式建议15"
+    )
+    ap.add_argument(
+        "--mode",
+        choices=("fast", "tqsdk"),
+        default="fast",
+        help="fast=AKShare批量+天勤补缺口（默认）；tqsdk=全品种逐合约日K（旧路径）",
+    )
     ap.add_argument("--syms", default="", help="品种逗号分隔；缺省=option_chains 全部 sym")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个品种（0=全部）")
     ap.add_argument("--selftest", action="store_true")

@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """G5（第47轮）portfolio_risk 纯函数零网络/零面板确定性测试：不读 research_panel.db、不碰生产库。"""
+
 import math
 
 import pytest
@@ -35,7 +35,7 @@ def test_sector_block():
     R = [[1, 0.9, 0.1], [0.9, 1, 0.2], [0.1, 0.2, 1]]
     secs, M = pr.sector_corr_block(R, ["a", "b", "c"], lambda s: "X" if s != "c" else "Y")
     assert secs == ["X", "Y"]
-    assert abs(M[0][0] - 0.9) < 1e-12          # X 内仅 a-b
+    assert abs(M[0][0] - 0.9) < 1e-12  # X 内仅 a-b
     assert abs(M[0][1] - (0.1 + 0.2) / 2) < 1e-12
 
 
@@ -65,7 +65,7 @@ def test_historical_var():
     assert hv["n"] == 100
     for d in hv["levels"].values():
         assert d["var"] >= 0 and d["es"] >= d["var"] - 1e-12 and d["tail_n"] >= 1
-    assert abs(hv["worst"] - 0.050) < 1e-9      # 最小收益 0.001*(0-50)=-0.050
+    assert abs(hv["worst"] - 0.050) < 1e-9  # 最小收益 0.001*(0-50)=-0.050
     assert pr.historical_var([])["n"] == 0
 
 
@@ -92,7 +92,7 @@ def test_parametric_var_unknown_level_raises():
 # ---------- beta / 压力 ----------
 def test_oil_betas_exact_linear():
     x = [0.01 * ((i % 5) - 2) for i in range(20)]
-    y = [2 * v + 0.001 for v in x]             # 斜率2、带截距不影响协方差斜率
+    y = [2 * v + 0.001 for v in x]  # 斜率2、带截距不影响协方差斜率
     C = pc.covariance([y, x])
     betas, r2 = pr.oil_betas(C, 1)
     assert abs(betas[0] - 2.0) < 1e-9 and abs(r2[0] - 1.0) < 1e-9
@@ -104,7 +104,7 @@ def test_stress_oil():
     betas = [2.0, 0.5]
     tot, contrib = pr.stress_oil([1.0, 0.0], betas, -0.05)
     assert abs(tot + 0.10) < 1e-12
-    assert contrib[0][0] == 0                   # 贡献最大者排第一
+    assert contrib[0][0] == 0  # 贡献最大者排第一
     tot_up, _ = pr.stress_oil([0.5, 0.5], betas, 0.05)
     assert abs(tot_up - (0.5 * 2 * 0.05 + 0.5 * 0.5 * 0.05)) < 1e-12
 
@@ -120,17 +120,19 @@ def test_diversification_benefit():
 # ---------- 端到端 ----------
 def test_risk_snapshot_end_to_end():
     import random
+
     random.seed(7)
     common = [random.gauss(0, 1) for _ in range(100)]
     rab = [[0.01 * common[t] + random.gauss(0, 0.004) for t in range(100)] for _ in range(4)]
-    snap = pr.risk_snapshot(rab, [0.25] * 4, oil_idx=0, sector_of=lambda s: "S",
-                            syms=["a", "b", "c", "d"])
+    snap = pr.risk_snapshot(
+        rab, [0.25] * 4, oil_idx=0, sector_of=lambda s: "S", syms=["a", "b", "c", "d"]
+    )
     assert snap["n_assets"] == 4 and snap["n_days"] == 100
     assert abs(snap["w_sum"] - 1) < 1e-9
     assert 0 <= snap["avg_abs_corr"] <= 1
     assert snap["hist"]["levels"][0.95]["es"] >= snap["hist"]["levels"][0.95]["var"] - 1e-12
     assert set(snap["oil_stress"]) == {-0.05, -0.10, 0.05}
-    assert "sector_block" in snap and len(snap["strongest_pairs"]) == 6   # C(4,2)=6 对
+    assert "sector_block" in snap and len(snap["strongest_pairs"]) == 6  # C(4,2)=6 对
 
 
 def test_risk_snapshot_degenerate():

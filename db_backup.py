@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G19（第46轮）数据库在线热备份 + 滚动保留 + 开机自启/定时任务导出 + 灾备恢复：db_backup.py。
 
 纯标准库（sqlite3/os/shutil/argparse/json），**只读源库、只写 backup/**，不接 main 主循环、不改综合分、
@@ -24,8 +23,8 @@ r"""G19（第46轮）数据库在线热备份 + 滚动保留 + 开机自启/定�
 
 无参 = 零网络/零生产库的合成自测（在 tmp 目录造库演练备份/滚动/恢复/XML），带参才执行真实动作。
 """
+
 import argparse
-import io
 import json
 import os
 import shutil
@@ -52,7 +51,7 @@ def read_version(root=_HERE):
     """读 VERSION（去 BOM/空白）；缺失返 unknown，不抛。"""
     p = os.path.join(root, "VERSION")
     try:
-        with io.open(p, "r", encoding="utf-8-sig") as f:
+        with open(p, encoding="utf-8-sig") as f:
             return f.read().strip() or "unknown"
     except OSError:
         return "unknown"
@@ -70,7 +69,7 @@ def parse_backup_stamp(filename):
     """从本工具命名的备份文件名解析时间戳 datetime；不合规返 None（用于只认自己的文件、防误删）。"""
     if not (filename.startswith(BACKUP_PREFIX) and filename.endswith(BACKUP_SUFFIX)):
         return None
-    mid = filename[len(BACKUP_PREFIX):-len(BACKUP_SUFFIX)]
+    mid = filename[len(BACKUP_PREFIX) : -len(BACKUP_SUFFIX)]
     try:
         return datetime.strptime(mid, "%Y%m%d-%H%M%S")
     except ValueError:
@@ -97,8 +96,8 @@ def prune_plan(filenames, keep):
         return [], list(filenames)
     if len(filenames) <= keep:
         return [], list(filenames)
-    drop = list(filenames[:len(filenames) - keep])
-    stay = list(filenames[len(filenames) - keep:])
+    drop = list(filenames[: len(filenames) - keep])
+    stay = list(filenames[len(filenames) - keep :])
     return drop, stay
 
 
@@ -121,7 +120,7 @@ def parse_paper_backup(filename):
     （与 config PAPER_ACCOUNTS 的 paper_{name}.db 命名一致），其余文件一律不识别不清理。"""
     if not filename.endswith(BACKUP_SUFFIX):
         return None
-    stem = filename[:-len(BACKUP_SUFFIX)]
+    stem = filename[: -len(BACKUP_SUFFIX)]
     db_name, sep, stamp_str = stem.rpartition("_")
     if not sep or not db_name or not db_name.startswith("paper_"):
         return None
@@ -191,7 +190,7 @@ def table_row_counts(conn):
         ).fetchall()
         for (name,) in rows:
             try:
-                counts[name] = int(conn.execute("SELECT COUNT(*) FROM \"%s\"" % name).fetchone()[0])
+                counts[name] = int(conn.execute('SELECT COUNT(*) FROM "%s"' % name).fetchone()[0])
             except sqlite3.DatabaseError:
                 counts[name] = None
     except sqlite3.DatabaseError:
@@ -232,8 +231,15 @@ def online_backup(src_path, dst_path):
     return os.path.getsize(dst_path)
 
 
-def backup_once(src_path, backup_dir=DEFAULT_BACKUP_DIR, keep=DEFAULT_KEEP, stamp=None,
-                write_sidecar=True, do_prune=True, name=None):
+def backup_once(
+    src_path,
+    backup_dir=DEFAULT_BACKUP_DIR,
+    keep=DEFAULT_KEEP,
+    stamp=None,
+    write_sidecar=True,
+    do_prune=True,
+    name=None,
+):
     """执行一次完整备份：源 quick_check（抢救性仍备份但标注）→ 在线热备 → 副本 quick_check
     （不过即删副本抛错）→ 写 sidecar → 滚动清理。返回结果 dict。
     name：显式指定备份文件名（纸面库用 <源库名>_<stamp>.db 命名）；缺省 monitor_<stamp>.db。
@@ -276,12 +282,19 @@ def backup_once(src_path, backup_dir=DEFAULT_BACKUP_DIR, keep=DEFAULT_KEEP, stam
     sidecar = None
     if write_sidecar:
         sidecar = dst_path + ".json"
-        meta = {"backup_file": name, "created": stamp.strftime("%Y-%m-%d %H:%M:%S"),
-                "source": os.path.abspath(src_path), "source_bytes": src_size,
-                "source_quick_check": src_qc, "backup_bytes": dst_size,
-                "backup_quick_check": dst_qc, "table_rows": counts,
-                "version": read_version(), "tool": "db_backup.py"}
-        with io.open(sidecar, "w", encoding="utf-8", newline="\n") as f:
+        meta = {
+            "backup_file": name,
+            "created": stamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "source": os.path.abspath(src_path),
+            "source_bytes": src_size,
+            "source_quick_check": src_qc,
+            "backup_bytes": dst_size,
+            "backup_quick_check": dst_qc,
+            "table_rows": counts,
+            "version": read_version(),
+            "tool": "db_backup.py",
+        }
+        with open(sidecar, "w", encoding="utf-8", newline="\n") as f:
             json.dump(meta, f, ensure_ascii=False, indent=1, allow_nan=False)
 
     dropped = []
@@ -297,15 +310,28 @@ def backup_once(src_path, backup_dir=DEFAULT_BACKUP_DIR, keep=DEFAULT_KEEP, stam
                     pass
             dropped.append(dn)
 
-    return {"backup": dst_path, "name": name, "source_bytes": src_size,
-            "source_quick_check": src_qc, "backup_bytes": dst_size,
-            "backup_quick_check": dst_qc, "table_rows": counts,
-            "sidecar": sidecar, "pruned": dropped}
+    return {
+        "backup": dst_path,
+        "name": name,
+        "source_bytes": src_size,
+        "source_quick_check": src_qc,
+        "backup_bytes": dst_size,
+        "backup_quick_check": dst_qc,
+        "table_rows": counts,
+        "sidecar": sidecar,
+        "pruned": dropped,
+    }
 
 
 # =========================== 一次全量家当备份（第127轮） ===========================
-def backup_all(keep=DEFAULT_KEEP, backup_dir=DEFAULT_BACKUP_DIR, monitor_src=None,
-               paper_dir=None, include_paper=True, stamp=None):
+def backup_all(
+    keep=DEFAULT_KEEP,
+    backup_dir=DEFAULT_BACKUP_DIR,
+    monitor_src=None,
+    paper_dir=None,
+    include_paper=True,
+    stamp=None,
+):
     """备份全部结构化家当：monitor.db + data/paper_accounts/*.db（第127轮，共享同一时间戳）。
 
     - monitor：backup/monitor_<stamp>.db，原 backup_once 路径 + 滚动 keep 份；
@@ -319,12 +345,18 @@ def backup_all(keep=DEFAULT_KEEP, backup_dir=DEFAULT_BACKUP_DIR, monitor_src=Non
     if monitor_src is None:
         try:
             import config
+
             monitor_src = config.MONITOR_DB
         except Exception:
             monitor_src = os.path.join(_HERE, "data", "monitor.db")
-    res = {"monitor": backup_once(monitor_src, backup_dir, keep=keep, stamp=stamp),
-           "paper": {}, "paper_errors": {}, "paper_dir": None,
-           "pruned": [], "paper_pruned": []}
+    res = {
+        "monitor": backup_once(monitor_src, backup_dir, keep=keep, stamp=stamp),
+        "paper": {},
+        "paper_errors": {},
+        "paper_dir": None,
+        "pruned": [],
+        "paper_pruned": [],
+    }
     res["pruned"] = list(res["monitor"].get("pruned") or [])
     if not include_paper:
         return res
@@ -336,16 +368,21 @@ def backup_all(keep=DEFAULT_KEEP, backup_dir=DEFAULT_BACKUP_DIR, monitor_src=Non
     res["paper_dir"] = dest
     for fn in sorted(os.listdir(pdir)):
         if not fn.endswith(BACKUP_SUFFIX):
-            continue                          # 跳过 -wal/-shm 与其它文件
+            continue  # 跳过 -wal/-shm 与其它文件
         src_path = os.path.join(pdir, fn)
         if not os.path.isfile(src_path):
             continue
-        db_name = fn[:-len(BACKUP_SUFFIX)]
+        db_name = fn[: -len(BACKUP_SUFFIX)]
         try:
             res["paper"][db_name] = backup_once(
-                src_path, dest, keep=keep, stamp=stamp,
-                name=paper_backup_filename(db_name, stamp), do_prune=False)
-        except Exception as e:                # 单库失败不影响其余与 monitor
+                src_path,
+                dest,
+                keep=keep,
+                stamp=stamp,
+                name=paper_backup_filename(db_name, stamp),
+                do_prune=False,
+            )
+        except Exception as e:  # 单库失败不影响其余与 monitor
             res["paper_errors"][db_name] = str(e)
     res["paper_pruned"] = prune_paper_plan(list_paper_backups(dest), keep)
     for dn in res["paper_pruned"]:
@@ -383,7 +420,9 @@ def restore_backup(backup_path, src_path, stamp=None, move_old=True):
 
 
 # =========================== 自启/定时任务导出（只生成文件，不改系统） ===========================
-def build_task_xml(task_name, python_exe, script_path, workdir, daily_hhmm="16:30", author="futures_monitor"):
+def build_task_xml(
+    task_name, python_exe, script_path, workdir, daily_hhmm="16:30", author="futures_monitor"
+):
     """生成 Windows 任务计划程序可导入的 XML：每日 daily_hhmm 跑一次 + 用户登录时补一次。
     纯字符串、确定性；不调用 schtasks。"""
     hh, mm = daily_hhmm.split(":")
@@ -432,26 +471,34 @@ def build_task_xml(task_name, python_exe, script_path, workdir, daily_hhmm="16:3
     </Exec>
   </Actions>
 </Task>
-""" % (author, start_boundary, cmd.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), workdir)
+""" % (
+        author,
+        start_boundary,
+        cmd.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
+        workdir,
+    )
 
 
 def build_bat(python_exe, script_path, workdir):
     """内层看门狗 bat：切到项目目录、执行一次在线备份，末尾暂停失败窗口。"""
-    return ("@echo off\r\n"
-            "REM futures_monitor G19 sqlite online hot-backup watchdog (Task Scheduler / logon / double-click)\r\n"
-            "chcp 65001 >nul\r\n"
-            "cd /d \"%s\"\r\n"
-            "\"%s\" \"%s\" --once\r\n"
-            "if errorlevel 1 ( echo [db_backup] FAILED & pause ) else ( echo [db_backup] OK )\r\n") % (
-        workdir, python_exe, script_path)
+    return (
+        "@echo off\r\n"
+        "REM futures_monitor G19 sqlite online hot-backup watchdog (Task Scheduler / logon / double-click)\r\n"
+        "chcp 65001 >nul\r\n"
+        'cd /d "%s"\r\n'
+        '"%s" "%s" --once\r\n'
+        "if errorlevel 1 ( echo [db_backup] FAILED & pause ) else ( echo [db_backup] OK )\r\n"
+    ) % (workdir, python_exe, script_path)
 
 
 # =========================== 文本视图 ===========================
 def render_list(backup_dir):
     files = list_backup_files(backup_dir)
-    L = ["monitor.db 在线备份目录：%s" % backup_dir,
-         "合规备份 %d 份（按时间升序）：" % len(files),
-         "%-28s %10s %10s %8s %s" % ("备份文件", "大小", "源大小", "副本qc", "版本")]
+    L = [
+        "monitor.db 在线备份目录：%s" % backup_dir,
+        "合规备份 %d 份（按时间升序）：" % len(files),
+        "%-28s %10s %10s %8s %s" % ("备份文件", "大小", "源大小", "副本qc", "版本"),
+    ]
     total_bytes = 0
     for name in files:
         fp = os.path.join(backup_dir, name)
@@ -461,7 +508,7 @@ def render_list(backup_dir):
         meta_fp = fp + ".json"
         if os.path.isfile(meta_fp):
             try:
-                with io.open(meta_fp, "r", encoding="utf-8-sig") as f:
+                with open(meta_fp, encoding="utf-8-sig") as f:
                     m = json.load(f)
                 sq = str(m.get("source_quick_check", "—"))
                 bq = str(m.get("backup_quick_check", "—"))
@@ -484,7 +531,11 @@ def render_list(backup_dir):
     L.append("纸面账户库备份目录：%s（%d 个源库）" % (pdir, len(grouped)))
     for db_name in sorted(grouped):
         names = grouped[db_name]
-        sz = sum(os.path.getsize(os.path.join(pdir, n)) for n in names if os.path.isfile(os.path.join(pdir, n)))
+        sz = sum(
+            os.path.getsize(os.path.join(pdir, n))
+            for n in names
+            if os.path.isfile(os.path.join(pdir, n))
+        )
         ptotal += sz
         L.append("  %-24s %2d 份 / %s（最新 %s）" % (db_name, len(names), human_mb(sz), names[-1]))
     L.append("  纸面小计 %s" % human_mb(ptotal))
@@ -497,21 +548,50 @@ def _default_python():
 
 
 def run(argv=None):
-    ap = argparse.ArgumentParser(description="G19 monitor.db 在线热备份/滚动保留/校验/恢复/自启导出（只读源库、只写backup/）")
-    ap.add_argument("--once", action="store_true", help="执行一次在线热备份（monitor.db + 纸面账户库，滚动保留 --keep 份）")
+    ap = argparse.ArgumentParser(
+        description="G19 monitor.db 在线热备份/滚动保留/校验/恢复/自启导出（只读源库、只写backup/）"
+    )
+    ap.add_argument(
+        "--once",
+        action="store_true",
+        help="执行一次在线热备份（monitor.db + 纸面账户库，滚动保留 --keep 份）",
+    )
     ap.add_argument("--src", default=None, help="只备份指定源库路径（单文件旧路径；缺省=全部家当）")
-    ap.add_argument("--no-paper", action="store_true", dest="no_paper", help="--once 时跳过纸面账户库")
-    ap.add_argument("--dir", default=DEFAULT_BACKUP_DIR, dest="backup_dir", help="备份目录，默认 backup/")
-    ap.add_argument("--keep", type=int, default=DEFAULT_KEEP, help="滚动保留份数，默认30；<=0 全保留")
+    ap.add_argument(
+        "--no-paper", action="store_true", dest="no_paper", help="--once 时跳过纸面账户库"
+    )
+    ap.add_argument(
+        "--dir", default=DEFAULT_BACKUP_DIR, dest="backup_dir", help="备份目录，默认 backup/"
+    )
+    ap.add_argument(
+        "--keep", type=int, default=DEFAULT_KEEP, help="滚动保留份数，默认30；<=0 全保留"
+    )
     ap.add_argument("--list", action="store_true", help="列出合规备份")
-    ap.add_argument("--verify", action="store_true", help="对所有（或最新--latest-n份）备份跑 quick_check")
-    ap.add_argument("--latest-n", type=int, default=0, dest="latest_n", help="--verify 只校验最新 N 份，0=全部")
-    ap.add_argument("--restore", default=None, metavar="BACKUP.db", help="用指定备份恢复到 --src（现有库先改名留存）")
+    ap.add_argument(
+        "--verify", action="store_true", help="对所有（或最新--latest-n份）备份跑 quick_check"
+    )
+    ap.add_argument(
+        "--latest-n", type=int, default=0, dest="latest_n", help="--verify 只校验最新 N 份，0=全部"
+    )
+    ap.add_argument(
+        "--restore",
+        default=None,
+        metavar="BACKUP.db",
+        help="用指定备份恢复到 --src（现有库先改名留存）",
+    )
     ap.add_argument("--yes", action="store_true", help="恢复时跳过交互确认（脚本/任务用）")
-    ap.add_argument("--emit-bat", action="store_true", dest="emit_bat", help="生成 run_backup.bat 看门狗")
-    ap.add_argument("--emit-task-xml", action="store_true", dest="emit_xml",
-                    help="生成 Windows 任务计划 XML（每日+登录），不自动注册")
-    ap.add_argument("--python", default=_default_python(), help="bat/XML 里写的 python.exe，默认当前解释器")
+    ap.add_argument(
+        "--emit-bat", action="store_true", dest="emit_bat", help="生成 run_backup.bat 看门狗"
+    )
+    ap.add_argument(
+        "--emit-task-xml",
+        action="store_true",
+        dest="emit_xml",
+        help="生成 Windows 任务计划 XML（每日+登录），不自动注册",
+    )
+    ap.add_argument(
+        "--python", default=_default_python(), help="bat/XML 里写的 python.exe，默认当前解释器"
+    )
     ap.add_argument("--daily", default="16:30", help="任务计划每日触发时刻，默认16:30")
     ap.add_argument("--version", action="store_true", help="打印 VERSION 并退出")
     args = ap.parse_args(argv)
@@ -524,30 +604,40 @@ def run(argv=None):
     if src is None:
         try:
             import config
+
             src = config.MONITOR_DB
         except Exception:
             src = os.path.join(_HERE, "data", "monitor.db")
 
     if args.emit_bat:
         bat = os.path.join(_HERE, "run_backup.bat")
-        with io.open(bat, "w", encoding="utf-8", newline="") as f:
+        with open(bat, "w", encoding="utf-8", newline="") as f:
             f.write(build_bat(args.python, os.path.join(_HERE, "db_backup.py"), _HERE))
         print("已生成看门狗：%s" % bat)
     if args.emit_xml:
         xml = os.path.join(_HERE, "backup", "futures_monitor_db_backup_task.xml")
         os.makedirs(os.path.dirname(xml), exist_ok=True)
         # Windows 任务计划导入偏好 UTF-16
-        with io.open(xml, "w", encoding="utf-16", newline="\r\n") as f:
-            f.write(build_task_xml("FuturesMonitor_DbBackup", args.python,
-                                   os.path.join(_HERE, "db_backup.py"), _HERE, args.daily))
-        print("已生成任务计划XML（导入后即每日%s+登录各备份一次，未自动注册）：%s" % (args.daily, xml))
+        with open(xml, "w", encoding="utf-16", newline="\r\n") as f:
+            f.write(
+                build_task_xml(
+                    "FuturesMonitor_DbBackup",
+                    args.python,
+                    os.path.join(_HERE, "db_backup.py"),
+                    _HERE,
+                    args.daily,
+                )
+            )
+        print(
+            "已生成任务计划XML（导入后即每日%s+登录各备份一次，未自动注册）：%s" % (args.daily, xml)
+        )
 
     if args.list:
         print(render_list(args.backup_dir))
     if args.verify:
         files = list_backup_files(args.backup_dir)
         if args.latest_n > 0:
-            files = files[-args.latest_n:]
+            files = files[-args.latest_n :]
         bad = 0
         for name in files:
             r = quick_check(os.path.join(args.backup_dir, name))
@@ -568,42 +658,75 @@ def run(argv=None):
         return 1 if bad else 0
     if args.restore:
         if not args.yes:
-            print("将用备份 %s 恢复到 %s；现有库会先改名 .before_restore_* 留存。输入 yes 继续："
-                  % (args.restore, src))
+            print(
+                "将用备份 %s 恢复到 %s；现有库会先改名 .before_restore_* 留存。输入 yes 继续："
+                % (args.restore, src)
+            )
             ans = sys.stdin.readline().strip().lower() if sys.stdin else ""
             if ans != "yes":
                 print("已取消")
                 return 2
         info = restore_backup(args.restore, src)
-        print("恢复完成：%s（旧库改名为 %s，quick_check=%s）" %
-              (info["restored"], info["old_moved"], info["verify"]))
+        print(
+            "恢复完成：%s（旧库改名为 %s，quick_check=%s）"
+            % (info["restored"], info["old_moved"], info["verify"])
+        )
         return 0
     if args.once:
         if args.src:
             info = backup_once(args.src, args.backup_dir, keep=args.keep)
             print("备份完成：%s" % info["name"])
-            print("  源 %s quick_check=%s → 副本 %s quick_check=%s" %
-                  (human_mb(info["source_bytes"]), info["source_quick_check"],
-                   human_mb(info["backup_bytes"]), info["backup_quick_check"]))
-            print("  用户表 %d 张，总行数 %s；滚动清理 %d 份：%s" %
-                  (len(info["table_rows"]),
-                   "{:,}".format(sum(v for v in info["table_rows"].values() if isinstance(v, int))),
-                   len(info["pruned"]), ",".join(info["pruned"]) or "无"))
+            print(
+                "  源 %s quick_check=%s → 副本 %s quick_check=%s"
+                % (
+                    human_mb(info["source_bytes"]),
+                    info["source_quick_check"],
+                    human_mb(info["backup_bytes"]),
+                    info["backup_quick_check"],
+                )
+            )
+            print(
+                "  用户表 %d 张，总行数 %s；滚动清理 %d 份：%s"
+                % (
+                    len(info["table_rows"]),
+                    "{:,}".format(
+                        sum(v for v in info["table_rows"].values() if isinstance(v, int))
+                    ),
+                    len(info["pruned"]),
+                    ",".join(info["pruned"]) or "无",
+                )
+            )
             return 0
-        res = backup_all(keep=args.keep, backup_dir=args.backup_dir,
-                         include_paper=not args.no_paper)
+        res = backup_all(
+            keep=args.keep, backup_dir=args.backup_dir, include_paper=not args.no_paper
+        )
         m = res["monitor"]
         print("全量家当备份完成（%d 个源库）：" % (1 + len(res["paper"])))
-        print("  monitor.db：源 %s qc=%s → 副本 %s qc=%s；滚动清理 %d 份" %
-              (human_mb(m["source_bytes"]), m["source_quick_check"],
-               human_mb(m["backup_bytes"]), m["backup_quick_check"], len(res["pruned"])))
+        print(
+            "  monitor.db：源 %s qc=%s → 副本 %s qc=%s；滚动清理 %d 份"
+            % (
+                human_mb(m["source_bytes"]),
+                m["source_quick_check"],
+                human_mb(m["backup_bytes"]),
+                m["backup_quick_check"],
+                len(res["pruned"]),
+            )
+        )
         if res["paper"]:
-            print("  纸面账户库 %d 个已备份 → %s；滚动清理 %d 份" %
-                  (len(res["paper"]), res["paper_dir"], len(res["paper_pruned"])))
+            print(
+                "  纸面账户库 %d 个已备份 → %s；滚动清理 %d 份"
+                % (len(res["paper"]), res["paper_dir"], len(res["paper_pruned"]))
+            )
         if res["paper_errors"]:
-            print("  纸面失败 %d 个（不影响其余）：%s" %
-                  (len(res["paper_errors"]),
-                   "; ".join("%s: %s" % (k, v[:60]) for k, v in list(res["paper_errors"].items())[:5])))
+            print(
+                "  纸面失败 %d 个（不影响其余）：%s"
+                % (
+                    len(res["paper_errors"]),
+                    "; ".join(
+                        "%s: %s" % (k, v[:60]) for k, v in list(res["paper_errors"].items())[:5]
+                    ),
+                )
+            )
         return 0
     if not (args.list or args.emit_bat or args.emit_xml):
         ap.print_help()
@@ -621,10 +744,12 @@ def selftest():
         c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)")
         c.executemany("INSERT INTO t(v) VALUES(?)", [("row%d" % i,) for i in range(rows)])
         c.execute("CREATE TABLE empty_t(id INTEGER)")
-        c.commit(); c.close()
+        c.commit()
+        c.close()
 
     # 1) 文件名/解析/排序/防误认
     from datetime import datetime as _dt
+
     st = _dt(2026, 9, 3, 16, 45, 0)
     fn = backup_filename(st)
     assert fn == "monitor_20260903-164500.db"
@@ -643,10 +768,14 @@ def selftest():
         assert os.path.isfile(r1["backup"]) and r1["backup_quick_check"] == "ok"
         assert r1["table_rows"].get("t") == 10 and r1["table_rows"].get("empty_t") == 0
         assert os.path.isfile(r1["sidecar"])
-        c = sqlite3.connect(r1["backup"]); n = c.execute("SELECT COUNT(*) FROM t").fetchone()[0]; c.close()
+        c = sqlite3.connect(r1["backup"])
+        n = c.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        c.close()
         assert n == 10
         # 3) 源以只读打开：备份过程不改源（行数仍10）
-        c = sqlite3.connect(src); assert c.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 10; c.close()
+        c = sqlite3.connect(src)
+        assert c.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 10
+        c.close()
         # 4) 多备份 + 滚动保留 keep=3：造5份，留最新3份
         for h in (11, 12, 13, 14):
             make_db(src, h)  # 改源数据再备份
@@ -659,20 +788,32 @@ def selftest():
         # sidecar 一并删除
         assert not os.path.exists(os.path.join(bdir, "monitor_20260903-100000.db.json"))
         # 5) prune_plan 纯函数：keep<=0 全保留、不足 keep 不删
-        d, s2 = prune_plan(["a", "b"], 30); assert d == [] and len(s2) == 2
-        d, s2 = prune_plan(["a", "b"], 0); assert d == [] and s2 == ["a", "b"]
-        d, s2 = prune_plan(["a", "b", "c", "d", "e"], 2); assert d == ["a", "b", "c"] and s2 == ["d", "e"]
+        d, s2 = prune_plan(["a", "b"], 30)
+        assert d == [] and len(s2) == 2
+        d, s2 = prune_plan(["a", "b"], 0)
+        assert d == [] and s2 == ["a", "b"]
+        d, s2 = prune_plan(["a", "b", "c", "d", "e"], 2)
+        assert d == ["a", "b", "c"] and s2 == ["d", "e"]
         # 6) 目录里混入其它文件不被误认/误删
-        stray = os.path.join(bdir, "notes.txt"); open(stray, "w").write("x")
+        stray = os.path.join(bdir, "notes.txt")
+        open(stray, "w").write("x")
         assert len(list_backup_files(bdir)) == 3 and os.path.isfile(stray)
         # 7) 恢复：改坏当前源（追加到100行后"损坏现场"），用14点备份（14行）恢复，旧库被改名留存
         make_db(src, 100)
         latest_backup = os.path.join(bdir, files[-1])
         info = restore_backup(latest_backup, src, stamp=_dt(2026, 9, 3, 20, 0, 0))
-        c = sqlite3.connect(src); got = c.execute("SELECT COUNT(*) FROM t").fetchone()[0]; c.close()
-        assert got == 14 and info["verify"] == "ok" and info["old_moved"] and os.path.isfile(info["old_moved"])
+        c = sqlite3.connect(src)
+        got = c.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        c.close()
+        assert (
+            got == 14
+            and info["verify"] == "ok"
+            and info["old_moved"]
+            and os.path.isfile(info["old_moved"])
+        )
         # 8) 拒绝恢复坏备份
-        bad = os.path.join(tmp, "broken.db"); open(bad, "w").write("not a sqlite db")
+        bad = os.path.join(tmp, "broken.db")
+        open(bad, "w").write("not a sqlite db")
         try:
             restore_backup(bad, os.path.join(tmp, "x.db"))
             raise AssertionError("坏备份应被拒绝")
@@ -716,13 +857,21 @@ def selftest():
     assert parse_paper_backup("_20260912-150100.db") is None
     pdir2 = os.path.join(tmp, "pbackup")
     os.makedirs(pdir2, exist_ok=True)
-    open(os.path.join(pdir2, paper_backup_filename("paper_a", _dt(2026, 9, 10, 9, 0, 0))), "w").close()
-    open(os.path.join(pdir2, paper_backup_filename("paper_a", _dt(2026, 9, 11, 9, 0, 0))), "w").close()
-    open(os.path.join(pdir2, paper_backup_filename("paper_b", _dt(2026, 9, 11, 9, 0, 0))), "w").close()
+    open(
+        os.path.join(pdir2, paper_backup_filename("paper_a", _dt(2026, 9, 10, 9, 0, 0))), "w"
+    ).close()
+    open(
+        os.path.join(pdir2, paper_backup_filename("paper_a", _dt(2026, 9, 11, 9, 0, 0))), "w"
+    ).close()
+    open(
+        os.path.join(pdir2, paper_backup_filename("paper_b", _dt(2026, 9, 11, 9, 0, 0))), "w"
+    ).close()
     open(os.path.join(pdir2, "stray.txt"), "w").close()
     grouped = list_paper_backups(pdir2)
-    assert grouped == {"paper_a": ["paper_a_20260910-090000.db", "paper_a_20260911-090000.db"],
-                       "paper_b": ["paper_b_20260911-090000.db"]}
+    assert grouped == {
+        "paper_a": ["paper_a_20260910-090000.db", "paper_a_20260911-090000.db"],
+        "paper_b": ["paper_b_20260911-090000.db"],
+    }
     assert prune_paper_plan(grouped, 1) == ["paper_a_20260910-090000.db"]
 
     # 15) backup_all：monitor + 多个纸面库共享同一时间戳、各自滚动 keep、坏库不拖垮整体
@@ -744,20 +893,31 @@ def selftest():
     assert "paper_x_20260912-150100.db" in pfiles and "paper_y_20260912-150100.db" in pfiles
     # 第二轮 keep=1：旧行滚动删除
     make_db(p1, 9)
-    ra2 = backup_all(keep=1, backup_dir=adir, monitor_src=mon, paper_dir=src_root,
-                     stamp=_dt(2026, 9, 12, 15, 2, 0))
+    ra2 = backup_all(
+        keep=1,
+        backup_dir=adir,
+        monitor_src=mon,
+        paper_dir=src_root,
+        stamp=_dt(2026, 9, 12, 15, 2, 0),
+    )
     pgrouped = list_paper_backups(os.path.join(adir, "paper_accounts"))
     assert pgrouped["paper_x"] == ["paper_x_20260912-150200.db"]
     assert ra2["paper"]["paper_x"]["table_rows"]["t"] == 9
 
     # 16) backup_due 补跑判断（第127轮）
     base = _dt(2026, 9, 12, 15, 1, 0)
-    assert backup_due(base, None) is True                       # 从未备份
-    assert backup_due(base, base) is False                      # 刚备份过
-    assert backup_due(_dt(2026, 9, 12, 18, 0, 0), _dt(2026, 9, 11, 15, 1, 0)) is True   # 错过15:01→启动补跑
-    assert backup_due(_dt(2026, 9, 12, 10, 0, 0), _dt(2026, 9, 11, 15, 1, 0)) is False  # 未到15:01且<26h
-    assert backup_due(_dt(2026, 9, 12, 10, 0, 0), _dt(2026, 9, 10, 15, 0, 0)) is True   # 欠账26h+兜底
-    assert backup_due(base, _dt(2026, 9, 12, 14, 0, 0)) is False                        # 1h前刚备过
+    assert backup_due(base, None) is True  # 从未备份
+    assert backup_due(base, base) is False  # 刚备份过
+    assert (
+        backup_due(_dt(2026, 9, 12, 18, 0, 0), _dt(2026, 9, 11, 15, 1, 0)) is True
+    )  # 错过15:01→启动补跑
+    assert (
+        backup_due(_dt(2026, 9, 12, 10, 0, 0), _dt(2026, 9, 11, 15, 1, 0)) is False
+    )  # 未到15:01且<26h
+    assert (
+        backup_due(_dt(2026, 9, 12, 10, 0, 0), _dt(2026, 9, 10, 15, 0, 0)) is True
+    )  # 欠账26h+兜底
+    assert backup_due(base, _dt(2026, 9, 12, 14, 0, 0)) is False  # 1h前刚备过
 
     # 17) newest_monitor_backup_time
     bdir3 = os.path.join(tmp, "nb")

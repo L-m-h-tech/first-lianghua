@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G29（第37轮）因子体检 factor health——给每个因子一张"健康卡"，纯标准库、研究/监控记录层，不接 main、不改交易、不改综合分。
 
 回答三个问题：①因子现在还有没有预测力（IC 及其块自助置信区间，保留时序自相关）；②预测力稳不稳
@@ -15,6 +14,7 @@ r"""G29（第37轮）因子体检 factor health——给每个因子一张"健�
   D:\Python\python.exe tools\factor_health.py --no-daily      # 只事件层（面板缺失时）
   D:\Python\python.exe tools\factor_health.py --selftest
 """
+
 import argparse
 import json
 import math
@@ -27,10 +27,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+import attribution as at  # noqa: E402
+import factor_eval as fe  # noqa: E402
+import panel_builder as pb  # noqa: E402
+
 import config  # noqa: E402
-import factor_eval as fe  # noqa: E402  spearman/quantile_buckets
-import attribution as at  # noqa: E402  load_events（只读 monitor.db）
-import panel_builder as pb  # noqa: E402  日频层读 G21 面板
 
 LN2 = math.log(2.0)
 
@@ -44,8 +45,12 @@ def factor_pairs(events, factor):
         y = e.get("y")
         if x is None or y is None:
             continue
-        if isinstance(x, (int, float)) and isinstance(y, (int, float)) \
-                and math.isfinite(x) and math.isfinite(y):
+        if (
+            isinstance(x, (int, float))
+            and isinstance(y, (int, float))
+            and math.isfinite(x)
+            and math.isfinite(y)
+        ):
             out.append((float(x), float(y)))
     return out
 
@@ -57,8 +62,10 @@ def rolling_ic(pairs, window, step):
     if n < window or window <= 0:
         return out
     for a in range(0, n - window + 1, step):
-        seg = pairs[a:a + window]
-        out.append((a + window - 1, fe.spearman([p[0] for p in seg], [p[1] for p in seg]), len(seg)))
+        seg = pairs[a : a + window]
+        out.append(
+            (a + window - 1, fe.spearman([p[0] for p in seg], [p[1] for p in seg]), len(seg))
+        )
     return out
 
 
@@ -81,14 +88,21 @@ def block_bootstrap_ic(pairs, n_boot, block, seed):
         for _b in range(n_blocks):
             start = rng.randint(0, n - block)
             for j in range(start, start + block):
-                bx.append(xs_all[j]); by.append(ys_all[j])
+                bx.append(xs_all[j])
+                by.append(ys_all[j])
         bx, by = bx[:n], by[:n]
         ics.append(fe.spearman(bx, by))
     ics.sort()
     pct = lambda q: ics[min(len(ics) - 1, max(0, int(round(q * (len(ics) - 1)))))]
     same = sum(1 for v in ics if (v >= 0) == (point >= 0)) / len(ics)
-    return {"p5": pct(0.05), "p50": pct(0.50), "p95": pct(0.95), "prob_same_sign": same,
-            "point": point, "n_boot": len(ics)}
+    return {
+        "p5": pct(0.05),
+        "p50": pct(0.50),
+        "p95": pct(0.95),
+        "prob_same_sign": same,
+        "point": point,
+        "n_boot": len(ics),
+    }
 
 
 def max_consecutive(flags):
@@ -100,8 +114,17 @@ def max_consecutive(flags):
     return best
 
 
-def factor_event_health(events, factor, window=None, step=None, eps=None,
-                        n_boot=None, block=None, seed=None, min_sample=None):
+def factor_event_health(
+    events,
+    factor,
+    window=None,
+    step=None,
+    eps=None,
+    n_boot=None,
+    block=None,
+    seed=None,
+    min_sample=None,
+):
     """单因子单周期体检卡（纯函数）。verdict ∈ 健康/走弱/失效预警/样本不足。"""
     window = config.HEALTH_ROLL_WINDOW if window is None else window
     step = config.HEALTH_ROLL_STEP if step is None else step
@@ -112,8 +135,18 @@ def factor_event_health(events, factor, window=None, step=None, eps=None,
     min_sample = config.ATTR_MIN_SAMPLE if min_sample is None else min_sample
     pairs = factor_pairs(events, factor)
     n = len(pairs)
-    card = {"factor": factor, "n": n, "ic": 0.0, "roll": [], "n_weak": 0, "n_flip": 0,
-            "frac_fail": 0.0, "max_consec_fail": 0, "ci": None, "verdict": "样本不足"}
+    card = {
+        "factor": factor,
+        "n": n,
+        "ic": 0.0,
+        "roll": [],
+        "n_weak": 0,
+        "n_flip": 0,
+        "frac_fail": 0.0,
+        "max_consec_fail": 0,
+        "ci": None,
+        "verdict": "样本不足",
+    }
     if n < min_sample:
         return card
     ic = fe.spearman([p[0] for p in pairs], [p[1] for p in pairs])
@@ -133,8 +166,9 @@ def factor_event_health(events, factor, window=None, step=None, eps=None,
     ci_ok = ci is not None and ci["p5"] * ci["p95"] > 0
     if ci_ok:
         edge = ci["p5"] if ic >= 0 else ci["p95"]  # 朝 0 方向的保守边
-        ci_strong = ((ic >= 0 and edge >= eps) or (ic < 0 and edge <= -eps)) \
-            and ci["prob_same_sign"] >= 0.95
+        ci_strong = ((ic >= 0 and edge >= eps) or (ic < 0 and edge <= -eps)) and ci[
+            "prob_same_sign"
+        ] >= 0.95
     else:
         ci_strong = False
     if card["max_consec_fail"] >= config.HEALTH_FAIL_WINDOWS:
@@ -153,11 +187,19 @@ def regime_proxy(events, factor):
     for label, pred in (("多头", lambda e: e["dir"] == 1), ("空头", lambda e: e["dir"] == -1)):
         sub = [e for e in events if pred(e)]
         p = factor_pairs(sub, factor)
-        out[label] = {"n": len(p), "ic": fe.spearman([x for x, _ in p], [y for _, y in p])} if p else {"n": 0, "ic": None}
+        out[label] = (
+            {"n": len(p), "ic": fe.spearman([x for x, _ in p], [y for _, y in p])}
+            if p
+            else {"n": 0, "ic": None}
+        )
     for label in ("轻仓", "分批", "强信号"):
         sub = [e for e in events if label in (e.get("band") or "")]
         p = factor_pairs(sub, factor)
-        out[label] = {"n": len(p), "ic": fe.spearman([x for x, _ in p], [y for _, y in p])} if p else {"n": 0, "ic": None}
+        out[label] = (
+            {"n": len(p), "ic": fe.spearman([x for x, _ in p], [y for _, y in p])}
+            if p
+            else {"n": 0, "ic": None}
+        )
     return out
 
 
@@ -207,18 +249,19 @@ def fit_exp_halflife(horizons, curve):
     for H in horizons:
         ic = (curve.get(H) or {}).get("ic")
         if ic is not None and abs(ic) > 1e-4:
-            hs.append(float(H)); ys.append(math.log(abs(ic)))
+            hs.append(float(H))
+            ys.append(math.log(abs(ic)))
     if len(hs) < 3:
         return None
     n = len(hs)
     mx, my = sum(hs) / n, sum(ys) / n
     sxx = sum((x - mx) ** 2 for x in hs)
-    sxy = sum((x - mx) * (y - my) for x, y in zip(hs, ys))
+    sxy = sum((x - mx) * (y - my) for x, y in zip(hs, ys, strict=False))
     if sxx <= 1e-12:
         return None
-    b = sxy / sxx                       # 斜率（衰减应<0）
+    b = sxy / sxx  # 斜率（衰减应<0）
     if b >= -1e-6:
-        return None                     # 不衰减甚至增强：无半衰期
+        return None  # 不衰减甚至增强：无半衰期
     tau = -1.0 / b
     hl = tau * LN2
     a = my - b * mx
@@ -241,20 +284,55 @@ def build_event_section(events_by_h, factors, main_h):
     lines, side = [], {}
     for h in config.HEALTH_HORIZONS:
         evs = events_by_h.get(h, [])
-        lines.append("【事件层 · %s分钟】n=%d" % ("次日" if h == 1440 else ("2小时" if h == 120 else "30分"), len(evs)))
+        lines.append(
+            "【事件层 · %s分钟】n=%d"
+            % ("次日" if h == 1440 else ("2小时" if h == 120 else "30分"), len(evs))
+        )
         side[h] = {}
         head = "  %-8s %5s %7s %9s %5s %5s %6s %4s  %-10s" % (
-            "因子", "n", "RankIC", "CI[p5,p95]", "弱窗", "翻窗", "连续失效", "同号", "裁决")
+            "因子",
+            "n",
+            "RankIC",
+            "CI[p5,p95]",
+            "弱窗",
+            "翻窗",
+            "连续失效",
+            "同号",
+            "裁决",
+        )
         lines.append(head)
         for f in factors:
             c = factor_event_health(evs, f)
-            side[h][f] = {k: c[k] for k in ("n", "ic", "n_weak", "n_flip", "frac_fail",
-                                            "max_consec_fail", "ci", "verdict")}
+            side[h][f] = {
+                k: c[k]
+                for k in (
+                    "n",
+                    "ic",
+                    "n_weak",
+                    "n_flip",
+                    "frac_fail",
+                    "max_consec_fail",
+                    "ci",
+                    "verdict",
+                )
+            }
             ci = c["ci"] or {}
             ci_txt = "[%s,%s]" % (_f3(ci.get("p5")), _f3(ci.get("p95"))) if ci else "[--,--]"
             same = ("%.2f" % ci["prob_same_sign"]) if ci else "--"
-            lines.append("  %-8s %5d %7.3f %9s %5d %5d %6d %4s  %-10s" % (
-                f, c["n"], c["ic"], ci_txt, c["n_weak"], c["n_flip"], c["max_consec_fail"], same, c["verdict"]))
+            lines.append(
+                "  %-8s %5d %7.3f %9s %5d %5d %6d %4s  %-10s"
+                % (
+                    f,
+                    c["n"],
+                    c["ic"],
+                    ci_txt,
+                    c["n_weak"],
+                    c["n_flip"],
+                    c["max_consec_fail"],
+                    same,
+                    c["verdict"],
+                )
+            )
         # 主周期 regime 代理（只给一次，避免冗长）
         if h == main_h and evs:
             lines.append("  主周期 regime 代理（多/空 × 轻仓/分批/强信号 的 RankIC）：")
@@ -288,12 +366,22 @@ def build_daily_section(store):
 
 
 def build_report(events_by_h, factors, store=None):
-    L = ["因子体检卡 G29 factor health  生成于 %s（研究/监控记录层，不改交易、不改综合分）"
-         % datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "=" * 100,
-         "口径：事件层=信号9part×方向 对 方向收益 的 RankIC（块长%d、自助%d次、滚动窗%d/步%d、连续%d窗失效预警、|IC|<%.2f为弱）；"
-         % (config.HEALTH_BLOCK, config.HEALTH_BOOT_B, config.HEALTH_ROLL_WINDOW,
-            config.HEALTH_ROLL_STEP, config.HEALTH_FAIL_WINDOWS, config.HEALTH_IC_EPS),
-         "      日频层=G21标准面板(已PIT/复权) 日频因子对未来H交易日收益的池化RankIC与指数半衰期。", ""]
+    L = [
+        "因子体检卡 G29 factor health  生成于 %s（研究/监控记录层，不改交易、不改综合分）"
+        % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "=" * 100,
+        "口径：事件层=信号9part×方向 对 方向收益 的 RankIC（块长%d、自助%d次、滚动窗%d/步%d、连续%d窗失效预警、|IC|<%.2f为弱）；"
+        % (
+            config.HEALTH_BLOCK,
+            config.HEALTH_BOOT_B,
+            config.HEALTH_ROLL_WINDOW,
+            config.HEALTH_ROLL_STEP,
+            config.HEALTH_FAIL_WINDOWS,
+            config.HEALTH_IC_EPS,
+        ),
+        "      日频层=G21标准面板(已PIT/复权) 日频因子对未来H交易日收益的池化RankIC与指数半衰期。",
+        "",
+    ]
     event_txt, event_side = build_event_section(events_by_h, factors, config.HEALTH_MAIN_HORIZON)
     L.append(event_txt)
     daily_side = None
@@ -301,9 +389,11 @@ def build_report(events_by_h, factors, store=None):
         daily_txt, daily_side = build_daily_section(store)
         L.append(daily_txt)
     text = "\n".join(L) + "\n"
-    sidecar = {"generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-               "event": {str(h): event_side[h] for h in event_side},
-               "daily": daily_side}
+    sidecar = {
+        "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "event": {str(h): event_side[h] for h in event_side},
+        "daily": daily_side,
+    }
     return text, sidecar
 
 
@@ -347,42 +437,66 @@ def _lin_events(n, factor, slope, seed=1, noise=0.01):
     for i in range(n):
         x = -1.0 + 2.0 * i / (n - 1)
         y = slope * x + (rng.random() - 0.5) * noise
-        evs.append({"y": y, "x": {factor: x}, "dir": 1 if i % 2 == 0 else -1,
-                    "sector": "黑色", "sym": "RB", "band": "分批" if i % 3 else "强信号",
-                    "ts": "2026-08-%02d" % (i % 28 + 1), "horizon": 1440})
+        evs.append(
+            {
+                "y": y,
+                "x": {factor: x},
+                "dir": 1 if i % 2 == 0 else -1,
+                "sector": "黑色",
+                "sym": "RB",
+                "band": "分批" if i % 3 else "强信号",
+                "ts": "2026-08-%02d" % (i % 28 + 1),
+                "horizon": 1440,
+            }
+        )
     return evs
 
 
 def selftest():
     # 1) factor_pairs 滤 None/非有限
-    evs = [{"y": 0.1, "x": {"A": 1.0}}, {"y": None, "x": {"A": 2.0}},
-           {"y": 0.3, "x": {"A": None}}, {"y": float("nan"), "x": {"A": 1.0}}]
+    evs = [
+        {"y": 0.1, "x": {"A": 1.0}},
+        {"y": None, "x": {"A": 2.0}},
+        {"y": 0.3, "x": {"A": None}},
+        {"y": float("nan"), "x": {"A": 1.0}},
+    ]
     assert len(factor_pairs(evs, "A")) == 1
 
     # 2) 强正相关→IC≈1、裁决健康；强负相关→IC≈-1
-    pos = factor_event_health(_lin_events(120, "A", 1.0), "A", window=40, step=10,
-                              n_boot=200, block=10, min_sample=40)
+    pos = factor_event_health(
+        _lin_events(120, "A", 1.0), "A", window=40, step=10, n_boot=200, block=10, min_sample=40
+    )
     assert pos["ic"] > 0.95 and pos["verdict"] == "健康", (pos["ic"], pos["verdict"])
-    neg = factor_event_health(_lin_events(120, "A", -1.0), "A", window=40, step=10,
-                              n_boot=200, block=10, min_sample=40)
+    neg = factor_event_health(
+        _lin_events(120, "A", -1.0), "A", window=40, step=10, n_boot=200, block=10, min_sample=40
+    )
     assert neg["ic"] < -0.95 and neg["ci"]["p95"] < 0
 
     # 3) 纯噪声→IC≈0、出现弱窗、不会误判健康
     rng = random.Random(7)
-    noise_evs = [{"y": rng.random() - 0.5, "x": {"A": rng.random() - 0.5}, "dir": 1,
-                  "band": "分批"} for _ in range(160)]
-    nz = factor_event_health(noise_evs, "A", window=40, step=10, n_boot=100, block=10, min_sample=40)
+    noise_evs = [
+        {"y": rng.random() - 0.5, "x": {"A": rng.random() - 0.5}, "dir": 1, "band": "分批"}
+        for _ in range(160)
+    ]
+    nz = factor_event_health(
+        noise_evs, "A", window=40, step=10, n_boot=100, block=10, min_sample=40
+    )
     assert abs(nz["ic"]) < 0.25 and nz["verdict"] != "健康", nz["verdict"]
 
     # 4) 失效预警：前半强相关、后半完全无关（滚动窗连续走弱/翻转）
     strong = _lin_events(80, "A", 1.0, seed=2)
-    flat = [{"y": rng.random() - 0.5, "x": {"A": rng.random() - 0.5}, "dir": 1, "band": "分批"} for _ in range(80)]
+    flat = [
+        {"y": rng.random() - 0.5, "x": {"A": rng.random() - 0.5}, "dir": 1, "band": "分批"}
+        for _ in range(80)
+    ]
     decay = strong + flat
     dc = factor_event_health(decay, "A", window=40, step=10, n_boot=50, block=10, min_sample=40)
     assert dc["max_consec_fail"] >= 1
 
     # 5) 样本不足降级
-    assert factor_event_health(_lin_events(10, "A", 1.0), "A", min_sample=40)["verdict"] == "样本不足"
+    assert (
+        factor_event_health(_lin_events(10, "A", 1.0), "A", min_sample=40)["verdict"] == "样本不足"
+    )
 
     # 6) 块自助确定性（同种子两次一致）+ 同号概率
     pairs = factor_pairs(_lin_events(100, "A", 1.0), "A")
@@ -392,15 +506,21 @@ def selftest():
     assert block_bootstrap_ic([(1, 2)], 100, 10, 1) is None
 
     # 7) 日频前向收益无未来函数 + 期限曲线 + 半衰期
-    closes = [100.0 * (1.001 ** i) for i in range(120)]
+    closes = [100.0 * (1.001**i) for i in range(120)]
     fwd = forward_map(closes, (1, 5, 20))
     assert fwd[5][0] is not None and abs(fwd[5][0] - (closes[5] / closes[0] - 1)) < 1e-12
     assert fwd[20][-1] is None and fwd[20][-21] is not None
     # 构造"因子=过去20日收益、价格有惯性"→ 短期IC正、随H拉长衰减
     rows = []
     for i, c in enumerate(closes):
-        rows.append({"sym": "RB", "date": "2026-%03d" % i, "c": c,
-                     "ret20": (c / closes[i - 20] - 1) if i >= 20 else None})
+        rows.append(
+            {
+                "sym": "RB",
+                "date": "2026-%03d" % i,
+                "c": c,
+                "ret20": (c / closes[i - 20] - 1) if i >= 20 else None,
+            }
+        )
     bysym = {"RB": rows}
     curve = daily_factor_curve(bysym, "ret20", (1, 2, 3, 5, 10, 20, 40, 60))
     assert curve[1]["n"] > 40 and curve[60]["n"] < curve[1]["n"]
@@ -418,8 +538,10 @@ def selftest():
     text, side = build_report(evh, ["技术共振", "原油联动"], store=None)
     assert "因子体检卡" in text and "事件层" in text
     json.dumps(side, allow_nan=False)  # 无 NaN
-    print("factor_health selftest ALL PASS（配对清洗/正负IC裁决/噪声不误判/失效预警/样本不足/"
-          "块自助确定性/前向无未来/期限曲线与半衰期/端到端报告 共8组）")
+    print(
+        "factor_health selftest ALL PASS（配对清洗/正负IC裁决/噪声不误判/失效预警/样本不足/"
+        "块自助确定性/前向无未来/期限曲线与半衰期/端到端报告 共8组）"
+    )
     return 0
 
 

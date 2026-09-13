@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第94轮 B2（对标 scrapling 的 LLM 辅助自适应选择器生成）：解析器损坏时用 LLM 给修复建议。
 
 定位（与 llm_reviewer 同纪律）：**只出建议、不改代码、软降级**——当 A1 parser_health 发出
@@ -12,6 +11,7 @@ r"""第94轮 B2（对标 scrapling 的 LLM 辅助自适应选择器生成）：�
   python tools/selector_heal.py --selftest   # 零网络合成断言
 无 key / 断网 / 坏 JSON 全部软降级（输出 degraded 记录，绝不抛）。
 """
+
 import argparse
 import json
 import os
@@ -25,12 +25,12 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import llm_reviewer            # 复用 G13 的 key/base_url/model/enabled（同一 DeepSeek key）
-from http_client import http   # noqa: E402
+import llm_reviewer  # 复用 G13 的 key/base_url/model/enabled（同一 DeepSeek key）
+from http_client import http  # noqa: E402
 
 REPORT_TXT = os.path.join(_ROOT, "reports", "selector_heal.txt")
 REPORT_JSONL = os.path.join(_ROOT, "reports", "selector_heal.jsonl")
-MAX_HTML_CHARS = 6000          # 喂给 LLM 的 HTML 片段上限（成本/上下文控制）
+MAX_HTML_CHARS = 6000  # 喂给 LLM 的 HTML 片段上限（成本/上下文控制）
 TIMEOUT = 30
 
 _PROMPT = (
@@ -47,16 +47,30 @@ def enabled():
 
 
 def _ask_llm(source, html, expect):
-    payload = {"model": llm_reviewer.model(),
-               "messages": [{"role": "system", "content": _PROMPT},
-                            {"role": "user", "content": (
-                                f"源：{source}\n期望字段：{expect}\n"
-                                f"页面前{MAX_HTML_CHARS}字符：\n{html[:MAX_HTML_CHARS]}")}],
-               "temperature": 0.2, "max_tokens": 600}
-    r = http.post(llm_reviewer.base_url() + "/chat/completions",
-                  headers={"Content-Type": "application/json",
-                           "Authorization": "Bearer " + (llm_reviewer.key() or "")},
-                  json=payload, timeout=TIMEOUT)
+    payload = {
+        "model": llm_reviewer.model(),
+        "messages": [
+            {"role": "system", "content": _PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"源：{source}\n期望字段：{expect}\n"
+                    f"页面前{MAX_HTML_CHARS}字符：\n{html[:MAX_HTML_CHARS]}"
+                ),
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 600,
+    }
+    r = http.post(
+        llm_reviewer.base_url() + "/chat/completions",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + (llm_reviewer.key() or ""),
+        },
+        json=payload,
+        timeout=TIMEOUT,
+    )
     if r.status_code != 200:
         return {"degraded": "http_%d" % r.status_code}
     try:
@@ -95,6 +109,7 @@ def heal(source, html, expect):
 
 def _log(result, source):
     import time
+
     os.makedirs(os.path.dirname(REPORT_JSONL), exist_ok=True)
     rec = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "source": source, "result": result}
     with open(REPORT_JSONL, "a", encoding="utf-8") as f:
@@ -122,12 +137,15 @@ def _render_txt():
             f.write("\n[%s] %s → %s\n" % (rec["ts"], rec["source"], state))
             if "degraded" not in r:
                 for s in (r.get("suggestions") or [])[:5]:
-                    f.write("  · %s: %s (置信度 %.2f)\n"
-                            % (s.get("what", ""), s.get("how", ""), s.get("confidence", 0.0)))
+                    f.write(
+                        "  · %s: %s (置信度 %.2f)\n"
+                        % (s.get("what", ""), s.get("how", ""), s.get("confidence", 0.0))
+                    )
     return REPORT_TXT
 
 
 # ---------------- selftest（零网络） ----------------
+
 
 def selftest():
     """零网络合成断言：prompt 结构 / JSON 提取 / 软降级路径。"""
@@ -142,14 +160,16 @@ def selftest():
     # 坏 JSON → degraded
     ck("坏JSON降级", _parse_content("不是JSON")["degraded"] == "no_json")
     # 嵌套 JSON 提取
-    r = _parse_content('好的：{"source":"x","suggestions":[{"what":"a","how":"b","confidence":0.9}],"reason":"r"}')
+    r = _parse_content(
+        '好的：{"source":"x","suggestions":[{"what":"a","how":"b","confidence":0.9}],"reason":"r"}'
+    )
     ck("嵌套JSON提取成功", r.get("suggestions") and r["suggestions"][0]["what"] == "a")
     # 无 key → 软降级 no_key（不真发请求）
     saved = llm_reviewer
     try:
         llm_reviewer._FAKE_KEY = None
         # 用 monkeypatch 思路：直接 patch 模块函数更稳
-        import config as _cfg
+
         old = os.environ.get("FUTURES_MONITOR_LLM_KEY")
         os.environ.pop("FUTURES_MONITOR_LLM_KEY", None)
         try:

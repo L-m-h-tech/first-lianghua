@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """G10 配置外置加载器零网络回归。"""
+
 import json
 import os
 import subprocess
@@ -73,14 +73,22 @@ def test_coerce_float_str_tuple_list_dict():
 
 # ---------- apply_overrides ----------
 def _ns():
-    return {"INT": 60, "FLT": 1.5, "FLAG": True, "TUP": (1, 2), "D": {"x": 1},
-            "MONITOR_DB": "C:/x.db", "BASE_DIR": "C:/", "FUNC": lambda: 0, "lower": 1}
+    return {
+        "INT": 60,
+        "FLT": 1.5,
+        "FLAG": True,
+        "TUP": (1, 2),
+        "D": {"x": 1},
+        "MONITOR_DB": "C:/x.db",
+        "BASE_DIR": "C:/",
+        "FUNC": lambda: 0,
+        "lower": 1,
+    }
 
 
 def test_apply_overrides_applies_valid():
     ns = _ns()
-    rep = cl.apply_overrides(ns, {"INT": 30, "FLT": 2, "FLAG": False,
-                                  "TUP": [3, 4], "D": {"y": 2}})
+    rep = cl.apply_overrides(ns, {"INT": 30, "FLT": 2, "FLAG": False, "TUP": [3, 4], "D": {"y": 2}})
     assert ns["INT"] == 30 and isinstance(ns["FLT"], float) and ns["FLT"] == 2.0
     assert ns["FLAG"] is False and ns["TUP"] == (3, 4)
     assert ns["D"] == {"x": 1, "y": 2}
@@ -89,8 +97,17 @@ def test_apply_overrides_applies_valid():
 
 def test_apply_overrides_protects_and_skips():
     ns = _ns()
-    rep = cl.apply_overrides(ns, {"MONITOR_DB": "hack", "BASE_DIR": "hack",
-                                  "FUNC": 1, "lower": 9, "UNKNOWN": 1, "INT": "bad"})
+    rep = cl.apply_overrides(
+        ns,
+        {
+            "MONITOR_DB": "hack",
+            "BASE_DIR": "hack",
+            "FUNC": 1,
+            "lower": 9,
+            "UNKNOWN": 1,
+            "INT": "bad",
+        },
+    )
     assert ns["MONITOR_DB"] == "C:/x.db" and ns["BASE_DIR"] == "C:/"
     assert callable(ns["FUNC"]) and ns["lower"] == 1 and ns["INT"] == 60
     for k in ("MONITOR_DB", "BASE_DIR", "FUNC", "lower", "UNKNOWN", "INT"):
@@ -125,33 +142,42 @@ def test_load_config_file_ok(tmp_path):
 
 # ---------- 端到端：子进程以 FUTURES_MONITOR_CONFIG 加载 config 模块 ----------
 def test_config_module_end_to_end(tmp_path):
-    cfg = {"NEWS_INTERVAL": 42, "RISK_GATE_ENABLED": False,
-           "SIGNAL_OUTCOME_HORIZONS": [15, 60],
-           "WEB_MACRO_THRESHOLDS": {"美元指数": 0.99},
-           "MONITOR_DB": "protected", "NO_SUCH_KEY": 1}
+    cfg = {
+        "NEWS_INTERVAL": 42,
+        "RISK_GATE_ENABLED": False,
+        "SIGNAL_OUTCOME_HORIZONS": [15, 60],
+        "WEB_MACRO_THRESHOLDS": {"美元指数": 0.99},
+        "MONITOR_DB": "protected",
+        "NO_SUCH_KEY": 1,
+    }
     p = tmp_path / "config.json"
     p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
-    code = ("import config;"
-            "assert config.NEWS_INTERVAL==42;"
-            "assert config.RISK_GATE_ENABLED is False;"
-            "assert config.SIGNAL_OUTCOME_HORIZONS==(15,60);"
-            "assert config.WEB_MACRO_THRESHOLDS['美元指数']==0.99;"
-            "assert config.MONITOR_DB.endswith('monitor.db');"
-            "assert 'NO_SUCH_KEY' in config.CONFIG_OVERRIDE_REPORT['skipped'];"
-            "print('OK')")
+    code = (
+        "import config;"
+        "assert config.NEWS_INTERVAL==42;"
+        "assert config.RISK_GATE_ENABLED is False;"
+        "assert config.SIGNAL_OUTCOME_HORIZONS==(15,60);"
+        "assert config.WEB_MACRO_THRESHOLDS['美元指数']==0.99;"
+        "assert config.MONITOR_DB.endswith('monitor.db');"
+        "assert 'NO_SUCH_KEY' in config.CONFIG_OVERRIDE_REPORT['skipped'];"
+        "print('OK')"
+    )
     env = dict(os.environ)
     env["FUTURES_MONITOR_CONFIG"] = str(p)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, env=env, cwd=root)
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, cwd=root
+    )
     assert r.returncode == 0, r.stderr
     assert "OK" in r.stdout
 
 
 # ---------- 第138轮 E3：schema 值域校验 ----------
 
+
 def test_schema_enum_rejects_invalid():
     from config_loader import _check_schema
+
     # 枚举类
     assert _check_schema("PAPER_FILL_MODE", "close", "close")[0] is True
     ok, reason = _check_schema("PAPER_FILL_MODE", "market", "close")
@@ -168,14 +194,17 @@ def test_schema_enum_rejects_invalid():
 
 
 def test_apply_overrides_schema_skips_invalid():
-    import config_loader
     import types
+
+    import config_loader
+
     ns = types.SimpleNamespace()
     ns.DB_BACKUP_KEEP = 30
     ns.PAPER_FILL_MODE = "next"
     report = config_loader.apply_overrides(
-        vars(ns), {"DB_BACKUP_KEEP": 0, "PAPER_FILL_MODE": "market"})
-    assert ns.DB_BACKUP_KEEP == 30          # 0 越界 → 保留默认
-    assert ns.PAPER_FILL_MODE == "next"     # market 非枚举 → 保留默认
+        vars(ns), {"DB_BACKUP_KEEP": 0, "PAPER_FILL_MODE": "market"}
+    )
+    assert ns.DB_BACKUP_KEEP == 30  # 0 越界 → 保留默认
+    assert ns.PAPER_FILL_MODE == "next"  # market 非枚举 → 保留默认
     assert "DB_BACKUP_KEEP" in report["skipped"]
     assert "PAPER_FILL_MODE" in report["skipped"]

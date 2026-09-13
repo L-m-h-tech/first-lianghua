@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G27①（第44轮）统一实验台账 零网络确定性测试（experiment_ledger.py）。
 
 不连任何 DB/网络、不读真实 reports（全部 tmp_path 合成）：
@@ -10,8 +9,8 @@
   - safe_record：成功落盘 / 不可写路径安全吞掉
   - 文本渲染与 CLI：--list/--show/--repeats/--export/找不到 run
 """
+
 import datetime as dt
-import io
 import json
 import os
 import time
@@ -33,8 +32,9 @@ def test_canonical_hash_sensitive():
     assert el.canonical_hash("exp", {"w": 63}, {}) != base
     assert el.canonical_hash("exp2", {"w": 126}, {}) != base
     # 数据身份不同也应不同
-    assert el.canonical_hash("exp", {"w": 126}, {"f": {"sha256": "aa"}}) != \
-        el.canonical_hash("exp", {"w": 126}, {"f": {"sha256": "bb"}})
+    assert el.canonical_hash("exp", {"w": 126}, {"f": {"sha256": "aa"}}) != el.canonical_hash(
+        "exp", {"w": 126}, {"f": {"sha256": "bb"}}
+    )
 
 
 def test_same_config_twice_same_hash_even_different_now():
@@ -42,12 +42,19 @@ def test_same_config_twice_same_hash_even_different_now():
     r1 = el.make_record("lab", {"w": 1}, now=FIXED, reproduce=False)
     r2 = el.make_record("lab", {"w": 1}, now=FIXED + dt.timedelta(hours=2), reproduce=False)
     assert r1["config_hash"] == r2["config_hash"]
-    assert r1["run_id"] != r2["run_id"]            # 时间不同 → run_id 不同，但配置身份相同
+    assert r1["run_id"] != r2["run_id"]  # 时间不同 → run_id 不同，但配置身份相同
 
 
 def test_json_safe_sanitizes():
-    out = el.json_safe({"nan": float("nan"), "inf": float("inf"), "t": dt.date(2026, 9, 3),
-                        "s": {1, 2}, "nested": {"x": float("-inf")}})
+    out = el.json_safe(
+        {
+            "nan": float("nan"),
+            "inf": float("inf"),
+            "t": dt.date(2026, 9, 3),
+            "s": {1, 2},
+            "nested": {"x": float("-inf")},
+        }
+    )
     assert out["nan"] is None and out["inf"] is None and out["nested"]["x"] is None
     assert out["t"] == "2026-09-03" and out["s"] == [1, 2]
     assert el.canonical_bytes({"x": float("nan")}) == el.canonical_bytes({"x": None})
@@ -68,7 +75,7 @@ def test_data_identity_excludes_mtime(tmp_path):
     p.write_text("same", encoding="utf-8", newline="\n")
     id1 = el.data_identity_from_manifest(el.build_manifest([str(p)]))
     time.sleep(1.05)
-    p.write_text("same", encoding="utf-8", newline="\n")     # 内容相同、mtime 变
+    p.write_text("same", encoding="utf-8", newline="\n")  # 内容相同、mtime 变
     id2 = el.data_identity_from_manifest(el.build_manifest([str(p)]))
     assert id1 == id2
     p.write_text("different-content", encoding="utf-8", newline="\n")
@@ -80,7 +87,7 @@ def test_build_manifest_dedup_and_missing(tmp_path):
     p = tmp_path / "a"
     p.write_text("x", encoding="utf-8")
     man = el.build_manifest([str(p), str(p), str(tmp_path / "miss")])
-    assert len(man) == 2                                      # 去重 + 缺失各一条
+    assert len(man) == 2  # 去重 + 缺失各一条
     assert all(isinstance(v, dict) for v in man.values())
 
 
@@ -88,14 +95,31 @@ def test_build_manifest_dedup_and_missing(tmp_path):
 def test_make_record_fields(tmp_path):
     p = tmp_path / "src.csv"
     p.write_text("1", encoding="utf-8")
-    rec = el.make_record("lab", {"w": 126}, {"sharpe": 0.5}, inputs=[str(p)],
-                         artifacts=[], now=FIXED, reproduce=False)
+    rec = el.make_record(
+        "lab",
+        {"w": 126},
+        {"sharpe": 0.5},
+        inputs=[str(p)],
+        artifacts=[],
+        now=FIXED,
+        reproduce=False,
+    )
     assert rec["run_id"].startswith("20260903-150000-")
     assert rec["experiment"] == "lab" and rec["repeat_of"] is None
     assert rec["reproduce"] is None and rec["version"] is not None
-    assert set(rec) >= {"run_id", "created_at", "config_hash", "params", "metrics",
-                        "inputs", "artifacts", "data_identity", "version", "py"}
-    json.dumps(rec, allow_nan=False)                          # 无 NaN
+    assert set(rec) >= {
+        "run_id",
+        "created_at",
+        "config_hash",
+        "params",
+        "metrics",
+        "inputs",
+        "artifacts",
+        "data_identity",
+        "version",
+        "py",
+    }
+    json.dumps(rec, allow_nan=False)  # 无 NaN
 
 
 def test_make_record_default_reproduce():
@@ -108,8 +132,12 @@ def test_append_and_repeat_link(tmp_path):
     led = str(tmp_path / "ledger.jsonl")
     st = el.LedgerStore(led)
     a = st.append(el.make_record("lab", {"w": 126}, {"s": 0.4}, now=FIXED))
-    b = st.append(el.make_record("lab", {"w": 126}, {"s": 0.5}, now=FIXED + dt.timedelta(minutes=5)))
-    c = st.append(el.make_record("lab", {"w": 63}, {"s": 0.4}, now=FIXED + dt.timedelta(minutes=10)))
+    b = st.append(
+        el.make_record("lab", {"w": 126}, {"s": 0.5}, now=FIXED + dt.timedelta(minutes=5))
+    )
+    c = st.append(
+        el.make_record("lab", {"w": 63}, {"s": 0.4}, now=FIXED + dt.timedelta(minutes=10))
+    )
     assert b["config_hash"] == a["config_hash"] and b["repeat_of"] == a["run_id"]
     assert c["repeat_of"] is None
     assert len(st.load_all()) == 3
@@ -119,7 +147,7 @@ def test_run_id_collision_gets_suffix(tmp_path):
     led = str(tmp_path / "ledger.jsonl")
     st = el.LedgerStore(led)
     a = st.append(el.make_record("lab", {"w": 1}, now=FIXED))
-    b = st.append(el.make_record("lab", {"w": 1}, now=FIXED))   # 同秒同配置
+    b = st.append(el.make_record("lab", {"w": 1}, now=FIXED))  # 同秒同配置
     assert a["run_id"] != b["run_id"] and b["run_id"].endswith("-r2")
 
 
@@ -127,7 +155,7 @@ def test_load_tolerates_bad_lines(tmp_path):
     led = tmp_path / "ledger.jsonl"
     st = el.LedgerStore(str(led))
     st.append(el.make_record("lab", {"w": 1}, now=FIXED))
-    with io.open(str(led), "a", encoding="utf-8", newline="\n") as f:
+    with open(str(led), "a", encoding="utf-8", newline="\n") as f:
         f.write("\n{broken,,,}\n")
     st2 = el.LedgerStore(str(led))
     recs = st2.load_all()
@@ -154,8 +182,8 @@ def test_ledger_atomic_lf_lines(tmp_path):
     led = str(tmp_path / "l.jsonl")
     st = el.LedgerStore(led)
     st.append(el.make_record("a", {}, now=FIXED))
-    raw = io.open(led, "rb").read()
-    assert raw.endswith(b"\n") and b"\r\n" not in raw          # LF、无 CRLF
+    raw = open(led, "rb").read()
+    assert raw.endswith(b"\n") and b"\r\n" not in raw  # LF、无 CRLF
     for line in raw.decode("utf-8").splitlines():
         assert isinstance(json.loads(line), dict)
 
@@ -170,16 +198,24 @@ def test_safe_record_ok(tmp_path):
 def test_safe_record_swallows_failure(tmp_path):
     blocker = tmp_path / "afile"
     blocker.write_text("x", encoding="utf-8")
-    bad = el.safe_record("lab", {"w": 1}, now=FIXED,
-                         ledger_path=str(tmp_path / "afile" / "sub" / "l.jsonl"))
+    bad = el.safe_record(
+        "lab", {"w": 1}, now=FIXED, ledger_path=str(tmp_path / "afile" / "sub" / "l.jsonl")
+    )
     assert bad is None
 
 
 # ---------------- 渲染 ----------------
 def test_format_outputs():
-    recs = [el.make_record("lab", {"w": 126}, {"erc": {"sharpe": 0.55}}, now=FIXED, reproduce=False),
-            el.make_record("lab", {"w": 126}, {"erc": {"sharpe": 0.6}},
-                           now=FIXED + dt.timedelta(minutes=5), reproduce=False)]
+    recs = [
+        el.make_record("lab", {"w": 126}, {"erc": {"sharpe": 0.55}}, now=FIXED, reproduce=False),
+        el.make_record(
+            "lab",
+            {"w": 126},
+            {"erc": {"sharpe": 0.6}},
+            now=FIXED + dt.timedelta(minutes=5),
+            reproduce=False,
+        ),
+    ]
     recs[1]["repeat_of"] = recs[0]["run_id"]
     lst = el.format_list(recs)
     assert "统一实验台账" in lst and "↻" in lst
@@ -188,7 +224,9 @@ def test_format_outputs():
     rep = el.format_repeats(recs)
     assert "×2" in rep
     assert el.format_list([]).startswith("（台账为空")
-    assert "无重复实验" in el.format_repeats([{"config_hash": "z", "run_id": "1", "experiment": "x"}])
+    assert "无重复实验" in el.format_repeats(
+        [{"config_hash": "z", "run_id": "1", "experiment": "x"}]
+    )
 
 
 def test_metric_flat_and_num():
@@ -209,7 +247,7 @@ def test_cli_list_show_repeats_export(tmp_path):
     assert el.run(["--ledger", led, "--show", "no_such"]) == 1
     exp = str(tmp_path / "out.json")
     assert el.run(["--ledger", led, "--export", exp]) == 0
-    assert len(json.load(io.open(exp, encoding="utf-8"))) == 2
+    assert len(json.load(open(exp, encoding="utf-8"))) == 2
 
 
 def test_cli_list_empty_ledger(tmp_path):
@@ -230,9 +268,10 @@ def test_env_disable_and_redirect(monkeypatch, tmp_path):
 
 # ---------- 第138轮 E4：code_fingerprint ----------
 
+
 def test_code_fingerprint_stable_and_deterministic(tmp_path):
     import experiment_ledger as EL
-    import os
+
     # 对固定目录算两次 → 一致（同代码）
     fp1 = EL.code_fingerprint(rel_dirs=("",))
     fp2 = EL.code_fingerprint(rel_dirs=("",))
@@ -241,7 +280,7 @@ def test_code_fingerprint_stable_and_deterministic(tmp_path):
 
 def test_make_record_includes_code_fingerprint():
     import experiment_ledger as EL
-    rec = EL.make_record("lab", {"k": 1}, {"sharpe": 0.5}, inputs=[], artifacts=[],
-                         now=EL._now())
+
+    rec = EL.make_record("lab", {"k": 1}, {"sharpe": 0.5}, inputs=[], artifacts=[], now=EL._now())
     assert "code_fingerprint" in rec
     assert rec["code_fingerprint"] is not None and len(rec["code_fingerprint"]) == 16

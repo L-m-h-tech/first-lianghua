@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """P1-3 看板图表化（第22轮）：把原本只能 iframe 嵌 txt 的关键结果画成 ECharts 图表。
 
 设计原则（与 WP-F1/F2 一致）：
@@ -25,6 +24,7 @@
   charts_page_html()                静态图表看板 HTML（无 Python 变量注入）
   ensure_charts_page()              写静态页 + 同步本地 ECharts 资源（幂等）
 """
+
 import csv
 import json
 import math
@@ -36,6 +36,7 @@ import config
 import metrics
 
 # ---------------- 通用小工具 ----------------
+
 
 def _f(x, default=None):
     """宽松 float：空串/None/非法值 -> default（不抛异常，防单行脏数据拖垮整图）。"""
@@ -73,8 +74,17 @@ def downsample(*arrays, max_points=1200):
 
 # ---------------- ① 组合账户权益/回撤/风险度（portfolio_equity.csv） ----------------
 
-EQUITY_FIELDS = ("dt", "static", "float", "equity", "margin",
-                 "available", "risk", "drawdown", "npos")
+EQUITY_FIELDS = (
+    "dt",
+    "static",
+    "float",
+    "equity",
+    "margin",
+    "available",
+    "risk",
+    "drawdown",
+    "npos",
+)
 
 
 def parse_equity_csv(path, max_points=1200):
@@ -87,7 +97,7 @@ def parse_equity_csv(path, max_points=1200):
     cols = {k: [] for k in EQUITY_FIELDS if k != "dt"}
     dts = []
     try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(path, encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             need = set(cols) | {"dt"}
             if not reader.fieldnames or not need.issubset(set(reader.fieldnames)):
@@ -113,9 +123,17 @@ def parse_equity_csv(path, max_points=1200):
     if not dts:
         return None
     dts, eq, static, flt, margin, avail, risk, dd, npos = downsample(
-        dts, cols["equity"], cols["static"], cols["float"], cols["margin"],
-        cols["available"], cols["risk"], cols["drawdown"], cols["npos"],
-        max_points=max_points)
+        dts,
+        cols["equity"],
+        cols["static"],
+        cols["float"],
+        cols["margin"],
+        cols["available"],
+        cols["risk"],
+        cols["drawdown"],
+        cols["npos"],
+        max_points=max_points,
+    )
     n = len(dts)
     final_eq = eq[-1]
     init_eq = eq[0]
@@ -125,16 +143,23 @@ def parse_equity_csv(path, max_points=1200):
     max_risk = max(risks) if risks else 0.0
     total_ret = (final_eq / init_eq - 1.0) if init_eq else 0.0
     return {
-        "dt": dts, "equity": eq, "static": static, "float": flt,
-        "margin": margin, "available": avail, "risk": risk,
-        "drawdown": dd, "npos": npos, "points": n,
+        "dt": dts,
+        "equity": eq,
+        "static": static,
+        "float": flt,
+        "margin": margin,
+        "available": avail,
+        "risk": risk,
+        "drawdown": dd,
+        "npos": npos,
+        "points": n,
         "summary": {
             "init_equity": round(init_eq, 2),
             "final_equity": round(final_eq, 2),
-            "total_return": total_ret,          # 小数
-            "max_drawdown": max_dd,             # 小数（正）
-            "avg_risk": avg_risk,               # 平均风险度
-            "max_risk": max_risk,               # 峰值风险度
+            "total_return": total_ret,  # 小数
+            "max_drawdown": max_dd,  # 小数（正）
+            "avg_risk": avg_risk,  # 平均风险度
+            "max_risk": max_risk,  # 峰值风险度
             "max_npos": max(npos) if npos else 0,
         },
     }
@@ -142,34 +167,55 @@ def parse_equity_csv(path, max_points=1200):
 
 # ---------------- ② 横截面相对强弱（cross_section.rank 的内存结果） ----------------
 
+
 def cross_section_payload(cs):
     """cross_section.rank() 返回值 -> JSON 安全、字段收敛的图表结构；空结果返回 None。"""
     if not cs or not cs.get("rows"):
         return None
     try:
-        rows = [{"name": r["name"], "cat": r.get("cat", "—"),
-                 "score": round(float(r.get("score", 0.0)), 2),
-                 "chg": float(r.get("chg", 0.0)),
-                 "xs": float(r.get("xs", 0.0)),
-                 "score_z": float(r.get("score_z", 0.0)),
-                 "chg_z": float(r.get("chg_z", 0.0)),
-                 "label": r.get("label", "")} for r in cs["rows"]]
+        rows = [
+            {
+                "name": r["name"],
+                "cat": r.get("cat", "—"),
+                "score": round(float(r.get("score", 0.0)), 2),
+                "chg": float(r.get("chg", 0.0)),
+                "xs": float(r.get("xs", 0.0)),
+                "score_z": float(r.get("score_z", 0.0)),
+                "chg_z": float(r.get("chg_z", 0.0)),
+                "label": r.get("label", ""),
+            }
+            for r in cs["rows"]
+        ]
         sectors = []
         for cat in cs.get("sector_rank", []):
             s = cs["sectors"][cat]
-            sectors.append({"cat": cat, "n": int(s["n"]), "up": int(s["up"]),
-                            "down": int(s["down"]), "avg_xs": float(s["avg_xs"]),
-                            "avg_chg": float(s.get("avg_chg", 0.0))})
+            sectors.append(
+                {
+                    "cat": cat,
+                    "n": int(s["n"]),
+                    "up": int(s["up"]),
+                    "down": int(s["down"]),
+                    "avg_xs": float(s["avg_xs"]),
+                    "avg_chg": float(s.get("avg_chg", 0.0)),
+                }
+            )
         b = cs.get("breadth") or {}
         return {
-            "rows": rows, "sectors": sectors,
-            "top_long": [{"name": r["name"], "xs": r["xs"], "score": r["score"]}
-                         for r in cs.get("top_long", [])],
-            "top_short": [{"name": r["name"], "xs": r["xs"], "score": r["score"]}
-                          for r in cs.get("top_short", [])],
+            "rows": rows,
+            "sectors": sectors,
+            "top_long": [
+                {"name": r["name"], "xs": r["xs"], "score": r["score"]}
+                for r in cs.get("top_long", [])
+            ],
+            "top_short": [
+                {"name": r["name"], "xs": r["xs"], "score": r["score"]}
+                for r in cs.get("top_short", [])
+            ],
             "breadth": {
-                "bull": int(b.get("bull", 0)), "bear": int(b.get("bear", 0)),
-                "neutral": int(b.get("neutral", 0)), "n": int(b.get("n", 0)),
+                "bull": int(b.get("bull", 0)),
+                "bear": int(b.get("bear", 0)),
+                "neutral": int(b.get("neutral", 0)),
+                "n": int(b.get("n", 0)),
                 "avg_chg": float(b.get("avg_chg", 0.0)),
             },
             "robust": bool(cs.get("robust", False)),
@@ -180,23 +226,26 @@ def cross_section_payload(cs):
 
 # ---------------- ③ 信号胜率校准（signal_calibrator.band_table + outcome_stats） ----------------
 
+
 def calibration_payload(band_rows):
     """signal_calibrator.SignalCalibrator.band_table() -> 图表结构；空表返回 None。"""
     if not band_rows:
         return None
     out = []
     for c in band_rows:
-        out.append({
-            "dir": int(c.get("dir", 0)),
-            "dir_text": c.get("dir_text", ""),
-            "band": c.get("band", ""),
-            "n": int(c.get("n", 0)),
-            "hits": int(c.get("hits", 0)),
-            "winrate": float(c.get("winrate", 0.0)),     # 贝叶斯平滑胜率 0~1
-            "avg_ret": float(c.get("avg_ret", 0.0) or 0.0),
-            "mult": (None if c.get("mult") is None else float(c.get("mult"))),
-            "enough": bool(c.get("enough", False)),
-        })
+        out.append(
+            {
+                "dir": int(c.get("dir", 0)),
+                "dir_text": c.get("dir_text", ""),
+                "band": c.get("band", ""),
+                "n": int(c.get("n", 0)),
+                "hits": int(c.get("hits", 0)),
+                "winrate": float(c.get("winrate", 0.0)),  # 贝叶斯平滑胜率 0~1
+                "avg_ret": float(c.get("avg_ret", 0.0) or 0.0),
+                "mult": (None if c.get("mult") is None else float(c.get("mult"))),
+                "enough": bool(c.get("enough", False)),
+            }
+        )
     # 固定展示顺序：做多 强信号→观望，再做空（与 txt 表方向一致）
     order = {"强信号": 0, "分批": 1, "轻仓": 2, "观望": 3}
     out.sort(key=lambda x: (-x["dir"], order.get(x["band"], 9)))
@@ -215,10 +264,10 @@ def outcomes_payload(db, days=None):
         return None
     groups = {}
     for r in stats:
-        g = groups.setdefault(int(r["horizon_min"]), {"n": 0, "wins": 0,
-                                                       "long_n": 0, "long_w": 0,
-                                                       "short_n": 0, "short_w": 0,
-                                                       "ret_w": 0.0})
+        g = groups.setdefault(
+            int(r["horizon_min"]),
+            {"n": 0, "wins": 0, "long_n": 0, "long_w": 0, "short_n": 0, "short_w": 0, "ret_w": 0.0},
+        )
         en = int(r.get("evaluated") or 0)
         wins = int(r.get("wins") or 0)
         g["n"] += en
@@ -236,20 +285,24 @@ def outcomes_payload(db, days=None):
         g = groups[h]
         if g["n"] <= 0:
             continue
-        out.append({
-            "horizon": h, "label": labels.get(h, "%d分钟" % h),
-            "n": g["n"],
-            "winrate": g["wins"] / g["n"],
-            "avg_ret": (g["ret_w"] / g["n"]) if g["n"] else 0.0,
-            "long_winrate": (g["long_w"] / g["long_n"]) if g["long_n"] else None,
-            "long_n": g["long_n"],
-            "short_winrate": (g["short_w"] / g["short_n"]) if g["short_n"] else None,
-            "short_n": g["short_n"],
-        })
+        out.append(
+            {
+                "horizon": h,
+                "label": labels.get(h, "%d分钟" % h),
+                "n": g["n"],
+                "winrate": g["wins"] / g["n"],
+                "avg_ret": (g["ret_w"] / g["n"]) if g["n"] else 0.0,
+                "long_winrate": (g["long_w"] / g["long_n"]) if g["long_n"] else None,
+                "long_n": g["long_n"],
+                "short_winrate": (g["short_w"] / g["short_n"]) if g["short_n"] else None,
+                "short_n": g["short_n"],
+            }
+        )
     return out or None
 
 
 # ---------------- ④ 因子 IC（tools/factor_eval.py 写的 JSON sidecar） ----------------
+
 
 def paper_payload(state=None, max_points=1200):
     """⑤ 纸面账户影子净值：从 storage.paper_equity 每轮快照取最近窗口（升序），结构对齐
@@ -270,7 +323,7 @@ def paper_payload(state=None, max_points=1200):
         v = _f(r.get("equity"))
         if v is None:
             continue
-        dts.append(str(r.get("ts") or "")[5:16])          # MM-DD HH:MM，轴标签更短
+        dts.append(str(r.get("ts") or "")[5:16])  # MM-DD HH:MM，轴标签更短
         eq.append(v)
         static.append(_f(r.get("static_equity"), 0.0))
         flt.append(_f(r.get("float_pnl"), 0.0))
@@ -291,14 +344,23 @@ def paper_payload(state=None, max_points=1200):
     if not dts:
         return None
     dts, eq, static, flt, margin, avail, risk, dd, npos = downsample(
-        dts, eq, static, flt, margin, avail, risk, dd, npos, max_points=max_points)
+        dts, eq, static, flt, margin, avail, risk, dd, npos, max_points=max_points
+    )
     risks = [r for r in risk if r is not None and math.isfinite(r)]
     init_eq = eq[0]
     fill_mode = getattr(getattr(state, "paper", None), "fill_mode", "next")
     return {
-        "dt": dts, "equity": eq, "static": static, "float": flt,
-        "margin": margin, "available": avail, "risk": risk, "drawdown": dd,
-        "npos": npos, "points": len(dts), "fill_mode": fill_mode,
+        "dt": dts,
+        "equity": eq,
+        "static": static,
+        "float": flt,
+        "margin": margin,
+        "available": avail,
+        "risk": risk,
+        "drawdown": dd,
+        "npos": npos,
+        "points": len(dts),
+        "fill_mode": fill_mode,
         "summary": {
             "init_equity": round(init_eq, 2),
             "final_equity": round(eq[-1], 2),
@@ -318,12 +380,13 @@ def paper_payload(state=None, max_points=1200):
 
 # 第105/106轮：档位色改非涨跌语义的中性色家族（避免与红涨绿跌混淆）+ 修复撞色。
 # 每档 4 色 = 激进/基准/保守/赌徒：前3为深→中→浅渐变，赌徒(第4)用该档最暗色区分高风险。
-_TIER_COLORS = {100_000: ["#ff7675", "#f3a683", "#f5cd79", "#8c4a2f"],   # 10万档 暖珊瑚系
-                10_000: ["#74b9ff", "#82ccdd", "#a4d8f0", "#295a6e"],    # 1万档 天蓝系
-                5_000: ["#55efc4", "#81ecec", "#a9e8d8", "#1d6e5c"],     # 5000档 青绿系
-                3_000: ["#a29bfe", "#b8b8ff", "#cfc9ff", "#4a3f7a"],     # 3000档 淡紫系
-                1_000: ["#fd79a8", "#fab1a0", "#f8c8dc", "#7a3550"],     # 1000档 粉橙系
-                }
+_TIER_COLORS = {
+    100_000: ["#ff7675", "#f3a683", "#f5cd79", "#8c4a2f"],  # 10万档 暖珊瑚系
+    10_000: ["#74b9ff", "#82ccdd", "#a4d8f0", "#295a6e"],  # 1万档 天蓝系
+    5_000: ["#55efc4", "#81ecec", "#a9e8d8", "#1d6e5c"],  # 5000档 青绿系
+    3_000: ["#a29bfe", "#b8b8ff", "#cfc9ff", "#4a3f7a"],  # 3000档 淡紫系
+    1_000: ["#fd79a8", "#fab1a0", "#f8c8dc", "#7a3550"],  # 1000档 粉橙系
+}
 _TIER_NAMES = {100_000: "10万", 10_000: "1万", 5_000: "5000", 3_000: "3000", 1_000: "1000"}
 _STYLE_MAP = {"close": "bold", "next": "solid"}  # 激进实线粗、基准保守虚线
 _ACCOUNT_STYLE = {}  # 填充 name -> (color, dashStyle)
@@ -361,20 +424,39 @@ def papers_payload(state=None, max_points=600):
         if not dts:
             continue
         dts, eq, _ds_s, _ds_f, _ds_m, _ds_a, risk, dd, _ds_n = downsample(
-            dts, eq, [0]*len(eq), [0]*len(eq), [0]*len(eq), [0]*len(eq),
-            risk, dd, [0]*len(eq), max_points=max_points)
+            dts,
+            eq,
+            [0] * len(eq),
+            [0] * len(eq),
+            [0] * len(eq),
+            [0] * len(eq),
+            risk,
+            dd,
+            [0] * len(eq),
+            max_points=max_points,
+        )
         init_eq = eq[0] if eq else 1.0
-        eq0 = int(getattr(broker.pf, "equity0", 0) or 0)   # 第104轮统一资金池：tier 一律用初始资本
+        eq0 = int(getattr(broker.pf, "equity0", 0) or 0)  # 第104轮统一资金池：tier 一律用初始资本
         tier = eq0
         tc = tier_count.get(tier, 0)
         tier_count[tier] = tc + 1
         color = _TIER_COLORS.get(tier, ["#fff"])[min(tc, 3)]
         style = _STYLE_MAP.get(getattr(broker, "fill_mode", "next"), "solid")
         # 第105轮：归一化基准改为各账户首个快照（=1.0），消除启动时间差；eq0 仅作档位/初始资金参考
-        out.append({"name": name, "eq0": eq0,
-                    "dt": dts, "equity": eq, "norm": [v / init_eq for v in eq],
-                    "risk": risk, "drawdown": dd,
-                    "color": color, "style": style, "fill_mode": getattr(broker, "fill_mode", "next")})
+        out.append(
+            {
+                "name": name,
+                "eq0": eq0,
+                "dt": dts,
+                "equity": eq,
+                "norm": [v / init_eq for v in eq],
+                "risk": risk,
+                "drawdown": dd,
+                "color": color,
+                "style": style,
+                "fill_mode": getattr(broker, "fill_mode", "next"),
+            }
+        )
     return out
 
 
@@ -384,7 +466,7 @@ def factor_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         if not isinstance(data, dict) or not isinstance(data.get("factors"), list):
             return None
@@ -404,7 +486,7 @@ def portfolio_nav_payload(path=None, max_points=1200):
         return None
     methods = ("equal", "inv_vol", "erc", "gmv")
     try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(path, encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames or not all(m + "_nav" in reader.fieldnames for m in methods):
                 return None
@@ -413,7 +495,7 @@ def portfolio_nav_payload(path=None, max_points=1200):
                 vals = [_f(row.get(m + "_nav")) for m in methods]
                 if any(v is None for v in vals):
                     continue
-                dts.append((row.get("date") or "")[5:10])      # MM-DD
+                dts.append((row.get("date") or "")[5:10])  # MM-DD
                 for k, m in enumerate(methods):
                     navs[m].append(vals[k])
         if len(dts) < 2:
@@ -428,8 +510,7 @@ def portfolio_nav_payload(path=None, max_points=1200):
             for v in seq:
                 peak = max(peak, v)
                 maxdd = max(maxdd, 1 - v / peak if peak > 0 else 0)
-            summary[m] = {"name": PORTFOLIO_NAV_NAME.get(m, m),
-                          "end_nav": seq[-1], "maxdd": maxdd}
+            summary[m] = {"name": PORTFOLIO_NAV_NAME.get(m, m), "end_nav": seq[-1], "maxdd": maxdd}
         return {"dt": dts, "series": series, "summary": summary, "points": len(dts)}
     except (OSError, UnicodeDecodeError, csv.Error):
         return None
@@ -442,20 +523,26 @@ def circuit_review_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         pm = data.get("per_method")
         meta = data.get("meta", {})
         if not isinstance(pm, dict) or not pm:
             return None
         methods = [m for m in ("equal", "inv_vol", "erc", "gmv") if m in pm]
-        grid = meta.get("sweep_grid") or (pm[methods[0]].get("sweep") and
-                                          [g["threshold"] for g in pm[methods[0]]["sweep"]])
+        grid = meta.get("sweep_grid") or (
+            pm[methods[0]].get("sweep") and [g["threshold"] for g in pm[methods[0]]["sweep"]]
+        )
         sweep = {"labels": [("%.2f%%" % (g * 100)) for g in grid], "methods": []}
         for m in methods:
             rows = pm[m].get("sweep", [])
-            sweep["methods"].append({"method": m, "name": PORTFOLIO_NAV_NAME.get(m, m),
-                                     "n_trigger": [int(g.get("n_trigger", 0)) for g in rows]})
+            sweep["methods"].append(
+                {
+                    "method": m,
+                    "name": PORTFOLIO_NAV_NAME.get(m, m),
+                    "n_trigger": [int(g.get("n_trigger", 0)) for g in rows],
+                }
+            )
         horizons = meta.get("horizons", [1, 3, 5, 10])
         forward = {"horizons": ["T+%d" % h for h in horizons], "methods": []}
         for m in methods:
@@ -463,13 +550,29 @@ def circuit_review_payload(path=None):
             cond, base = cf.get("conditional", {}), cf.get("baseline", {})
             cm = [(cond.get(str(h)) or {}).get("mean") for h in horizons]
             bm = [(base.get(str(h)) or {}).get("mean") for h in horizons]
-            forward["methods"].append({"method": m, "name": PORTFOLIO_NAV_NAME.get(m, m),
-                                       "cond": cm, "base": bm, "calib_n": pm[m].get("calib_n")})
+            forward["methods"].append(
+                {
+                    "method": m,
+                    "name": PORTFOLIO_NAV_NAME.get(m, m),
+                    "cond": cm,
+                    "base": bm,
+                    "calib_n": pm[m].get("calib_n"),
+                }
+            )
         counts = {m: pm[m].get("counts") for m in methods}
-        return {"sweep": sweep, "forward": forward, "counts": counts,
-                "thresholds": {"warn": meta.get("warn"), "halt": meta.get("halt"),
-                               "delever": meta.get("delever"), "calib": meta.get("calib_threshold")},
-                "n_proxy": meta.get("n_proxy"), "n_universe": meta.get("n_universe")}
+        return {
+            "sweep": sweep,
+            "forward": forward,
+            "counts": counts,
+            "thresholds": {
+                "warn": meta.get("warn"),
+                "halt": meta.get("halt"),
+                "delever": meta.get("delever"),
+                "calib": meta.get("calib_threshold"),
+            },
+            "n_proxy": meta.get("n_proxy"),
+            "n_universe": meta.get("n_universe"),
+        }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
@@ -481,34 +584,59 @@ def attribution_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         hz = data.get("horizons")
         if not isinstance(hz, dict) or not hz:
             return None
         main_h = data.get("main_h")
         hkey = str(main_h) if main_h is not None else None
-        if hkey not in hz:                       # 缺主周期就退到最大 horizon
+        if hkey not in hz:  # 缺主周期就退到最大 horizon
             hkey = sorted(hz, key=lambda k: int(k))[-1]
         blk = hz[hkey]
         factors = []
-        for fr in (blk.get("factors") or []):
-            factors.append({"name": fr.get("factor"), "contrib": fr.get("contrib"),
-                            "beta": fr.get("beta"), "tstat": fr.get("tstat"),
-                            "ic": fr.get("ic"), "share": fr.get("share")})
+        for fr in blk.get("factors") or []:
+            factors.append(
+                {
+                    "name": fr.get("factor"),
+                    "contrib": fr.get("contrib"),
+                    "beta": fr.get("beta"),
+                    "tstat": fr.get("tstat"),
+                    "ic": fr.get("ic"),
+                    "share": fr.get("share"),
+                }
+            )
         # 贡献升序：ECharts 横向类目轴首项在底，升序喂入后最大值自然落在最顶
-        factors.sort(key=lambda x: (x["contrib"] is None,
-                                    x["contrib"] if x["contrib"] is not None else 0.0))
-        sectors = [{"name": s.get("sector"), "alloc": s.get("alloc"), "select": s.get("select"),
-                    "inter": s.get("inter"), "effect": s.get("effect")}
-                   for s in (blk.get("bhb_sectors") or [])]
+        factors.sort(
+            key=lambda x: (x["contrib"] is None, x["contrib"] if x["contrib"] is not None else 0.0)
+        )
+        sectors = [
+            {
+                "name": s.get("sector"),
+                "alloc": s.get("alloc"),
+                "select": s.get("select"),
+                "inter": s.get("inter"),
+                "effect": s.get("effect"),
+            }
+            for s in (blk.get("bhb_sectors") or [])
+        ]
         bhb = blk.get("bhb") or {}
-        return {"h": int(hkey), "n": blk.get("n"), "alpha": blk.get("alpha"), "r2": blk.get("r2"),
-                "factors": factors, "sectors": sectors,
-                "bhb": {"alloc": bhb.get("alloc"), "select": bhb.get("select"),
-                        "inter": bhb.get("inter"), "total": bhb.get("total"),
-                        "excess": bhb.get("excess")},
-                "horizons": sorted(int(k) for k in hz)}
+        return {
+            "h": int(hkey),
+            "n": blk.get("n"),
+            "alpha": blk.get("alpha"),
+            "r2": blk.get("r2"),
+            "factors": factors,
+            "sectors": sectors,
+            "bhb": {
+                "alloc": bhb.get("alloc"),
+                "select": bhb.get("select"),
+                "inter": bhb.get("inter"),
+                "total": bhb.get("total"),
+                "excess": bhb.get("excess"),
+            },
+            "horizons": sorted(int(k) for k in hz),
+        }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
 
@@ -519,36 +647,57 @@ def spread_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         bw = (data.get("meta") or {}).get("backwardation") or {}
         n = bw.get("n") or 0
         back = bw.get("back") or 0
         term_ext = []
-        for r in (data.get("term") or []):
+        for r in data.get("term") or []:
             z = r.get("spread_z")
             if isinstance(z, (int, float)) and abs(z) >= 1.0:
-                term_ext.append({"name": r.get("sym"), "z": z,
-                                 "carry": r.get("carry_ann"), "curve": r.get("curve")})
-        term_ext.sort(key=lambda x: x["z"])                 # 升序：横向轴最大值落顶
+                term_ext.append(
+                    {
+                        "name": r.get("sym"),
+                        "z": z,
+                        "carry": r.get("carry_ann"),
+                        "curve": r.get("curve"),
+                    }
+                )
+        term_ext.sort(key=lambda x: x["z"])  # 升序：横向轴最大值落顶
         term_ext = term_ext[:16]
         chains = []
-        for c in (data.get("chains") or []):
+        for c in data.get("chains") or []:
             st = c.get("stat")
             if isinstance(st, dict):
-                chains.append({"name": c.get("name"), "z": st.get("z"),
-                               "ratio": st.get("ratio"), "chg60": st.get("chg60")})
+                chains.append(
+                    {
+                        "name": c.get("name"),
+                        "z": st.get("z"),
+                        "ratio": st.get("ratio"),
+                        "chg60": st.get("chg60"),
+                    }
+                )
         margins = []
-        for m in (data.get("margins") or []):
+        for m in data.get("margins") or []:
             st = m.get("stat")
             if isinstance(st, dict):
-                margins.append({"name": m.get("name"), "z": st.get("z"),
-                                "value": st.get("value"), "chg60": st.get("chg60")})
+                margins.append(
+                    {
+                        "name": m.get("name"),
+                        "z": st.get("z"),
+                        "value": st.get("value"),
+                        "chg60": st.get("chg60"),
+                    }
+                )
         if not (bw or term_ext or chains or margins):
             return None
-        return {"breadth": {"back": back, "n": n,
-                            "pct": (back / n) if n else None},
-                "term_ext": term_ext, "chains": chains, "margins": margins}
+        return {
+            "breadth": {"back": back, "n": n, "pct": (back / n) if n else None},
+            "term_ext": term_ext,
+            "chains": chains,
+            "margins": margins,
+        }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
 
@@ -559,23 +708,27 @@ def shadow_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         sig = data.get("signals") or {}
         legs = (data.get("snapshot") or {}).get("legs") or {}
-        out = {"snapshot_date": (data.get("snapshot") or {}).get("date"),
-               "signals": {}, "legs": {}}
+        out = {"snapshot_date": (data.get("snapshot") or {}).get("date"), "signals": {}, "legs": {}}
         for k, v in sig.items():
             net = v.get("net") or {}
-            out["signals"][k] = {"label": v.get("label"), "n_logged": v.get("n_logged"),
-                                 "n_periods": v.get("n_periods"),
-                                 "annual_ret": net.get("annual_ret"),
-                                 "cs_ic": (v.get("cs_ic") or {}).get("mean_ic")}
+            out["signals"][k] = {
+                "label": v.get("label"),
+                "n_logged": v.get("n_logged"),
+                "n_periods": v.get("n_periods"),
+                "annual_ret": net.get("annual_ret"),
+                "cs_ic": (v.get("cs_ic") or {}).get("mean_ic"),
+            }
         for k, v in legs.items():
             if v is None:
                 continue
-            out["legs"][k] = {"long": (v.get("long") or [])[:12],
-                              "short": (v.get("short") or [])[:12]}
+            out["legs"][k] = {
+                "long": (v.get("long") or [])[:12],
+                "short": (v.get("short") or [])[:12],
+            }
         return out
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
@@ -587,7 +740,7 @@ def journal_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         ov = data.get("overall")
         if not isinstance(ov, dict):
@@ -595,29 +748,45 @@ def journal_payload(path=None):
 
         def _bucket(rows):
             out = []
-            for r in (rows or []):
-                out.append({"key": r.get("key"), "n": r.get("n"),
-                            "win_rate": r.get("win_rate"), "net": r.get("net"),
-                            "pf": r.get("pf")})
+            for r in rows or []:
+                out.append(
+                    {
+                        "key": r.get("key"),
+                        "n": r.get("n"),
+                        "win_rate": r.get("win_rate"),
+                        "net": r.get("net"),
+                        "pf": r.get("pf"),
+                    }
+                )
             return out
+
         hold = _bucket(data.get("by_hold_band"))
-        hold.sort(key=lambda x: str(x.get("key") or "z"))          # 键以 1/2/3/4 起头，天然按时长升序
+        hold.sort(key=lambda x: str(x.get("key") or "z"))  # 键以 1/2/3/4 起头，天然按时长升序
         score_rank = {"弱": 0, "轻": 1, "分": 2}
         score = _bucket(data.get("by_score_band"))
         score.sort(key=lambda x: score_rank.get(str(x.get("key") or "")[:1], 9))
         reason = _bucket(data.get("by_reason"))
         dates, nets, cum = [], [], 0.0
-        for d in (data.get("daily") or []):
+        for d in data.get("daily") or []:
             dates.append(d.get("key"))
             v = d.get("net")
             nets.append(v)
             if isinstance(v, (int, float)):
                 cum += v
-        return {"overall": {"n": ov.get("n"), "win_rate": ov.get("win_rate"),
-                            "expectancy": ov.get("expectancy"), "pf": ov.get("profit_factor"),
-                            "payoff": ov.get("payoff_ratio"), "fee_over_gross": None},
-                "hold": hold, "score": score, "reason": reason,
-                "daily": {"dates": dates, "net": nets, "cum": cum}}
+        return {
+            "overall": {
+                "n": ov.get("n"),
+                "win_rate": ov.get("win_rate"),
+                "expectancy": ov.get("expectancy"),
+                "pf": ov.get("profit_factor"),
+                "payoff": ov.get("payoff_ratio"),
+                "fee_over_gross": None,
+            },
+            "hold": hold,
+            "score": score,
+            "reason": reason,
+            "daily": {"dates": dates, "net": nets, "cum": cum},
+        }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
 
@@ -628,22 +797,34 @@ def portfolio_risk_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         pm = data.get("per_method")
         if not isinstance(pm, dict) or not pm:
             return None
-        labels = {"equal": "等名义", "inv_vol": "逆波动", "erc": "风险平价ERC", "gmv": "全局最小方差"}
+        labels = {
+            "equal": "等名义",
+            "inv_vol": "逆波动",
+            "erc": "风险平价ERC",
+            "gmv": "全局最小方差",
+        }
         order = [m for m in ("equal", "inv_vol", "erc", "gmv") if m in pm]
         methods = []
         stress = {}
         for m in order:
             blk = pm[m]
             param = blk.get("param") or {}
-            methods.append({"key": m, "name": labels.get(m, m),
-                            "eff_n": blk.get("eff_n"), "div": blk.get("div_benefit"),
-                            "ann_vol": param.get("ann_vol"), "avg_corr": blk.get("avg_abs_corr"),
-                            "var": blk.get("port_param_var")})
+            methods.append(
+                {
+                    "key": m,
+                    "name": labels.get(m, m),
+                    "eff_n": blk.get("eff_n"),
+                    "div": blk.get("div_benefit"),
+                    "ann_vol": param.get("ann_vol"),
+                    "avg_corr": blk.get("avg_abs_corr"),
+                    "var": blk.get("port_param_var"),
+                }
+            )
             osd = {}
             for sc, v in (blk.get("oil_stress") or {}).items():
                 osd[sc] = v.get("total") if isinstance(v, dict) else None
@@ -657,13 +838,23 @@ def portfolio_risk_payload(path=None):
             pairs.append({"name": a + "/" + b, "corr": c})
         pairs = [p for p in pairs if isinstance(p["corr"], (int, float))]
         pairs.sort(key=lambda x: x["corr"])
-        scenarios = sorted({s for m in stress.values() for s in m.keys()},
-                           key=lambda x: float(x))  # -0.1/-0.05/0.05 数值序（非字典序）
-        return {"methods": methods, "stress": {"order": [labels.get(m, m) for m in order],
-                                               "keys": order, "scenarios": scenarios,
-                                               "by_method": stress}, "pairs": pairs,
-                "meta": {"window": (data.get("meta") or {}).get("window"),
-                         "n_universe": (data.get("meta") or {}).get("n_universe")}}
+        scenarios = sorted(
+            {s for m in stress.values() for s in m.keys()}, key=lambda x: float(x)
+        )  # -0.1/-0.05/0.05 数值序（非字典序）
+        return {
+            "methods": methods,
+            "stress": {
+                "order": [labels.get(m, m) for m in order],
+                "keys": order,
+                "scenarios": scenarios,
+                "by_method": stress,
+            },
+            "pairs": pairs,
+            "meta": {
+                "window": (data.get("meta") or {}).get("window"),
+                "n_universe": (data.get("meta") or {}).get("n_universe"),
+            },
+        }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
 
@@ -680,7 +871,7 @@ def wf_cost_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         results = data.get("results")
         if not isinstance(results, list) or not results:
@@ -696,30 +887,48 @@ def wf_cost_payload(path=None):
                     comp = c.get("total_compound")
                     if not isinstance(comp, (int, float)):
                         continue
-                    pctv = round(comp * 100, 3)                    # 复利净收益 %（热力图直接用）
-                    cells.append([si, fi, pctv,
-                                  round((c.get("win_rate") or 0) * 100, 1),
-                                  c.get("n_trades"),
-                                  round((c.get("cost_to_gross") or 0) * 100, 1)])
+                    pctv = round(comp * 100, 3)  # 复利净收益 %（热力图直接用）
+                    cells.append(
+                        [
+                            si,
+                            fi,
+                            pctv,
+                            round((c.get("win_rate") or 0) * 100, 1),
+                            c.get("n_trades"),
+                            round((c.get("cost_to_gross") or 0) * 100, 1),
+                        ]
+                    )
                     vmin = pctv if vmin is None else min(vmin, pctv)
                     vmax = pctv if vmax is None else max(vmax, pctv)
-            syms.append({"sym": r.get("sym"), "name": r.get("name") or r.get("sym"),
-                         "grade": stab.get("grade"), "best": r.get("best_param"),
-                         "is_sharpe": ws.get("mean_is_sharpe"),
-                         "oos_sharpe": ws.get("mean_oos_sharpe"),
-                         "decay": stab.get("is_oos_decay"),
-                         "switch": stab.get("switch_rate"),
-                         "regret": stab.get("selection_regret"),
-                         "pos_rate": stab.get("oos_positive_rate"),
-                         "surface": cells})
+            syms.append(
+                {
+                    "sym": r.get("sym"),
+                    "name": r.get("name") or r.get("sym"),
+                    "grade": stab.get("grade"),
+                    "best": r.get("best_param"),
+                    "is_sharpe": ws.get("mean_is_sharpe"),
+                    "oos_sharpe": ws.get("mean_oos_sharpe"),
+                    "decay": stab.get("is_oos_decay"),
+                    "switch": stab.get("switch_rate"),
+                    "regret": stab.get("selection_regret"),
+                    "pos_rate": stab.get("oos_positive_rate"),
+                    "surface": cells,
+                }
+            )
         if not syms or vmin is None:
             return None
-        g0 = (results[0].get("surface") or {})
+        g0 = results[0].get("surface") or {}
         fee_labels = [_bp_label(x) for x in (g0.get("fee_grid") or [])]
         slip_labels = [_bp_label(x) for x in (g0.get("slip_grid") or [])]
-        return {"generated": data.get("generated"), "period": results[0].get("period"),
-                "fee_labels": fee_labels, "slip_labels": slip_labels,
-                "vmin": vmin, "vmax": vmax, "syms": syms}
+        return {
+            "generated": data.get("generated"),
+            "period": results[0].get("period"),
+            "fee_labels": fee_labels,
+            "slip_labels": slip_labels,
+            "vmin": vmin,
+            "vmax": vmax,
+            "syms": syms,
+        }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return None
 
@@ -735,10 +944,16 @@ def _fh_event_cell(c):
         v = ci.get(key)
         return round(v, nd) if isinstance(v, (int, float)) else None
 
-    return {"ic": round(c["ic"], 4) if isinstance(c.get("ic"), (int, float)) else 0.0,
-            "n": c.get("n"), "verdict": c.get("verdict"),
-            "lo": _r("p5", 4), "hi": _r("p95", 4), "same": _r("prob_same_sign", 3),
-            "flip": c.get("n_flip"), "consec": c.get("max_consec_fail")}
+    return {
+        "ic": round(c["ic"], 4) if isinstance(c.get("ic"), (int, float)) else 0.0,
+        "n": c.get("n"),
+        "verdict": c.get("verdict"),
+        "lo": _r("p5", 4),
+        "hi": _r("p95", 4),
+        "same": _r("prob_same_sign", 3),
+        "flip": c.get("n_flip"),
+        "consec": c.get("max_consec_fail"),
+    }
 
 
 def factor_health_payload(path=None):
@@ -748,7 +963,7 @@ def factor_health_payload(path=None):
     if not path or not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         event = data.get("event")
         if not isinstance(event, dict) or not event:
@@ -757,30 +972,53 @@ def factor_health_payload(path=None):
         h0 = event[str(horizons[0])]
         if not isinstance(h0, dict) or not h0:
             return None
-        factors = list(h0.keys())                       # 工具写入顺序即 PART_KEYS 规范顺序
+        factors = list(h0.keys())  # 工具写入顺序即 PART_KEYS 规范顺序
         hname = {30: "30分", 120: "2小时", 1440: "次日"}
         ev_blocks = []
         for h in horizons:
             blk = event[str(h)]
-            ev_blocks.append({"h": h, "name": hname.get(h, "%d分" % h),
-                              "by": [_fh_event_cell(blk.get(f)) for f in factors]})
+            ev_blocks.append(
+                {
+                    "h": h,
+                    "name": hname.get(h, "%d分" % h),
+                    "by": [_fh_event_cell(blk.get(f)) for f in factors],
+                }
+            )
         dlines, daily_hs = [], []
         daily = data.get("daily")
         if isinstance(daily, dict) and daily:
-            daily_hs = sorted(int(k) for k in next(iter(daily.values())).keys()
-                              if str(k) != "halflife")
+            daily_hs = sorted(
+                int(k) for k in next(iter(daily.values())).keys() if str(k) != "halflife"
+            )
             for fname, blk in daily.items():
                 ics = []
                 for h in daily_hs:
                     cell = blk.get(str(h)) or {}
-                    ics.append(round(cell["ic"], 4) if isinstance(cell.get("ic"), (int, float)) else None)
+                    ics.append(
+                        round(cell["ic"], 4) if isinstance(cell.get("ic"), (int, float)) else None
+                    )
                 hl = blk.get("halflife")
-                half = round(hl["half_life"], 1) if isinstance(hl, dict) and \
-                    isinstance(hl.get("half_life"), (int, float)) else None
+                half = (
+                    round(hl["half_life"], 1)
+                    if isinstance(hl, dict) and isinstance(hl.get("half_life"), (int, float))
+                    else None
+                )
                 dlines.append({"name": fname, "ic": ics, "half": half})
-        return {"generated": data.get("generated"), "factors": factors,
-                "event": ev_blocks, "daily_hs": daily_hs, "daily": dlines}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, StopIteration):
+        return {
+            "generated": data.get("generated"),
+            "factors": factors,
+            "event": ev_blocks,
+            "daily_hs": daily_hs,
+            "daily": dlines,
+        }
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        TypeError,
+        StopIteration,
+    ):
         return None
 
 
@@ -793,17 +1031,22 @@ def _tear_from_series(dts, equity, source, max_points=1200):
     if not dts or len(dts) != len(equity) or len(equity) < 2:
         return None
     raw_rets = metrics.returns_from_equity(equity)
-    underwater = [0.0] + metrics.drawdown_series(raw_rets)   # 与 dts 等长、首点 0
+    underwater = [0.0] + metrics.drawdown_series(raw_rets)  # 与 dts 等长、首点 0
     uw_dt, underwater = downsample(list(dts), underwater, max_points=max_points)
     days, day_eq = metrics.daily_last_equity(dts, equity)
     if len(days) < 2:
         return None
     day_rets = metrics.returns_from_equity(day_eq)
-    ret_days = days[1:1 + len(day_rets)]          # 每笔日度收益归属其结束日（等长对齐）
+    ret_days = days[1 : 1 + len(day_rets)]  # 每笔日度收益归属其结束日（等长对齐）
     ppy = config.METRICS_BARS_PER_YEAR
     win = config.METRICS_ROLLING_WINDOW
-    sheet = metrics.tear_sheet(day_rets, ret_days, bars_per_year=ppy,
-                               var_alpha=config.METRICS_VAR_ALPHA, rolling_window=win)
+    sheet = metrics.tear_sheet(
+        day_rets,
+        ret_days,
+        bars_per_year=ppy,
+        var_alpha=config.METRICS_VAR_ALPHA,
+        rolling_window=win,
+    )
     roll = metrics.rolling_sharpe(day_rets, win, ppy)
     monthly = metrics.monthly_returns(day_rets, ret_days)
     years, cells = [], []
@@ -811,22 +1054,35 @@ def _tear_from_series(dts, equity, source, max_points=1200):
         years = monthly["years"]
         yidx = {y: i for i, y in enumerate(years)}
         for y, m, v in monthly["cells"]:
-            cells.append([m - 1, yidx[y], round(v, 6)])   # [月索引0-11, 年索引, 收益小数]
+            cells.append([m - 1, yidx[y], round(v, 6)])  # [月索引0-11, 年索引, 收益小数]
 
     def _r(k, nd=4):
         v = sheet.get(k)
         return round(v, nd) if isinstance(v, float) and math.isfinite(v) else v
 
-    summary = {"n": sheet.get("n"), "annualized": _r("annualized"),
-               "sharpe": _r("sharpe"), "sortino": _r("sortino"),
-               "calmar": _r("calmar"), "omega": _r("omega"),
-               "ulcer": _r("ulcer"), "max_drawdown": _r("max_drawdown"),
-               "var": _r("var"), "cvar": _r("cvar")}
-    return {"source": source, "uw_dt": uw_dt, "underwater": underwater,
-            "rs_dt": ret_days,
-            "rolling_sharpe": [None if x is None else round(x, 3) for x in roll],
-            "rolling_window": win, "monthly_years": years, "monthly_cells": cells,
-            "summary": summary}
+    summary = {
+        "n": sheet.get("n"),
+        "annualized": _r("annualized"),
+        "sharpe": _r("sharpe"),
+        "sortino": _r("sortino"),
+        "calmar": _r("calmar"),
+        "omega": _r("omega"),
+        "ulcer": _r("ulcer"),
+        "max_drawdown": _r("max_drawdown"),
+        "var": _r("var"),
+        "cvar": _r("cvar"),
+    }
+    return {
+        "source": source,
+        "uw_dt": uw_dt,
+        "underwater": underwater,
+        "rs_dt": ret_days,
+        "rolling_sharpe": [None if x is None else round(x, 3) for x in roll],
+        "rolling_window": win,
+        "monthly_years": years,
+        "monthly_cells": cells,
+        "summary": summary,
+    }
 
 
 def tear_payload(state=None, max_points=None):
@@ -839,7 +1095,7 @@ def tear_payload(state=None, max_points=None):
         except Exception:
             rows = []
         dts, eq = [], []
-        for r in (rows or []):
+        for r in rows or []:
             v = _f(r.get("equity"))
             if v is None:
                 continue
@@ -868,15 +1124,13 @@ def build_payload(state=None):
         payload["portfolio"] = None
     # ② 横截面（仅本轮内存态有）
     try:
-        payload["cross_section"] = cross_section_payload(
-            getattr(state, "last_cross_section", None))
+        payload["cross_section"] = cross_section_payload(getattr(state, "last_cross_section", None))
     except Exception:
         payload["cross_section"] = None
     # ③a 胜率校准（方向×分档）
     try:
         cal = getattr(state, "calibrator", None)
-        payload["calibration"] = calibration_payload(
-            cal.band_table() if cal is not None else None)
+        payload["calibration"] = calibration_payload(cal.band_table() if cal is not None else None)
     except Exception:
         payload["calibration"] = None
     # ③b 分周期胜率（SQLite）
@@ -1005,10 +1259,18 @@ def ensure_charts_page():
 
 # ---------------- 静态图表页（无 Python 变量注入；数据全部运行时读 chart_data.js） ----------------
 
+
 def charts_page_html():
     """独立图表看板页（直链打开用；外层实时看板的内嵌页签复用同一套片段，两处不重复维护）。"""
-    return (_PAGE_SHELL_HEAD + _PANEL_STYLE + _PAGE_SHELL_MID + _PANEL_DOM
-            + _PAGE_SHELL_BOOT + _PANEL_JS + _PAGE_SHELL_TAIL)
+    return (
+        _PAGE_SHELL_HEAD
+        + _PANEL_STYLE
+        + _PAGE_SHELL_MID
+        + _PANEL_DOM
+        + _PAGE_SHELL_BOOT
+        + _PANEL_JS
+        + _PAGE_SHELL_TAIL
+    )
 
 
 def dashboard_embed_parts():
@@ -2269,22 +2531,27 @@ if (window.__CHARTS_STANDALONE__) { started = true; loadAndRender(); }   // 独�
 })();
 """
 
-_PAGE_SHELL_HEAD = ('<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n'
-                    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-                    '<title>期货监控·图表看板（ECharts 本地渲染，数据随每轮监控自动刷新）</title>\n'
-                    '<style>')
-_PAGE_SHELL_MID = ('\n</style>\n<script src="assets/echarts.min.js"></script>\n</head>\n<body>\n'
-                   '<div id="charts-panel" class="cp-standalone">\n')
-_PAGE_SHELL_BOOT = ('\n</div>\n<script>window.__CHARTS_STANDALONE__ = true;</script>\n<script>\n')
-_PAGE_SHELL_TAIL = '\n</script>\n</body>\n</html>\n'
-
+_PAGE_SHELL_HEAD = (
+    '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    "<title>期货监控·图表看板（ECharts 本地渲染，数据随每轮监控自动刷新）</title>\n"
+    "<style>"
+)
+_PAGE_SHELL_MID = (
+    '\n</style>\n<script src="assets/echarts.min.js"></script>\n</head>\n<body>\n'
+    '<div id="charts-panel" class="cp-standalone">\n'
+)
+_PAGE_SHELL_BOOT = "\n</div>\n<script>window.__CHARTS_STANDALONE__ = true;</script>\n<script>\n"
+_PAGE_SHELL_TAIL = "\n</script>\n</body>\n</html>\n"
 
 
 # ---------------- 离线手动刷新（python charts.py --rebuild） ----------------
 
+
 def _rebuild_from_db():
     """监控未运行时也能从 SQLite + CSV/JSON 重建 chart_data.js（横截面/校准内存态留空态）。"""
     import storage
+
     db = storage.MonitorDB()
 
     class _State:
@@ -2295,6 +2562,7 @@ def _rebuild_from_db():
     st.last_cross_section = {}
     try:
         import signal_calibrator
+
         st.calibrator = signal_calibrator.SignalCalibrator(db)
     except Exception:
         st.calibrator = None
@@ -2308,8 +2576,11 @@ def _rebuild_from_db():
 
 if __name__ == "__main__":
     import argparse
+
     ap = argparse.ArgumentParser(description="图表看板数据/静态页手动重建（P1-3）")
-    ap.add_argument("--rebuild", action="store_true", help="从 DB+CSV/JSON 重建 chart_data.js 与静态页")
+    ap.add_argument(
+        "--rebuild", action="store_true", help="从 DB+CSV/JSON 重建 chart_data.js 与静态页"
+    )
     args = ap.parse_args()
     if args.rebuild:
         raise SystemExit(_rebuild_from_db())

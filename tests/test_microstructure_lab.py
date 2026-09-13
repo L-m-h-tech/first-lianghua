@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 """第54轮 G24 微结构/持仓/季节因子族实验台 tools/microstructure_lab.py 的零网络/零DB 单测（只测纯函数与渲染）。"""
+
 import datetime as dt
-import math
 import os
 import random
 import sys
@@ -14,8 +13,8 @@ for p in (_ROOT, _TOOLS):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import factor_health as fh            # noqa: E402
-import microstructure_lab as ml       # noqa: E402
+import factor_health as fh  # noqa: E402
+import microstructure_lab as ml  # noqa: E402
 
 
 def _toy(seed=3, n=160):
@@ -25,11 +24,19 @@ def _toy(seed=3, n=160):
         rows, c, oi = [], 100.0, 10000.0
         for t in range(n):
             r = drift + rnd.gauss(0, 0.01)
-            c *= (1 + r)
-            oi *= (1 + rnd.gauss(0, 0.003))
+            c *= 1 + r
+            oi *= 1 + rnd.gauss(0, 0.003)
             d = dt.date(2025, 1, 1) + dt.timedelta(days=t)
-            rows.append({"sym": sym, "date": d.isoformat(), "c": c,
-                         "v": 1e5 + rnd.random() * 1e4, "oi": oi, "ret1d": r})
+            rows.append(
+                {
+                    "sym": sym,
+                    "date": d.isoformat(),
+                    "c": c,
+                    "v": 1e5 + rnd.random() * 1e4,
+                    "oi": oi,
+                    "ret1d": r,
+                }
+            )
         bysym[sym] = rows
     return bysym
 
@@ -48,7 +55,7 @@ def test_pct_change():
 def test_rolling_amihud():
     am = ml.rolling_amihud([0.01, 0.01, 0.01], [1000.0] * 3, [100.0] * 3, win=3, min_n=3)
     assert am[2] == pytest.approx(0.01 / 1e5)
-    assert am[0] is None and am[1] is None          # 有效点不足
+    assert am[0] is None and am[1] is None  # 有效点不足
     # 成交额为 0 的点跳过、不计入
     am0 = ml.rolling_amihud([0.01, 0.02], [1000.0, 1000.0], [0.0, 100.0], win=2, min_n=2)
     assert am0[1] is None
@@ -80,8 +87,10 @@ def test_idiovol_pure_market_vs_noise():
 
 
 def test_market_by_date_equal_weight():
-    bysym = {"A": [{"date": "d1", "ret1d": 0.02}, {"date": "d2", "ret1d": 0.0}],
-             "B": [{"date": "d1", "ret1d": 0.04}, {"date": "d2", "ret1d": None}]}
+    bysym = {
+        "A": [{"date": "d1", "ret1d": 0.02}, {"date": "d2", "ret1d": 0.0}],
+        "B": [{"date": "d1", "ret1d": 0.04}, {"date": "d2", "ret1d": None}],
+    }
     m = ml.market_by_date(bysym)
     assert m["d1"] == pytest.approx(0.03)
     assert m["d2"] == pytest.approx(0.0)
@@ -95,7 +104,7 @@ def test_build_series_alignment_and_pit():
         for f in ("doi1", "doi5", "amihud20", "idiovol60", "skew60"):
             assert len(series[sym][f]) == n
         assert series[sym]["doi1"][0] is None
-        assert series[sym]["doi5"][:5] == [None] * 5       # 5日变化前5点无值=无未来
+        assert series[sym]["doi5"][:5] == [None] * 5  # 5日变化前5点无值=无未来
         assert all(v is None or v >= 0 for v in series[sym]["amihud20"])
         assert all(v is None or v >= 0 for v in series[sym]["idiovol60"])
 
@@ -139,9 +148,16 @@ def test_render_sections():
     res = {f: ml.factor_forward_curve(bysym, series, f, min_pairs=20) for f, _, _ in ml.FACTORS}
     sm = ml.calendar_seasonality(bysym, "month")
     sw = ml.calendar_seasonality(bysym, "weekday")
-    meta = {"n_sym": 2, "d0": "2025-01-01", "d1": "2025-06-09", "n_rows": 320,
-            "horizons": list(ml.HORIZONS), "n_q": 5, "amihud_scale": ml.AMIHUD_SCALE,
-            "windows": {"amihud": 20, "idiovol": 60, "skew": 60}}
+    meta = {
+        "n_sym": 2,
+        "d0": "2025-01-01",
+        "d1": "2025-06-09",
+        "n_rows": 320,
+        "horizons": list(ml.HORIZONS),
+        "n_q": 5,
+        "amihud_scale": ml.AMIHUD_SCALE,
+        "windows": {"amihud": 20, "idiovol": 60, "skew": 60},
+    }
     txt = ml.render(meta, res, sm, sw)
     for marker in ("【一】", "【二】", "【三】", "Amihud", "HP/SP"):
         assert marker in txt

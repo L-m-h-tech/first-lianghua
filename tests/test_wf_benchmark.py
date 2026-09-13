@@ -1,6 +1,6 @@
-# -*- coding: utf-8 -*-
 """G4续（第62轮）滚动 walk-forward + 对照基准 backtest_rigor.py 的零网络确定性回归。
 （第26轮 next_open/bootstrap/IS-OOS/留档 的既有 G4 用例在 test_backtest_rigor.py，不重复。）"""
+
 import backtest_rigor as br
 
 
@@ -8,11 +8,22 @@ def make_prepared(n=300, warmup=60):
     closes = [100.0 + 0.1 * i for i in range(n)]
     bars = [{"d": "D%03d" % i, "c": closes[i]} for i in range(n)]
     # 确定性的伪技术分序列（只用于占位，选参由假模拟器决定）
-    series = [{"i": i, "ind": {}, "score": (1 if i % 7 == 0 else (-1 if i % 11 == 0 else 0))}
-              for i in range(warmup, n)]
-    return {"name": "t", "code": "T0", "sym": "T", "bars": bars, "closes": closes,
-            "opens": list(closes), "highs": [c * 1.01 for c in closes],
-            "lows": [c * 0.99 for c in closes], "series": series, "roll_count": 0}
+    series = [
+        {"i": i, "ind": {}, "score": (1 if i % 7 == 0 else (-1 if i % 11 == 0 else 0))}
+        for i in range(warmup, n)
+    ]
+    return {
+        "name": "t",
+        "code": "T0",
+        "sym": "T",
+        "bars": bars,
+        "closes": closes,
+        "opens": list(closes),
+        "highs": [c * 1.01 for c in closes],
+        "lows": [c * 0.99 for c in closes],
+        "series": series,
+        "roll_count": 0,
+    }
 
 
 # ---------- 切窗 ----------
@@ -60,7 +71,7 @@ def test_pooled_excess_and_beat():
     assert br.excess(None, 0.1) is None and br.excess(0.1, float("nan")) is None
     pairs = [("A", 0.2, 0.1), ("B", -0.1, 0.0), ("C", 0.05, 0.1), ("D", None, 0.2)]
     beat, n, rows = br.beat_benchmark_pairs(pairs)
-    assert n == 3 and beat == 1 and len(rows) == 3     # A跑赢；D缺策略值被跳过
+    assert n == 3 and beat == 1 and len(rows) == 3  # A跑赢；D缺策略值被跳过
 
 
 # ---------- walk-forward 折划分 ----------
@@ -69,14 +80,14 @@ def test_wf_folds_contiguous_nonoverlap():
     # 首折 OOS 起点 = warmup+train = 180；之后每折推进40，覆盖到300
     assert [(f[2], f[3]) for f in folds] == [(180, 220), (220, 260), (260, 300)]
     for ia, ib, oa, ob in folds:
-        assert ib == oa and ia == oa - 120          # IS 紧邻且在 OOS 之前
+        assert ib == oa and ia == oa - 120  # IS 紧邻且在 OOS 之前
         assert ob - oa == 40
 
 
 def test_wf_folds_drop_tiny_tail():
     # 尾折 OOS 只有1根 -> 丢弃
     folds = br.wf_folds(221, 60, 120, 40)
-    assert folds[-1][3] == 220                      # 180-220 保留，220-221 不足2根丢弃
+    assert folds[-1][3] == 220  # 180-220 保留，220-221 不足2根丢弃
 
 
 # ---------- 选参 ----------
@@ -90,7 +101,7 @@ def test_select_best_param_picks_max_and_respects_min_trades():
         return {"trade_metrics": {"n": n, "avg": avg}, "trades": []}
 
     chosen, is_n, is_avg, cands = br.select_best_param("sub", grid, sim, 3)
-    assert chosen == (10, 2.0)                      # 20被样本门槛排除，10胜出
+    assert chosen == (10, 2.0)  # 20被样本门槛排除，10胜出
     assert is_n == 5 and abs(is_avg - 0.01) < 1e-12
     assert len(cands) == 3
 
@@ -102,7 +113,7 @@ def test_select_best_param_tie_keeps_first():
         return {"trade_metrics": {"n": 4, "avg": 0.01}, "trades": []}
 
     chosen, _, _, _ = br.select_best_param("sub", grid, sim, 3)
-    assert chosen == (5, 1.5)                       # 严格大于，并列保留先出现者
+    assert chosen == (5, 1.5)  # 严格大于，并列保留先出现者
 
 
 # ---------- 端到端 walk-forward ----------
@@ -116,6 +127,7 @@ def _recording_simulator(calls):
         trades = [{"ret": 0.01 * hold, "direction": "多" if j % 2 else "空"} for j in range(k)]
         avg = sum(t["ret"] for t in trades) / k
         return {"trades": trades, "trade_metrics": {"n": k, "avg": avg}}
+
     return sim
 
 
@@ -123,13 +135,21 @@ def test_walk_forward_oos_disjoint_and_tagged():
     p = make_prepared(300)
     calls = []
     grid = [(5, 1.5), (10, 2.0)]
-    out = br.walk_forward_symbol(p, _recording_simulator(calls), grid, (10, 2.0),
-                                 train_bars=120, test_bars=40, min_is_trades=3, warmup=60)
+    out = br.walk_forward_symbol(
+        p,
+        _recording_simulator(calls),
+        grid,
+        (10, 2.0),
+        train_bars=120,
+        test_bars=40,
+        min_is_trades=3,
+        warmup=60,
+    )
     assert len(out["folds"]) == 3
     # 每折：先对网格每个参数各调一次IS(长度120)，再调一次OOS(长度40)；IS末日期 < OOS首日期
     n_grid = len(grid)
     for k in range(3):
-        is_calls = calls[k * (n_grid + 1): k * (n_grid + 1) + n_grid]
+        is_calls = calls[k * (n_grid + 1) : k * (n_grid + 1) + n_grid]
         oos_call = calls[k * (n_grid + 1) + n_grid]
         assert all(c[0] == 120 for c in is_calls) and oos_call[0] == 40
         assert all(c[1][1] < oos_call[1][0] for c in is_calls)
@@ -147,11 +167,21 @@ def test_walk_forward_fallback_to_default():
         n = len(sub["closes"])
         if n == 120:
             return {"trades": [], "trade_metrics": {"n": 0, "avg": 0.0}}
-        return {"trades": [{"ret": 0.01, "direction": "多"}],
-                "trade_metrics": {"n": 1, "avg": 0.01}}
+        return {
+            "trades": [{"ret": 0.01, "direction": "多"}],
+            "trade_metrics": {"n": 1, "avg": 0.01},
+        }
 
-    out = br.walk_forward_symbol(p, thin_sim, [(5, 1.5), (10, 2.0)], (7, 1.8),
-                                 train_bars=120, test_bars=40, min_is_trades=3, warmup=60)
+    out = br.walk_forward_symbol(
+        p,
+        thin_sim,
+        [(5, 1.5), (10, 2.0)],
+        (7, 1.8),
+        train_bars=120,
+        test_bars=40,
+        min_is_trades=3,
+        warmup=60,
+    )
     assert all(f["fallback"] for f in out["folds"])
     assert all((f["hold"], f["entry"]) == (7, 1.8) for f in out["folds"])
 

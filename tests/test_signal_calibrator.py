@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """历史胜率校准器回归（第19轮 A3：贝叶斯平滑/四级回退/乘子裁剪/影子模式）。"""
+
 import config
 import signal_calibrator as sc
 
@@ -27,14 +27,14 @@ def test_bayes_winrate():
     # 先验强度2、先验胜率0.5：(20+1)/(25+2)
     assert abs(sc.bayes_winrate(20, 25) - 21 / 27) < 1e-12
     assert sc.bayes_winrate(0, 0) == 0.5
-    assert sc.bayes_winrate(-1, 5) == 0.5          # 非法
-    assert sc.bayes_winrate(10, 5) == 0.5          # hits>n 非法
+    assert sc.bayes_winrate(-1, 5) == 0.5  # 非法
+    assert sc.bayes_winrate(10, 5) == 0.5  # hits>n 非法
 
 
 def test_mult_from_winrate():
     assert sc.mult_from_winrate(0.5) == 1.0
-    assert abs(sc.mult_from_winrate(1.0) - config.CALIBRATOR_MULT_HI) < 1e-12   # 触上限1.2
-    assert abs(sc.mult_from_winrate(0.0) - config.CALIBRATOR_MULT_LO) < 1e-12   # 触下限0.5
+    assert abs(sc.mult_from_winrate(1.0) - config.CALIBRATOR_MULT_HI) < 1e-12  # 触上限1.2
+    assert abs(sc.mult_from_winrate(0.0) - config.CALIBRATOR_MULT_LO) < 1e-12  # 触下限0.5
     assert sc.mult_from_winrate("bad") == 1.0
 
 
@@ -48,9 +48,15 @@ def test_band_of_score():
 def _rows(n, hits, band="分批", d=1, fac=None, start=0):
     out = []
     for i in range(n):
-        out.append({"direction_int": d, "score_band": band,
-                    "hit": 1 if i < hits else 0, "ret": 0.01,
-                    "parts_json": fac if fac is not None else {}})
+        out.append(
+            {
+                "direction_int": d,
+                "score_band": band,
+                "hit": 1 if i < hits else 0,
+                "ret": 0.01,
+                "parts_json": fac if fac is not None else {},
+            }
+        )
     return out
 
 
@@ -61,7 +67,7 @@ def test_lookup_calibrated_at_finest_level():
     assert info["n"] == 25
     assert info["level"] == sc.LV_FACTOR
     assert abs(info["winrate"] - 21 / 27) < 1e-12
-    assert abs(info["mult"] - 1.2) < 1e-12          # 高胜率触乘子上限
+    assert abs(info["mult"] - 1.2) < 1e-12  # 高胜率触乘子上限
     assert "影子" in cal.format_note(info, 1)
 
 
@@ -93,7 +99,7 @@ def test_disabled_and_neutral_direction():
     cal = sc.SignalCalibrator(rows=_rows(30, 25), enabled=False)
     assert cal.lookup(5.0, direction_int=1)["calibrated"] is False
     cal2 = sc.SignalCalibrator(rows=_rows(30, 25))
-    assert cal2.lookup(0.0)["calibrated"] is False       # 中性方向不校准
+    assert cal2.lookup(0.0)["calibrated"] is False  # 中性方向不校准
 
 
 def test_annotate_row_safe():

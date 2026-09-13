@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求①】布伦特/纽约(WTI)原油实时行情：新浪外盘 hf_ 接口，每10秒刷新一次
 （main.oil_loop 驱动），并基于滚动窗口计算原油动量因子（供能化品种联动）。
 【需求⑦】direction() 提供原油隔夜方向，供非交易时段预测走向投票。
@@ -8,6 +7,7 @@
   88.331,,88.280,88.290,88.750,87.260,05:59:54,88.520,88.510,0,1,4,2026-08-29,布伦特原油,267339
   [0]最新价 [4]最高 [5]最低 [6]时间 [7]昨结 [8]开盘 [12]日期
 """
+
 import math
 import re
 import threading
@@ -24,7 +24,7 @@ OIL_LIST = [("布伦特原油", "hf_OIL"), ("纽约原油", "hf_CL")]
 def _f(s):
     try:
         v = float(s)
-        return v if v == v else 0.0   # 过滤NaN
+        return v if v == v else 0.0  # 过滤NaN
     except (TypeError, ValueError):
         return 0.0
 
@@ -59,6 +59,7 @@ def fetch_oil_quotes():
     # A1（第94轮）：解析健康探针——原油行情归零=限流/结构变化早期信号
     try:
         import parser_health
+
         parser_health.record("oil_quotes", bool(quotes), len(quotes))
     except Exception:
         pass
@@ -72,7 +73,7 @@ class OilTracker:
         self.hist = {name: deque(maxlen=3600) for name, _ in OIL_LIST}
         self.last_quotes = {}
         self.lock = threading.Lock()
-        self._last_jump_ts = 0.0    # 上一次急动紧急触发时间（冷却控制）
+        self._last_jump_ts = 0.0  # 上一次急动紧急触发时间（冷却控制）
 
     def update(self, quotes):
         if not quotes:
@@ -100,18 +101,23 @@ class OilTracker:
                 now_ts, now_px = h[-1]
                 target = now_ts - window
                 base = None
-                for ts, px in h:                # 窗口起点附近最早的一个价格
+                for ts, px in h:  # 窗口起点附近最早的一个价格
                     if ts >= target:
                         base = px
                         break
-                if not base:                   # 运行不足一个窗口：用最早价（更严格）
+                if not base:  # 运行不足一个窗口：用最早价（更严格）
                     base = h[0][1]
                 if base <= 0:
                     continue
                 ret = now_px / base - 1.0
                 if abs(ret) >= threshold and (hit is None or abs(ret) > abs(hit["ret"])):
-                    hit = {"name": name, "ret": ret, "price": now_px,
-                           "base": base, "window_sec": int(now_ts - h[0][0])}
+                    hit = {
+                        "name": name,
+                        "ret": ret,
+                        "price": now_px,
+                        "base": base,
+                        "window_sec": int(now_ts - h[0][0]),
+                    }
         if hit:
             self._last_jump_ts = now
         return hit
@@ -144,10 +150,12 @@ class OilTracker:
         r5, r15, r60 = (self._ret(name, m) for m in (5, 15, 60))
         q = self.last_quotes.get(name) or {}
         day = q.get("day_chg", 0.0)
-        s = (math.tanh(r5 * 1500) * 1.2 +
-             math.tanh(r15 * 1200) * 1.6 +
-             math.tanh(r60 * 700) * 1.2 +
-             math.tanh(day * 450) * 1.5)
+        s = (
+            math.tanh(r5 * 1500) * 1.2
+            + math.tanh(r15 * 1200) * 1.6
+            + math.tanh(r60 * 700) * 1.2
+            + math.tanh(day * 450) * 1.5
+        )
         return clip(s, -5.0, 5.0)
 
     def combined_score(self):
@@ -202,8 +210,10 @@ class OilTracker:
                 parts.append("%s 等待数据" % name)
                 continue
             r5, r15 = self._ret(name, 5), self._ret(name, 15)
-            line = (f"{name} {fmt_px(q['price'])} ({fmt_pct(q['day_chg'])}) "
-                    f"5m{fmt_pct(r5)} 15m{fmt_pct(r15)} 趋势:{self.trend_label(name)}")
+            line = (
+                f"{name} {fmt_px(q['price'])} ({fmt_pct(q['day_chg'])}) "
+                f"5m{fmt_pct(r5)} 15m{fmt_pct(r15)} 趋势:{self.trend_label(name)}"
+            )
             if verbose:
                 line += f" [{q['time']}]"
             parts.append(line)

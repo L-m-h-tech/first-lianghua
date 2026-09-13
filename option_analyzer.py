@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求③】期权严格分析（比期货分析门槛更高）——单腿买入建议：
 Black-76期货期权定价 + Delta/Gamma/Vega/Theta希腊字母 + 六项严格检查
 （标的信号强度≥5/隐波不贵/幅度覆盖时间价值/剩余到期≥14天/Delta区间/Theta衰减）。
@@ -28,15 +27,16 @@ Black-76期货期权定价 + Delta/Gamma/Vega/Theta希腊字母 + 六项严格�
 若主力月份期权临近到期，自动顺延到下一个活跃月份并给出说明。
 建议执行价按近似执行价间距取整，并给出合约代码示意（实际以交易所挂牌为准）。
 """
+
 import math
 import os
 import sqlite3
 
 import config
 import contracts as contracts_mod
-from utils import norm_cdf, norm_pdf, fmt_px
+from utils import fmt_px, norm_cdf, norm_pdf
 
-R_FREE = 0.02   # 无风险利率
+R_FREE = 0.02  # 无风险利率
 
 
 def black76(F, K, T, sigma, kind="call"):
@@ -126,10 +126,20 @@ def implied_vol_profile(fut_row):
             cone_note = "IV低于20日波动锥10%分位"
         elif p50:
             cone_note = f"IV位于20日波动锥{p10:.0%}/{p50:.0%}/{p90:.0%}区间"
-    return {"iv": iv, "hv_ref": hv_ref or hv60, "hv20": hv20, "hv60": hv60,
-            "iv_pct": iv_pct, "iv_src": iv_src, "skew": skew, "skew_pct": skew_pct,
-            "pcr": pcr, "cone": cone, "cone_note": cone_note,
-            "market_iv": market_iv}
+    return {
+        "iv": iv,
+        "hv_ref": hv_ref or hv60,
+        "hv20": hv20,
+        "hv60": hv60,
+        "iv_pct": iv_pct,
+        "iv_src": iv_src,
+        "skew": skew,
+        "skew_pct": skew_pct,
+        "pcr": pcr,
+        "cone": cone,
+        "cone_note": cone_note,
+        "market_iv": market_iv,
+    }
 
 
 def iv_pct_text(profile):
@@ -137,11 +147,11 @@ def iv_pct_text(profile):
     if pct is None:
         return "分位样本不足"
     if profile["iv_src"] == "T链反推":
-        return f"HV滚动分位{pct*100:.0f}%(代理IV分位)"
+        return f"HV滚动分位{pct * 100:.0f}%(代理IV分位)"
     return f"{profile['iv_src']}分位{pct * 100:.0f}%"
 
 
-_VOL_PCR_CACHE = {}          # (sym, trade_date) -> pcr_vol 或 None（当日只读一次）
+_VOL_PCR_CACHE = {}  # (sym, trade_date) -> pcr_vol 或 None（当日只读一次）
 
 
 def _sym_of(name):
@@ -175,12 +185,14 @@ def vol_pcr_of(sym, day=None, db_path=None):
             if day:
                 row = conn.execute(
                     "SELECT pcr_vol FROM option_pcr_vol WHERE sym=? AND trade_date=?",
-                    (str(sym).upper(), day)).fetchone()
+                    (str(sym).upper(), day),
+                ).fetchone()
                 _VOL_PCR_CACHE[(sym, day)] = float(row[0]) if row and row[0] is not None else None
                 return _VOL_PCR_CACHE[(sym, day)]
             row = conn.execute(
-                "SELECT pcr_vol FROM option_pcr_vol WHERE sym=? "
-                "ORDER BY trade_date DESC LIMIT 1", (str(sym).upper(),)).fetchone()
+                "SELECT pcr_vol FROM option_pcr_vol WHERE sym=? ORDER BY trade_date DESC LIMIT 1",
+                (str(sym).upper(),),
+            ).fetchone()
             return float(row[0]) if row and row[0] is not None else None
         finally:
             conn.close()
@@ -211,9 +223,11 @@ def analyze_option(name, fut_row):
     chain = fut_row.get("option_chain") or {}
     chain_note = ""
     if chain and chain.get("pcr_oi") is not None:
-        bits = ["持仓PCR=%.2f（%s）" % (chain["pcr_oi"], chain.get("sentiment") or "中性"),
-                "C/P各%d/%d腿" % (chain.get("n_call", 0), chain.get("n_put", 0)),
-                "看涨持仓%.0f/看跌持仓%.0f" % (chain.get("call_oi", 0), chain.get("put_oi", 0))]
+        bits = [
+            "持仓PCR=%.2f（%s）" % (chain["pcr_oi"], chain.get("sentiment") or "中性"),
+            "C/P各%d/%d腿" % (chain.get("n_call", 0), chain.get("n_put", 0)),
+            "看涨持仓%.0f/看跌持仓%.0f" % (chain.get("call_oi", 0), chain.get("put_oi", 0)),
+        ]
         if chain.get("max_call_oi_strike"):
             bits.append("最大看涨持仓%g(压力)" % chain["max_call_oi_strike"])
         if chain.get("max_put_oi_strike"):
@@ -245,8 +259,7 @@ def analyze_option(name, fut_row):
 
     # 1) 标的信号强度（比期货更严格）
     ok1 = abs(score) >= config.OPT_SCORE_MIN
-    checks.append(("标的信号强度", ok1,
-                   f"综合分{score:+.1f}，期权要求|分|≥{config.OPT_SCORE_MIN}"))
+    checks.append(("标的信号强度", ok1, f"综合分{score:+.1f}，期权要求|分|≥{config.OPT_SCORE_MIN}"))
 
     # 2) 波动率贵贱（IV/HV + IV历史分位 + 波动率锥）
     iv_ratio = iv / volp["hv_ref"] if volp["hv_ref"] > 0 else 9.9
@@ -261,12 +274,19 @@ def analyze_option(name, fut_row):
     if volp.get("market_iv") and volp["iv_src"] == "OpenVlab真实":
         d_iv = iv - volp["market_iv"]
         if abs(d_iv) > config.IV_CROSS_CHECK_DIFF:
-            xcheck_txt = f"，链反推ATM{volp['market_iv']*100:.0f}%与页面差{d_iv*100:+.0f}vol(以盘面为准)"
-    checks.append(("波动率不贵", ok2,
-                   f"{volp['iv_src']}IV {iv*100:.0f}%/HV {volp['hv_ref']*100:.0f}%"
-                   f"={iv_ratio:.2f}；{iv_pct_text(volp)}；{volp['cone_note']}"
-                   f"{skew_txt}{pcr_txt}{xcheck_txt}（裸买要求比值≤{config.OPT_IV_HV_RATIO_MAX}"
-                   f"且分位≤{config.OPT_IV_PCT_BUY_MAX:.0%}，否则改价差或观望）"))
+            xcheck_txt = (
+                f"，链反推ATM{volp['market_iv'] * 100:.0f}%与页面差{d_iv * 100:+.0f}vol(以盘面为准)"
+            )
+    checks.append(
+        (
+            "波动率不贵",
+            ok2,
+            f"{volp['iv_src']}IV {iv * 100:.0f}%/HV {volp['hv_ref'] * 100:.0f}%"
+            f"={iv_ratio:.2f}；{iv_pct_text(volp)}；{volp['cone_note']}"
+            f"{skew_txt}{pcr_txt}{xcheck_txt}（裸买要求比值≤{config.OPT_IV_HV_RATIO_MAX}"
+            f"且分位≤{config.OPT_IV_PCT_BUY_MAX:.0%}，否则改价差或观望）",
+        )
+    )
 
     # 3) 预期行情幅度覆盖时间价值
     atm_prem = black76(F, F, T, iv, kind=kind)
@@ -274,17 +294,29 @@ def analyze_option(name, fut_row):
     exp_move = F * hv20 * math.sqrt(T) * strength
     cover = exp_move / atm_prem if atm_prem > 0 else 0.0
     ok3 = cover >= config.OPT_EXPECT_COVER
-    checks.append(("幅度覆盖时间价值", ok3,
-                   f"预期波动≈{exp_move:.1f}点 vs 平值权利金≈{atm_prem:.1f}点"
-                   f"（覆盖{cover:.1f}倍，要求≥{config.OPT_EXPECT_COVER}）"))
+    checks.append(
+        (
+            "幅度覆盖时间价值",
+            ok3,
+            f"预期波动≈{exp_move:.1f}点 vs 平值权利金≈{atm_prem:.1f}点"
+            f"（覆盖{cover:.1f}倍，要求≥{config.OPT_EXPECT_COVER}）",
+        )
+    )
 
     # 4) 剩余到期时间
     ok4 = days >= config.OPT_MIN_DAYS
-    exp_note = (f"，到期日{om['exp_date'].strftime('%Y-%m-%d')}(OpenVlab真实到期日)"
-                if om.get("exp_date") else "（按交割月前一月中旬近似）")
-    checks.append(("剩余到期时间", ok4,
-                   f"{month_label}月份期权剩余≈{days}天{exp_note}，"
-                   f"要求≥{config.OPT_MIN_DAYS}天"))
+    exp_note = (
+        f"，到期日{om['exp_date'].strftime('%Y-%m-%d')}(OpenVlab真实到期日)"
+        if om.get("exp_date")
+        else "（按交割月前一月中旬近似）"
+    )
+    checks.append(
+        (
+            "剩余到期时间",
+            ok4,
+            f"{month_label}月份期权剩余≈{days}天{exp_note}，要求≥{config.OPT_MIN_DAYS}天",
+        )
+    )
 
     # 5) 建议执行价：强信号做虚一档（杠杆高），中等信号做平值（胜率高）；按近似档位取整
     strong = abs(score) >= config.SCORE_MID
@@ -296,49 +328,89 @@ def analyze_option(name, fut_row):
     g = greeks76(F, K, T, iv, kind=kind)
     theta_day = g["theta"] / 365.0
     ok5 = config.OPT_DELTA_BAND[0] <= abs(g["delta"]) <= config.OPT_DELTA_BAND[1]
-    checks.append(("Delta区间", ok5,
-                   f"建议合约Delta≈{g['delta']:.2f}，要求|Delta|∈{config.OPT_DELTA_BAND}"))
+    checks.append(
+        ("Delta区间", ok5, f"建议合约Delta≈{g['delta']:.2f}，要求|Delta|∈{config.OPT_DELTA_BAND}")
+    )
 
     # 6) 时间价值衰减速度
     ok6 = prem > 0 and abs(theta_day) / prem <= config.OPT_THETA_DAY_MAX
-    checks.append(("衰减可承受", ok6,
-                   f"Theta≈{theta_day:.2f}点/天，占权利金"
-                   f"{abs(theta_day)/prem*100 if prem > 0 else 99:.1f}%/天"
-                   f"（上限{config.OPT_THETA_DAY_MAX*100:.0f}%）"))
+    checks.append(
+        (
+            "衰减可承受",
+            ok6,
+            f"Theta≈{theta_day:.2f}点/天，占权利金"
+            f"{abs(theta_day) / prem * 100 if prem > 0 else 99:.1f}%/天"
+            f"（上限{config.OPT_THETA_DAY_MAX * 100:.0f}%）",
+        )
+    )
 
     # 期权合约代码示意
     opt_code = ""
     if yy:
         opt_code = contracts_mod.option_code_hint(
-            fut_row.get("sym", ""), fut_row.get("ex", ""), yy, mm, K, kind)
+            fut_row.get("sym", ""), fut_row.get("ex", ""), yy, mm, K, kind
+        )
 
     all_pass = all(c[1] for c in checks) and ok1
     if all_pass:
         breakeven = K + prem if kind == "call" else K - prem
         verdict = f"买入{direction}期权（{month_label}月份·{kname}·执行价≈{K:g}）"
-        pos_note = (f"参考代码 {opt_code}（示意，以交易所挂牌为准）；到期前需标的价格"
-                    f"{'涨' if kind == 'call' else '跌'}过盈亏平衡点≈{fmt_px(breakeven)}"
-                    f"（含权利金{prem:.1f}点）；仓位≤对应期货建议的1/3，权利金亏50%即止损")
+        pos_note = (
+            f"参考代码 {opt_code}（示意，以交易所挂牌为准）；到期前需标的价格"
+            f"{'涨' if kind == 'call' else '跌'}过盈亏平衡点≈{fmt_px(breakeven)}"
+            f"（含权利金{prem:.1f}点）；仓位≤对应期货建议的1/3，权利金亏50%即止损"
+        )
     else:
         fails = "、".join(c[0] for c in checks if not c[1])
         verdict = f"观望/不参与（未通过: {fails}）"
         pos_note = ""
 
-    return {"name": name, "score": score, "kind": kind, "direction": direction,
-            "underlying_price": F,
-            "iv": iv, "iv_ratio": iv_ratio, "hv20": hv20, "hv60": hv60,
-            "iv_pct": iv_pct, "iv_src": volp["iv_src"], "skew": volp.get("skew"),
-            "skew_pct": volp.get("skew_pct"), "pcr": volp.get("pcr"),
-            "vol_cone": volp.get("cone") or {}, "cone_note": volp.get("cone_note", ""),
-            "yy": yy, "mm": mm, "month_label": month_label, "days": days,
-            "K": K, "kname": kname, "prem": prem,
-            "delta": g["delta"], "gamma": g["gamma"], "vega": g["vega"],
-            "theta_day": theta_day, "cover": cover,
-            "opt_code": opt_code, "month_note": fut_row.get("month_note", ""),
-            "checks": checks, "verdict": verdict, "pos_note": pos_note,
-            "chain": chain, "chain_note": chain_note,
-            "surface_note": surface_note, "surface_matrix": surface_matrix,
-            "surface_brief": ({"term_shape": surf.get("term_shape"),
-                               "term_diff": surf.get("term_diff"),
-                               "main_atm_iv": surf.get("main_atm_iv")} if surf else {}),
-            "all_pass": all_pass}
+    return {
+        "name": name,
+        "score": score,
+        "kind": kind,
+        "direction": direction,
+        "underlying_price": F,
+        "iv": iv,
+        "iv_ratio": iv_ratio,
+        "hv20": hv20,
+        "hv60": hv60,
+        "iv_pct": iv_pct,
+        "iv_src": volp["iv_src"],
+        "skew": volp.get("skew"),
+        "skew_pct": volp.get("skew_pct"),
+        "pcr": volp.get("pcr"),
+        "vol_cone": volp.get("cone") or {},
+        "cone_note": volp.get("cone_note", ""),
+        "yy": yy,
+        "mm": mm,
+        "month_label": month_label,
+        "days": days,
+        "K": K,
+        "kname": kname,
+        "prem": prem,
+        "delta": g["delta"],
+        "gamma": g["gamma"],
+        "vega": g["vega"],
+        "theta_day": theta_day,
+        "cover": cover,
+        "opt_code": opt_code,
+        "month_note": fut_row.get("month_note", ""),
+        "checks": checks,
+        "verdict": verdict,
+        "pos_note": pos_note,
+        "chain": chain,
+        "chain_note": chain_note,
+        "surface_note": surface_note,
+        "surface_matrix": surface_matrix,
+        "surface_brief": (
+            {
+                "term_shape": surf.get("term_shape"),
+                "term_diff": surf.get("term_diff"),
+                "main_atm_iv": surf.get("main_atm_iv"),
+            }
+            if surf
+            else {}
+        ),
+        "all_pass": all_pass,
+    }

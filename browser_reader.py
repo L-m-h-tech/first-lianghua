@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求⑦】浏览器页面直读：自动发现本机带调试端口(9222/9223)的浏览器页签，
 直接读取 OpenVlab市场页 与 交易可查首页 的可见内容（配合"打开行情网页(调试模式).bat"）。
 数据用途：真实平值隐波/溢价榜 -> option_strategies 隐波检查(需求⑥⑦)；
@@ -19,6 +18,7 @@
 或任何带 --remote-debugging-port=9222 启动的浏览器；程序每30秒自动读取，
 发现页签缺失时会自动补开。没有调试端口时程序仍用公开接口数据，不受影响。
 """
+
 import json
 import re
 import threading
@@ -33,21 +33,48 @@ CDP_PORTS = (9222, 9223)
 OVL_URL = "https://www.openvlab.cn/market"
 JYKC_URL = "https://www.jiaoyikecha.com/"
 OVL_CTAMAP_URL = "https://www.openvlab.cn/api/ctamap-all?add_overseas=true"
-OVL_HEADERS = {"User-Agent": config.HEADERS_COMMON.get("User-Agent", ""),
-               "Referer": "https://www.openvlab.cn/market"}
+OVL_HEADERS = {
+    "User-Agent": config.HEADERS_COMMON.get("User-Agent", ""),
+    "Referer": "https://www.openvlab.cn/market",
+}
 
 _NAME_ALIAS = {
-    "沪金": "黄金", "沪银": "白银", "沪铜": "铜", "沪铝": "铝", "沪锌": "锌",
-    "沪铅": "铅", "沪镍": "镍", "沪锡": "锡", "螺纹": "螺纹钢", "郑醇": "甲醇",
-    "铁矿": "铁矿石", "燃油": "燃料油", "低硫燃油": "低硫燃料油", "塑料": "塑料",
-    "聚乙烯": "塑料", "聚氯乙烯": "PVC", "PP": "聚丙烯", "菜油": "菜籽油",
-    "郑棉": "棉花", "郑糖": "白糖", "LPG": "液化石油气", "20号胶": "20号胶",
+    "沪金": "黄金",
+    "沪银": "白银",
+    "沪铜": "铜",
+    "沪铝": "铝",
+    "沪锌": "锌",
+    "沪铅": "铅",
+    "沪镍": "镍",
+    "沪锡": "锡",
+    "螺纹": "螺纹钢",
+    "郑醇": "甲醇",
+    "铁矿": "铁矿石",
+    "燃油": "燃料油",
+    "低硫燃油": "低硫燃料油",
+    "塑料": "塑料",
+    "聚乙烯": "塑料",
+    "聚氯乙烯": "PVC",
+    "PP": "聚丙烯",
+    "菜油": "菜籽油",
+    "郑棉": "棉花",
+    "郑糖": "白糖",
+    "LPG": "液化石油气",
+    "20号胶": "20号胶",
 }
 _SKIP_NAMES = {"创业板ETF", "科创50ETF", "科创板50ETF", "上证50ETF", "沪深300ETF"}
 
 _LABELS = ("乾坤归一", "日内推土机", "外资动向", "大佬动向", "亏货动向", "多空领先指标")
-_DIR_MAP = {"看多": 1, "看空": -1, "最大流多": 1, "最大流空": -1,
-            "布局做多": 1, "布局做空": -1, "扎堆做多": 1, "扎堆做空": -1}
+_DIR_MAP = {
+    "看多": 1,
+    "看空": -1,
+    "最大流多": 1,
+    "最大流空": -1,
+    "布局做多": 1,
+    "布局做空": -1,
+    "扎堆做多": 1,
+    "扎堆做空": -1,
+}
 
 
 def _map_name(raw):
@@ -81,14 +108,20 @@ def parse_openvlab(text):
             i += 1
             while i < n and lines[i] in ("名称", "涨幅%", "隐波变化", "分时预览"):
                 i += 1
-            while i + 2 < n and lines[i + 1].startswith(("+", "-")) \
-                    and lines[i + 1].endswith("%") and _is_float(lines[i + 2]):
+            while (
+                i + 2 < n
+                and lines[i + 1].startswith(("+", "-"))
+                and lines[i + 1].endswith("%")
+                and _is_float(lines[i + 2])
+            ):
                 v = _map_name(lines[i])
                 if v:
                     try:
-                        out["rank"][v] = {"list": l,
-                                          "chg": float(lines[i + 1].rstrip("%")),
-                                          "iv_chg": float(lines[i + 2])}
+                        out["rank"][v] = {
+                            "list": l,
+                            "chg": float(lines[i + 1].rstrip("%")),
+                            "iv_chg": float(lines[i + 2]),
+                        }
                     except ValueError:
                         pass
                 i += 3
@@ -97,14 +130,21 @@ def parse_openvlab(text):
             i += 1
             while i < n and lines[i] in ("名称", "隐波", "实波", "溢价"):
                 i += 1
-            while i + 3 < n and _is_float(lines[i + 1]) and _is_float(lines[i + 2]) \
-                    and _is_float(lines[i + 3]):
+            while (
+                i + 3 < n
+                and _is_float(lines[i + 1])
+                and _is_float(lines[i + 2])
+                and _is_float(lines[i + 3])
+            ):
                 v = _map_name(lines[i])
                 if v:
                     try:
-                        out["prem"][v] = {"list": l, "iv": float(lines[i + 1]),
-                                          "hv": float(lines[i + 2]),
-                                          "prem": float(lines[i + 3])}
+                        out["prem"][v] = {
+                            "list": l,
+                            "iv": float(lines[i + 1]),
+                            "hv": float(lines[i + 2]),
+                            "prem": float(lines[i + 3]),
+                        }
                     except ValueError:
                         pass
                 i += 4
@@ -116,18 +156,27 @@ def parse_openvlab(text):
         v = _map_name(m.group(1))
         if not v:
             continue
-        tail = text[m.end(): m.end() + 260]
-        mm = re.search(r"\n([+-]?\d+\.\d+)%\n(\d+)天\n(\d+\.\d+)\n([+-][\d.]+)\n"
-                       r"([+-]?[\d.]+)\n([\d.]+)\n([+-]?[\d.]+)\n"
-                       r"([+-]?[\d.]+)\n(\d+)%\n(\d+)", tail)
+        tail = text[m.end() : m.end() + 260]
+        mm = re.search(
+            r"\n([+-]?\d+\.\d+)%\n(\d+)天\n(\d+\.\d+)\n([+-][\d.]+)\n"
+            r"([+-]?[\d.]+)\n([\d.]+)\n([+-]?[\d.]+)\n"
+            r"([+-]?[\d.]+)\n(\d+)%\n(\d+)",
+            tail,
+        )
         if mm:
             try:
-                out["atm_iv"][v] = {"code": m.group(2), "chg": float(mm.group(1)),
-                                    "days": int(mm.group(2)), "atm_iv": float(mm.group(3)),
-                                    "iv_chg": float(mm.group(4)), "hv": float(mm.group(6)),
-                                    "prem": float(mm.group(7)), "skew": float(mm.group(8)),
-                                    "iv_pct": float(mm.group(9)) / 100.0,
-                                    "skew_pct": float(mm.group(10)) / 100.0}
+                out["atm_iv"][v] = {
+                    "code": m.group(2),
+                    "chg": float(mm.group(1)),
+                    "days": int(mm.group(2)),
+                    "atm_iv": float(mm.group(3)),
+                    "iv_chg": float(mm.group(4)),
+                    "hv": float(mm.group(6)),
+                    "prem": float(mm.group(7)),
+                    "skew": float(mm.group(8)),
+                    "iv_pct": float(mm.group(9)) / 100.0,
+                    "skew_pct": float(mm.group(10)) / 100.0,
+                }
             except ValueError:
                 pass
     return out
@@ -190,8 +239,15 @@ def _f(x):
 def parse_jiaoyikecha(text):
     """解析交易可查首页文本 → {"views":{}, "headlines":[], "mood":None,
     "external":{}, "rating":{}, "fundamentals":[], "feed":[]}"""
-    out = {"views": {}, "headlines": [], "mood": None,
-           "external": {}, "rating": {}, "fundamentals": [], "feed": []}
+    out = {
+        "views": {},
+        "headlines": [],
+        "mood": None,
+        "external": {},
+        "rating": {},
+        "fundamentals": [],
+        "feed": [],
+    }
     if not text:
         return out
     lines = [l.strip() for l in text.split("\n")]
@@ -210,8 +266,9 @@ def parse_jiaoyikecha(text):
             m = re.match(r"^([\u4e00-\u9fa5A-Za-z]{2,6}?)(?=\d|亿|$)", l)
             v = _map_name(m.group(1)) if m else None
             if v:
-                out["headlines"].append({"label": pending_label, "dir": pending_dir,
-                                         "variety": v, "text": l[:30]})
+                out["headlines"].append(
+                    {"label": pending_label, "dir": pending_dir, "variety": v, "text": l[:30]}
+                )
             pending_label = pending_dir = None
     # 2) AI研报多空一览：品种名与标题同行("沪金 AI研报多空一览")或上一行
     for i, l in enumerate(lines):
@@ -232,10 +289,12 @@ def parse_jiaoyikecha(text):
             if mm:
                 got[mm.group(1)] = int(mm.group(2))
         if got:
-            out["views"][v] = {"bullish": got.get("看多", 0),
-                               "volatile": got.get("震荡", 0),
-                               "bearish": got.get("看空", 0),
-                               "total": sum(got.values())}
+            out["views"][v] = {
+                "bullish": got.get("看多", 0),
+                "volatile": got.get("震荡", 0),
+                "bearish": got.get("看空", 0),
+                "total": sum(got.values()),
+            }
     # 3) 外盘比价表：innerText 中表格字段间有空行，过滤空行后 每5行一组
     #    （外盘品种/基准时间/基准价格/最新价格/偏离基准，品种名在 _EXT_MAP）
     nb = [l for l in lines if l]
@@ -273,8 +332,11 @@ def parse_jiaoyikecha(text):
             while j < n:
                 # 行内可能残留 "（本数据仅供参考..."实际无此；统一先裁再匹配
                 cur = lines[j] if j != i else head
-                mm = re.match(r"^.*?([\u4e00-\u9fa5A-Za-z0-9]{1,10}?\d{4})"
-                              rf"\s*({_GRADE_WORDS})([+-]?[\d.]+)$", cur)
+                mm = re.match(
+                    r"^.*?([\u4e00-\u9fa5A-Za-z0-9]{1,10}?\d{4})"
+                    rf"\s*({_GRADE_WORDS})([+-]?[\d.]+)$",
+                    cur,
+                )
                 mv = lines[j + 1].rstrip("%") if j + 1 < n else ""
                 if mm and (mv == "0" or _is_float(mv)):
                     key = (mm.group(1) + " " + mm.group(2) + mm.group(3)).strip()
@@ -293,8 +355,10 @@ def parse_jiaoyikecha(text):
                     continue
                 j += 1
                 # 已过完整评级表仍未匹配则退出（评级表是连续块）
-                if lines[j - 1] and not any(w in lines[j - 1] for w in
-                                            ("强多", "中多", "弱多", "中性", "强空", "中空", "弱空")):
+                if lines[j - 1] and not any(
+                    w in lines[j - 1]
+                    for w in ("强多", "中多", "弱多", "中性", "强空", "中空", "弱空")
+                ):
                     if j - i > 3:
                         break
             break
@@ -306,7 +370,7 @@ def parse_jiaoyikecha(text):
             fb = i
             break
     if fb is not None:
-        nb2 = [l for l in lines[fb + 1:] if l]
+        nb2 = [l for l in lines[fb + 1 :] if l]
         j = 0
         # 跳过标题残留/表头（更多/商品/数据）
         while j < len(nb2) and nb2[j] in ("更多", "商品", "数据", ">>"):
@@ -319,15 +383,30 @@ def parse_jiaoyikecha(text):
             if not metric or not m_dt:
                 j += 1
                 continue
-            out["fundamentals"].append({
-                "item": name, "metric": metric, "value": val,
-                "base": (main_v.group(1) if main_v else None),
-                "chg": (main_v.group(2) if main_v else None),
-                "date": date_v})
+            out["fundamentals"].append(
+                {
+                    "item": name,
+                    "metric": metric,
+                    "value": val,
+                    "base": (main_v.group(1) if main_v else None),
+                    "chg": (main_v.group(2) if main_v else None),
+                    "date": date_v,
+                }
+            )
             j += 4
     # 6) 信息流：时间戳行(MM/DD HH:MM) 后跟 分类标题 + 内容（跨行）
-    _FEED_KINDS = ("商品盈亏席位", "牛熊线", "龙虎比", "商品持仓", "实时资讯",
-                   "商品资讯", "现货信息", "资金流入流出", "最亏席位", "最佳席位")
+    _FEED_KINDS = (
+        "商品盈亏席位",
+        "牛熊线",
+        "龙虎比",
+        "商品持仓",
+        "实时资讯",
+        "商品资讯",
+        "现货信息",
+        "资金流入流出",
+        "最亏席位",
+        "最佳席位",
+    )
     i = 0
     while i < n:
         m_ts = re.match(r"^(\d{2}/\d{2}\s+\d{2}:\d{2})$", lines[i])
@@ -371,9 +450,25 @@ def parse_jiaoyikecha(text):
 
 
 # 外盘比价表品种名（17个，页面「外盘比价」区块）
-_EXT_MAP = {"伦铜", "伦镍", "伦铅", "伦锌", "伦铝", "伦锡", "美豆油", "美白银",
-            "美黄金", "铁矿FE", "马棕油", "美棉花", "美豆", "美玉米", "布原油",
-            "美豆粕", "美原油"}
+_EXT_MAP = {
+    "伦铜",
+    "伦镍",
+    "伦铅",
+    "伦锌",
+    "伦铝",
+    "伦锡",
+    "美豆油",
+    "美白银",
+    "美黄金",
+    "铁矿FE",
+    "马棕油",
+    "美棉花",
+    "美豆",
+    "美玉米",
+    "布原油",
+    "美豆粕",
+    "美原油",
+}
 
 
 def _fnum(x):
@@ -393,9 +488,16 @@ class BrowserReader:
     def __init__(self):
         self.lock = threading.Lock()
         self.ovl = {"rank": {}, "atm_iv": {}, "prem": {}}
-        self.jykc = {"views": {}, "headlines": [], "mood": None,
-                     "external": {}, "rating": {}, "fundamentals": [], "feed": []}
-        self._head_acc = {}   # 头条轮播，跨多次读取累积 (label,variety)->headline
+        self.jykc = {
+            "views": {},
+            "headlines": [],
+            "mood": None,
+            "external": {},
+            "rating": {},
+            "fundamentals": [],
+            "feed": [],
+        }
+        self._head_acc = {}  # 头条轮播，跨多次读取累积 (label,variety)->headline
         self.status = "未检测到调试端口"
         self.updated = None
         self.stop = threading.Event()
@@ -417,10 +519,18 @@ class BrowserReader:
     @staticmethod
     def _cdp_eval(ws_url, expr, timeout=8):
         import websocket
+
         ws = websocket.create_connection(ws_url, timeout=timeout, suppress_origin=True)
         try:
-            ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate",
-                                "params": {"expression": expr, "returnByValue": True}}))
+            ws.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": expr, "returnByValue": True},
+                    }
+                )
+            )
             while True:
                 msg = json.loads(ws.recv())
                 if msg.get("id") == 1:
@@ -462,8 +572,7 @@ class BrowserReader:
                     continue
                 url = t.get("url") or ""
                 if "openvlab.cn" in url and not got_ovl:
-                    txt = self._cdp_eval(t["webSocketDebuggerUrl"],
-                                         "document.body.innerText") or ""
+                    txt = self._cdp_eval(t["webSocketDebuggerUrl"], "document.body.innerText") or ""
                     with self.lock:
                         ovl_parsed = parse_openvlab(txt)
                         self.ovl["rank"].update(ovl_parsed["rank"])
@@ -471,8 +580,7 @@ class BrowserReader:
                         self.ovl["atm_iv"].update(ovl_parsed["atm_iv"])
                     got_ovl = True
                 elif "jiaoyikecha" in url and not got_jyk:
-                    txt = self._cdp_eval(t["webSocketDebuggerUrl"],
-                                         "document.body.innerText") or ""
+                    txt = self._cdp_eval(t["webSocketDebuggerUrl"], "document.body.innerText") or ""
                     parsed = parse_jiaoyikecha(txt)
                     with self.lock:
                         self.jykc["views"].update(parsed["views"])
@@ -491,12 +599,22 @@ class BrowserReader:
             self._refresh_openvlab_rest()
             with self.lock:
                 self.updated = datetime.now()
-                self.status = (f"页面直读中: OpenVlab榜单{len(self.ovl['rank'])}条/真实隐波"
-                               f"{len(self.ovl['atm_iv'])}个, 交易可查头条{len(self.jykc['headlines'])}条"
-                               + (f", 外盘{len(self.jykc['external'])}个" if self.jykc['external'] else "")
-                               + (f", 评级{len(self.jykc['rating'])}" if self.jykc['rating'] else "")
-                               + (f", 基本面{len(self.jykc['fundamentals'])}项" if self.jykc['fundamentals'] else "")
-                               + (f", 氛围{self.jykc['mood'].get('label','')}" if self.jykc.get("mood") else ""))
+                self.status = (
+                    f"页面直读中: OpenVlab榜单{len(self.ovl['rank'])}条/真实隐波"
+                    f"{len(self.ovl['atm_iv'])}个, 交易可查头条{len(self.jykc['headlines'])}条"
+                    + (f", 外盘{len(self.jykc['external'])}个" if self.jykc["external"] else "")
+                    + (f", 评级{len(self.jykc['rating'])}" if self.jykc["rating"] else "")
+                    + (
+                        f", 基本面{len(self.jykc['fundamentals'])}项"
+                        if self.jykc["fundamentals"]
+                        else ""
+                    )
+                    + (
+                        f", 氛围{self.jykc['mood'].get('label', '')}"
+                        if self.jykc.get("mood")
+                        else ""
+                    )
+                )
             self._notified = False
         except Exception as e:
             with self.lock:
@@ -543,9 +661,18 @@ class BrowserReader:
             external = dict(self.jykc["external"]) or {}
             fundamentals = list(self.jykc["fundamentals"]) or []
             feed = list(self.jykc["feed"]) or []
-        return {"rank": rank, "atm_iv": atm, "prem": prem, "view": view,
-                "headlines": heads, "mood": mood, "rating": rating,
-                "external": external, "fundamentals": fundamentals, "feed": feed}
+        return {
+            "rank": rank,
+            "atm_iv": atm,
+            "prem": prem,
+            "view": view,
+            "headlines": heads,
+            "mood": mood,
+            "rating": rating,
+            "external": external,
+            "fundamentals": fundamentals,
+            "feed": feed,
+        }
 
     def status_line(self):
         with self.lock:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第95轮：交易日历年度维护工具——按官方休市安排生成/更新 STATIC_HOLIDAY_RANGES。
 
 背景（摘要"六、待办"）：trade_calendar.STATIC_HOLIDAY_RANGES 静态表目前只到 2026 年；
@@ -16,8 +15,8 @@ r"""第95轮：交易日历年度维护工具——按官方休市安排生成/�
 区间重复；--apply 写回时按锚点断言（count==1）防误伤，写前自动备份 trade_calendar.py.bak。
 selftest：零网络合成断言（区间解析/归并/查重/写回幂等）。
 """
+
 import argparse
-import io
 import os
 import re
 import sqlite3
@@ -70,11 +69,12 @@ def _from_calendar(year):
     try:
         rows = conn.execute(
             "SELECT cal_date, is_open FROM tushare_cal WHERE cal_date LIKE ? AND is_open=0",
-            ("%04d%%" % year,)).fetchall()
+            ("%04d%%" % year,),
+        ).fetchall()
     finally:
         conn.close()
     closed = sorted(datetime.strptime(r[0], "%Y%m%d").date() for r in rows)
-    holidays = [d for d in closed if d.weekday() < 5]        # 周末恒休不列入
+    holidays = [d for d in closed if d.weekday() < 5]  # 周末恒休不列入
     ranges = []
     for d in holidays:
         if ranges and (d - ranges[-1][1]).days == 1:
@@ -103,27 +103,37 @@ def _parse_comma_date(s):
 
 def _read_existing_ranges():
     try:
-        s = io.open(CAL_PY, encoding="utf-8").read()
+        s = open(CAL_PY, encoding="utf-8").read()
         m = re.search(re.escape(_ANCHOR_START) + r"(.*?)" + re.escape(_ANCHOR_END), s, re.S)
         if not m:
             return []
-        return [(_parse_comma_date(x), _parse_comma_date(y))
-                for x, y in re.findall(r"date\((\d{4},\s*\d{1,2},\s*\d{1,2})\),\s*date\((\d{4},\s*\d{1,2},\s*\d{1,2})\)", m.group(1))]
+        return [
+            (_parse_comma_date(x), _parse_comma_date(y))
+            for x, y in re.findall(
+                r"date\((\d{4},\s*\d{1,2},\s*\d{1,2})\),\s*date\((\d{4},\s*\d{1,2},\s*\d{1,2})\)",
+                m.group(1),
+            )
+        ]
     except OSError:
         return []
 
 
 def _render_block(year, ranges):
-    lines = ["    # %d 年法定休市区间（来源：证监会《关于%d年部分节假日放假和休市安排的通知》）" % (year, year)]
+    lines = [
+        "    # %d 年法定休市区间（来源：证监会《关于%d年部分节假日放假和休市安排的通知》）"
+        % (year, year)
+    ]
     for a, b in ranges:
-        lines.append("    (date(%d, %d, %d), date(%d, %d, %d))," %
-                     (a.year, a.month, a.day, b.year, b.month, b.day))
+        lines.append(
+            "    (date(%d, %d, %d), date(%d, %d, %d)),"
+            % (a.year, a.month, a.day, b.year, b.month, b.day)
+        )
     return "\n".join(lines)
 
 
 def _apply(year, ranges):
     """把新区间插入 STATIC_HOLIDAY_RANGES 内（现有区间之后）；锚点断言防误伤；写前备份。"""
-    s = io.open(CAL_PY, encoding="utf-8").read()
+    s = open(CAL_PY, encoding="utf-8").read()
     assert s.count(_ANCHOR_START) == 1 and s.count(_ANCHOR_END) == 1, "锚点不唯一，中止"
     lines = s.split("\n")
     start_i = next(i for i, ln in enumerate(lines) if ln.startswith(_ANCHOR_START))
@@ -138,10 +148,10 @@ def _apply(year, ranges):
     new_lines = lines[:ins] + [block] + lines[ins:]
     backup = CAL_PY + ".bak"
     try:
-        io.open(backup, "w", encoding="utf-8", newline="\n").write("\n".join(lines))
+        open(backup, "w", encoding="utf-8", newline="\n").write("\n".join(lines))
     except OSError:
         pass
-    io.open(CAL_PY, "w", encoding="utf-8", newline="\n").write("\n".join(new_lines))
+    open(CAL_PY, "w", encoding="utf-8", newline="\n").write("\n".join(new_lines))
     return backup
 
 
@@ -171,8 +181,12 @@ def selftest():
 def main(argv=None):
     ap = argparse.ArgumentParser(description="交易日历年度维护：生成/更新 STATIC_HOLIDAY_RANGES")
     ap.add_argument("--year", type=int, default=None)
-    ap.add_argument("--from-calendar", action="store_true", help="从 tushare_harvest.db 官方日历推导")
-    ap.add_argument("--paste", default="", help='手动贴官方休市区间，如 "2027-01-01~2027-01-03;..."')
+    ap.add_argument(
+        "--from-calendar", action="store_true", help="从 tushare_harvest.db 官方日历推导"
+    )
+    ap.add_argument(
+        "--paste", default="", help='手动贴官方休市区间，如 "2027-01-01~2027-01-03;..."'
+    )
     ap.add_argument("--apply", action="store_true", help="写回 trade_calendar.py（先备份 .bak）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
@@ -181,8 +195,10 @@ def main(argv=None):
     if args.from_calendar:
         ranges = _from_calendar(args.year)
         if not ranges:
-            print("官方日历库中无 %d 年数据（当前收割覆盖 2018-2026）。请等 %d 年官方安排发布后"
-                  "重新收割，或改用 --paste 手动粘贴。" % (args.year, args.year))
+            print(
+                "官方日历库中无 %d 年数据（当前收割覆盖 2018-2026）。请等 %d 年官方安排发布后"
+                "重新收割，或改用 --paste 手动粘贴。" % (args.year, args.year)
+            )
             return 1
     else:
         ranges, errs = _parse_ranges(args.paste)

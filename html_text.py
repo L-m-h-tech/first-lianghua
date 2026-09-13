@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第94轮 A3（对标 scrapling 的 lxml 级文本/表格提取）：统一的 HTML → 文本 / 表格提取。
 
 背景：此前新浪新闻/全网扫描用 `re.sub(r"<[^>]+>","",html)` 粗暴去标签，会夹带 script/style/
@@ -9,23 +8,46 @@
 （C 加速 + html.fromstring 健壮容错），否则自动回退纯标准库 html.parser——两种后端对外
 接口完全一致，生产行为等价（回退路径由 `_BACKEND` 暴露便于测试两种实现）。
 """
+
 import re
 from html.parser import HTMLParser
 
-try:                                   # 决策门：lxml 已收编；导入失败自动回退 stdlib
+try:  # 决策门：lxml 已收编；导入失败自动回退 stdlib
     from lxml import html as _lhtml
+
     _HAS_LXML = True
-except Exception:                      # pragma: no cover - 本机已装，防御性回退
+except Exception:  # pragma: no cover - 本机已装，防御性回退
     _HAS_LXML = False
 
 _BACKEND = "lxml" if _HAS_LXML else "stdlib"
 _TAG_RE = re.compile(r"<[^>]+>")
 _SKIP_TAGS = {"script", "style", "noscript", "template", "iframe", "svg", "head", "title"}
-_BLOCK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
-               "table", "thead", "tbody", "tfoot", "tr", "section", "article", "ul", "ol", "blockquote"}
+_BLOCK_TAGS = {
+    "p",
+    "div",
+    "br",
+    "li",
+    "tr",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "section",
+    "article",
+    "ul",
+    "ol",
+    "blockquote",
+}
 
 
 # ---------------- 文本提取 ----------------
+
 
 class _TextParser(HTMLParser):
     """stdlib 后端：去 script/style/注释，按块级标签换行，文本规范化。"""
@@ -85,6 +107,7 @@ def _stdlib_text(html):
 
 # ---------------- 表格提取 ----------------
 
+
 class _TableParser(HTMLParser):
     """stdlib 后端：把 <table> 提取为 [[单元格,...],...]（行列结构）。"""
 
@@ -99,13 +122,13 @@ class _TableParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "table":
             if self._in_table == 0:
-                self.tables.append([])      # 新表开始：建行容器
+                self.tables.append([])  # 新表开始：建行容器
             self._in_table += 1
             return
         if self._in_table == 0:
             return
         if tag in ("tr", "thead", "tbody", "tfoot"):
-            if self._cell_open:                     # 行内遇到行标签：收掉当前单元格
+            if self._cell_open:  # 行内遇到行标签：收掉当前单元格
                 self._row.append(re.sub(r"\s+", "", "".join(self._cell)))
                 self._cell, self._cell_open = [], False
             if tag == "tr":
@@ -150,8 +173,10 @@ def extract_tables(html):
             for tbl in root.xpath("//table"):
                 rows = []
                 for tr in tbl.xpath(".//tr"):
-                    cells = [re.sub(r"\s+", "", (td.text_content() or ""))
-                             for td in tr.xpath("./td|./th")]
+                    cells = [
+                        re.sub(r"\s+", "", (td.text_content() or ""))
+                        for td in tr.xpath("./td|./th")
+                    ]
                     if cells:
                         rows.append(cells)
                 if rows:
@@ -172,6 +197,7 @@ def find_anchor_line(text, anchors, min_ratio=0.6):
     """B3 模糊锚点定位（difflib）：在一段文本行里找最接近任一锚点的行号（0 起）；无则 -1。
     供"网站改版后按稳定锚点文本重定位目标"使用（解析降级，绝不做脏数据）。"""
     import difflib
+
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     best, best_ratio = -1, 0.0
     for i, ln in enumerate(lines):

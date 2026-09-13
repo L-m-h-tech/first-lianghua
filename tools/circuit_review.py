@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""G5④/G5⑤（第50轮，研究侧）组合层熔断阈值历史校准台 tools/circuit_review.py：
 纯标准库、零网络、**只读** G21 面板（cache/research_panel.db，经 portfolio_lab 复现四方法日收益），
 把第48轮 circuit_breaker 的单日浮亏阈值（warn2%/halt3%/delever5%）放到**真实历史日频净值曲线**上回放，
@@ -12,6 +11,7 @@ r"""G5④/G5⑤（第50轮，研究侧）组合层熔断阈值历史校准台 to
   - 日收益来自已比例复权主连面板、固定宇宙有幸存者偏差、未计手续费/滑点/保证金/换月；不构成投资建议。
 出 reports/circuit_review.txt|.json，末尾经统一实验台账旁路登记一条。
 """
+
 import argparse
 import json
 import os
@@ -24,16 +24,17 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import circuit_breaker as cb                   # noqa: E402 阈值默认值/分档口径单一事实源
-import portfolio_lab as pl                     # noqa: E402 复用稠密面板+滚动样本外代理
-import experiment_ledger as el                 # noqa: E402
+import portfolio_lab as pl  # noqa: E402
+
+import circuit_breaker as cb  # noqa: E402
+import experiment_ledger as el  # noqa: E402
 
 REVIEW_TXT = os.path.join(_ROOT, "reports", "circuit_review.txt")
 REVIEW_JSON = os.path.join(_ROOT, "reports", "circuit_review.json")
 METHODS = ("equal", "inv_vol", "erc", "gmv")
 METHOD_CN = {"equal": "等权", "inv_vol": "逆波动", "erc": "风险平价", "gmv": "最小方差"}
-HORIZONS = (1, 3, 5, 10)                        # 触发后前瞻交易日
-CALIB_THRESHOLD = 0.01                          # 条件远期分析的"校准观察档"：默认halt3%在日频分散组合0触发，
+HORIZONS = (1, 3, 5, 10)  # 触发后前瞻交易日
+CALIB_THRESHOLD = 0.01  # 条件远期分析的"校准观察档"：默认halt3%在日频分散组合0触发，
 #                                                用1%档才能获得可统计样本（等权约18次）评估"大跌后续跌/反弹"
 SWEEP_GRID = (0.005, 0.008, 0.01, 0.015, 0.02, 0.03)  # halt 阈值校准网格（覆盖有样本区到默认档）
 
@@ -50,7 +51,7 @@ def forward_compound(daily, i, h):
         return None
     g = 1.0
     for k in range(1, h + 1):
-        g *= (1.0 + daily[i + k])
+        g *= 1.0 + daily[i + k]
     return g - 1.0
 
 
@@ -60,8 +61,12 @@ def _dist(vals):
     n = len(vals)
     if n == 0:
         return {"n": 0, "mean": None, "median": None, "down_rate": None}
-    return {"n": n, "mean": sum(vals) / n, "median": statistics.median(vals),
-            "down_rate": sum(1 for v in vals if v < 0) / n}
+    return {
+        "n": n,
+        "mean": sum(vals) / n,
+        "median": statistics.median(vals),
+        "down_rate": sum(1 for v in vals if v < 0) / n,
+    }
 
 
 def threshold_events(daily, threshold):
@@ -105,13 +110,28 @@ def sweep_halt(dates, daily, grid=SWEEP_GRID, horizons=HORIZONS):
     for th in grid:
         ev = threshold_events(daily, th)
         cf = conditional_forwards(daily, ev, horizons)
-        rows.append({"threshold": th, "n_trigger": len(ev), "share": len(ev) / n if n else 0.0,
-                     "dates": [dates[i] for i in ev[:12]], "forward": cf["conditional"]})
+        rows.append(
+            {
+                "threshold": th,
+                "n_trigger": len(ev),
+                "share": len(ev) / n if n else 0.0,
+                "dates": [dates[i] for i in ev[:12]],
+                "forward": cf["conditional"],
+            }
+        )
     return rows
 
 
-def analyze_method(dates, daily, *, warn=cb.DEFAULT_WARN, halt=cb.DEFAULT_HALT,
-                   delever=cb.DEFAULT_DELEVER, calib=CALIB_THRESHOLD, horizons=HORIZONS):
+def analyze_method(
+    dates,
+    daily,
+    *,
+    warn=cb.DEFAULT_WARN,
+    halt=cb.DEFAULT_HALT,
+    delever=cb.DEFAULT_DELEVER,
+    calib=CALIB_THRESHOLD,
+    horizons=HORIZONS,
+):
     """单方法：默认三档穿越计数 + halt档与校准观察档触发后的条件远期 vs 无条件基准 + 阈值网格。"""
     thresholds = {"warn": warn, "halt": halt, "delever": delever}
     cnt, idx = level_counts(daily, thresholds)
@@ -119,11 +139,17 @@ def analyze_method(dates, daily, *, warn=cb.DEFAULT_WARN, halt=cb.DEFAULT_HALT,
     calib_idx = threshold_events(daily, calib)
     calib_fwd = conditional_forwards(daily, calib_idx, horizons)
     sweep = sweep_halt(dates, daily, horizons=horizons)
-    return {"n_days": len(daily), "counts": cnt,
-            "dates": {lv: [dates[i] for i in idx[lv][:12]] for lv in idx},
-            "halt_forward": halt_fwd, "calib_threshold": calib,
-            "calib_n": len(calib_idx), "calib_forward": calib_fwd, "sweep": sweep,
-            "worst_day_loss": max((loss_of(r) for r in daily), default=0.0)}
+    return {
+        "n_days": len(daily),
+        "counts": cnt,
+        "dates": {lv: [dates[i] for i in idx[lv][:12]] for lv in idx},
+        "halt_forward": halt_fwd,
+        "calib_threshold": calib,
+        "calib_n": len(calib_idx),
+        "calib_forward": calib_fwd,
+        "sweep": sweep,
+        "worst_day_loss": max((loss_of(r) for r in daily), default=0.0),
+    }
 
 
 def load_method_series(db_path):
@@ -142,62 +168,123 @@ def load_method_series(db_path):
 
 # =========================== 文本渲染 ===========================
 def _pct(x, nd=2):
-    return "NA" if x is None else ("%+.{}f%%".format(nd) % (x * 100))
+    return "NA" if x is None else (f"%+.{nd}f%%" % (x * 100))
 
 
 def render(meta, per):
     L = []
     L.append("=" * 108)
-    L.append("G5④ 组合层熔断阈值历史校准台 circuit_review（纯离线读 G21 面板，日频逐日代理，只读不改 circuit_breaker 默认/主链/持仓）")
-    L.append("固定宇宙=%d/%d 品种、稠密 %s~%s 共%d日；滚动样本外曲线起于 lookback 后，各方法 %d 日；前瞻窗 %s 交易日"
-             % (meta["n_universe"], meta["n_all"], meta["date_first"], meta["date_last"], meta["n_mat"],
-                meta["n_proxy"], "/".join(str(h) for h in HORIZONS)))
-    L.append("默认阈值 warn=%.0f%%/halt=%.0f%%/delever=%.0f%%（与 config.CIRCUIT_*、circuit_breaker 默认一致）"
-             % (cb.DEFAULT_WARN * 100, cb.DEFAULT_HALT * 100, cb.DEFAULT_DELEVER * 100))
+    L.append(
+        "G5④ 组合层熔断阈值历史校准台 circuit_review（纯离线读 G21 面板，日频逐日代理，只读不改 circuit_breaker 默认/主链/持仓）"
+    )
+    L.append(
+        "固定宇宙=%d/%d 品种、稠密 %s~%s 共%d日；滚动样本外曲线起于 lookback 后，各方法 %d 日；前瞻窗 %s 交易日"
+        % (
+            meta["n_universe"],
+            meta["n_all"],
+            meta["date_first"],
+            meta["date_last"],
+            meta["n_mat"],
+            meta["n_proxy"],
+            "/".join(str(h) for h in HORIZONS),
+        )
+    )
+    L.append(
+        "默认阈值 warn=%.0f%%/halt=%.0f%%/delever=%.0f%%（与 config.CIRCUIT_*、circuit_breaker 默认一致）"
+        % (cb.DEFAULT_WARN * 100, cb.DEFAULT_HALT * 100, cb.DEFAULT_DELEVER * 100)
+    )
     L.append("-" * 108)
     L.append("【一】默认阈值下历史穿越次数（日频：单日损失≥阈值即一次，每日日切重置）")
-    L.append("  %-8s %6s %6s %6s %8s %10s" % ("方法", "warn", "halt", "delever", "交易日", "最差单日"))
+    L.append(
+        "  %-8s %6s %6s %6s %8s %10s" % ("方法", "warn", "halt", "delever", "交易日", "最差单日")
+    )
     for m in METHODS:
         c = per[m]["counts"]
-        L.append("  %-8s %6d %6d %6d %8d %9.2f%%"
-                 % (METHOD_CN[m], c[cb.WARN], c[cb.HALT], c[cb.DELEVER], per[m]["n_days"],
-                    per[m]["worst_day_loss"] * 100))
-    L.append("  读法：warn 是日常提示可较频；halt 一年(约243日)触发个位数~十几次属正常，若几十次=阈值过紧会频繁停开，0次=过松无意义。")
+        L.append(
+            "  %-8s %6d %6d %6d %8d %9.2f%%"
+            % (
+                METHOD_CN[m],
+                c[cb.WARN],
+                c[cb.HALT],
+                c[cb.DELEVER],
+                per[m]["n_days"],
+                per[m]["worst_day_loss"] * 100,
+            )
+        )
+    L.append(
+        "  读法：warn 是日常提示可较频；halt 一年(约243日)触发个位数~十几次属正常，若几十次=阈值过紧会频繁停开，0次=过松无意义。"
+    )
     L.append("-" * 108)
-    L.append("【二】单日跌≥%.0f%% 后的前瞻收益：条件组 vs 全样本无条件基准（验证'停开避险'是否成立）"
-             % (CALIB_THRESHOLD * 100))
-    L.append("  （默认 halt=%.0f%% 在日频分散组合 0 触发、无法统计，故取 %.0f%% 校准观察档获得样本；n 过小仅供参考）"
-             % (cb.DEFAULT_HALT * 100, CALIB_THRESHOLD * 100))
+    L.append(
+        "【二】单日跌≥%.0f%% 后的前瞻收益：条件组 vs 全样本无条件基准（验证'停开避险'是否成立）"
+        % (CALIB_THRESHOLD * 100)
+    )
+    L.append(
+        "  （默认 halt=%.0f%% 在日频分散组合 0 触发、无法统计，故取 %.0f%% 校准观察档获得样本；n 过小仅供参考）"
+        % (cb.DEFAULT_HALT * 100, CALIB_THRESHOLD * 100)
+    )
     for m in METHODS:
         hf = per[m]["calib_forward"]
-        L.append("  ● %s（跌≥%.0f%% 触发 %d 次）"
-                 % (METHOD_CN[m], CALIB_THRESHOLD * 100, per[m]["calib_n"]))
-        L.append("    %5s | %-24s | %-24s | %-12s" % ("窗", "条件均值/中位/下跌占比", "基准均值/中位/下跌占比", "条件-基准"))
+        L.append(
+            "  ● %s（跌≥%.0f%% 触发 %d 次）"
+            % (METHOD_CN[m], CALIB_THRESHOLD * 100, per[m]["calib_n"])
+        )
+        L.append(
+            "    %5s | %-24s | %-24s | %-12s"
+            % ("窗", "条件均值/中位/下跌占比", "基准均值/中位/下跌占比", "条件-基准")
+        )
         for h in HORIZONS:
             cc, bb = hf["conditional"][h], hf["baseline"][h]
             if cc["n"] == 0:
                 L.append("    T+%-3d | 无触发样本" % h)
                 continue
             diff = None if cc["mean"] is None or bb["mean"] is None else cc["mean"] - bb["mean"]
-            L.append("    T+%-3d | %s/%s/%.0f%%(n=%d) | %s/%s/%.0f%% | %s"
-                     % (h, _pct(cc["mean"]), _pct(cc["median"]), (cc["down_rate"] or 0) * 100, cc["n"],
-                        _pct(bb["mean"]), _pct(bb["median"]), (bb["down_rate"] or 0) * 100,
-                        _pct(diff)))
-    L.append("  读法：条件均值比基准更负、条件下跌占比更高 → 大跌后倾向续跌，halt 停开有避险价值；若条件组反而更正=大跌后均值回归，停开易误杀。")
+            L.append(
+                "    T+%-3d | %s/%s/%.0f%%(n=%d) | %s/%s/%.0f%% | %s"
+                % (
+                    h,
+                    _pct(cc["mean"]),
+                    _pct(cc["median"]),
+                    (cc["down_rate"] or 0) * 100,
+                    cc["n"],
+                    _pct(bb["mean"]),
+                    _pct(bb["median"]),
+                    (bb["down_rate"] or 0) * 100,
+                    _pct(diff),
+                )
+            )
+    L.append(
+        "  读法：条件均值比基准更负、条件下跌占比更高 → 大跌后倾向续跌，halt 停开有避险价值；若条件组反而更正=大跌后均值回归，停开易误杀。"
+    )
     L.append("-" * 108)
-    L.append("【三】halt 阈值网格校准（等权 equal 为代表；触发占比=次数/交易日，T+5 条件均值/下跌占比/样本n）")
+    L.append(
+        "【三】halt 阈值网格校准（等权 equal 为代表；触发占比=次数/交易日，T+5 条件均值/下跌占比/样本n）"
+    )
     sw = per["equal"]["sweep"]
-    L.append("  %-8s %8s %10s %14s %12s %6s" % ("halt阈值", "触发次数", "占交易日", "T+5条件均值", "T+5下跌占比", "n"))
+    L.append(
+        "  %-8s %8s %10s %14s %12s %6s"
+        % ("halt阈值", "触发次数", "占交易日", "T+5条件均值", "T+5下跌占比", "n")
+    )
     for row in sw:
         c5 = row["forward"][5]
-        L.append("  %6.1f%% %8d %9.2f%% %14s %11s %6d"
-                 % (row["threshold"] * 100, row["n_trigger"], row["share"] * 100,
-                    _pct(c5["mean"]) if c5["mean"] is not None else "NA",
-                    ("%.0f%%" % (c5["down_rate"] * 100)) if c5["down_rate"] is not None else "NA",
-                    c5["n"]))
+        L.append(
+            "  %6.1f%% %8d %9.2f%% %14s %11s %6d"
+            % (
+                row["threshold"] * 100,
+                row["n_trigger"],
+                row["share"] * 100,
+                _pct(c5["mean"]) if c5["mean"] is not None else "NA",
+                ("%.0f%%" % (c5["down_rate"] * 100)) if c5["down_rate"] is not None else "NA",
+                c5["n"],
+            )
+        )
     L.append("-" * 108)
-    L.append("诚实边界：日频收盘对收盘=逐日代理，无法复现 circuit_breaker 日内'当日粘性/一天多快照'，真实日内触发次数只会更多、锁定只在当日；")
-    L.append("固定宇宙有幸存者偏差、未计手续费/滑点/保证金/换月；本结果只用于阈值数量级校准，不直接改 config 默认、不构成投资建议。")
+    L.append(
+        "诚实边界：日频收盘对收盘=逐日代理，无法复现 circuit_breaker 日内'当日粘性/一天多快照'，真实日内触发次数只会更多、锁定只在当日；"
+    )
+    L.append(
+        "固定宇宙有幸存者偏差、未计手续费/滑点/保证金/换月；本结果只用于阈值数量级校准，不直接改 config 默认、不构成投资建议。"
+    )
     return "\n".join(L)
 
 
@@ -209,11 +296,20 @@ def run(db_path=None, txt_path=REVIEW_TXT, json_path=REVIEW_JSON, verbose=True):
     for m in METHODS:
         d, daily = series[m]
         per[m] = analyze_method(d, daily)
-    meta = {"n_universe": n_universe, "n_all": n_all, "date_first": d0, "date_last": d1,
-            "n_mat": n_mat, "n_proxy": len(series[METHODS[0]][1]),
-            "warn": cb.DEFAULT_WARN, "halt": cb.DEFAULT_HALT, "delever": cb.DEFAULT_DELEVER,
-            "calib_threshold": CALIB_THRESHOLD,
-            "horizons": list(HORIZONS), "sweep_grid": list(SWEEP_GRID)}
+    meta = {
+        "n_universe": n_universe,
+        "n_all": n_all,
+        "date_first": d0,
+        "date_last": d1,
+        "n_mat": n_mat,
+        "n_proxy": len(series[METHODS[0]][1]),
+        "warn": cb.DEFAULT_WARN,
+        "halt": cb.DEFAULT_HALT,
+        "delever": cb.DEFAULT_DELEVER,
+        "calib_threshold": CALIB_THRESHOLD,
+        "horizons": list(HORIZONS),
+        "sweep_grid": list(SWEEP_GRID),
+    }
     text = render(meta, per)
     if verbose:
         print(text)
@@ -227,20 +323,39 @@ def run(db_path=None, txt_path=REVIEW_TXT, json_path=REVIEW_JSON, verbose=True):
         eq = per["equal"]
         el.safe_record(
             "circuit_review",
-            {"warn": cb.DEFAULT_WARN, "halt": cb.DEFAULT_HALT, "delever": cb.DEFAULT_DELEVER,
-             "calib_threshold": CALIB_THRESHOLD,
-             "horizons": list(HORIZONS), "sweep_grid": list(SWEEP_GRID),
-             "panel_db": os.path.basename(db_path)},
-            {m: {"warn": per[m]["counts"][cb.WARN], "halt": per[m]["counts"][cb.HALT],
-                 "delever": per[m]["counts"][cb.DELEVER], "calib_n": per[m]["calib_n"],
-                 "calib_t5_mean": per[m]["calib_forward"]["conditional"][5]["mean"],
-                 "base_t5_mean": per[m]["calib_forward"]["baseline"][5]["mean"]}
-             for m in METHODS},
-            inputs=[db_path], artifacts=[txt_path, json_path],
+            {
+                "warn": cb.DEFAULT_WARN,
+                "halt": cb.DEFAULT_HALT,
+                "delever": cb.DEFAULT_DELEVER,
+                "calib_threshold": CALIB_THRESHOLD,
+                "horizons": list(HORIZONS),
+                "sweep_grid": list(SWEEP_GRID),
+                "panel_db": os.path.basename(db_path),
+            },
+            {
+                m: {
+                    "warn": per[m]["counts"][cb.WARN],
+                    "halt": per[m]["counts"][cb.HALT],
+                    "delever": per[m]["counts"][cb.DELEVER],
+                    "calib_n": per[m]["calib_n"],
+                    "calib_t5_mean": per[m]["calib_forward"]["conditional"][5]["mean"],
+                    "base_t5_mean": per[m]["calib_forward"]["baseline"][5]["mean"],
+                }
+                for m in METHODS
+            },
+            inputs=[db_path],
+            artifacts=[txt_path, json_path],
             conclusion="固定宇宙%d品种 %s~%s：默认3%%halt日频0触发(分散组合最差单日%.2f%%)；1%%观察档等权%d次、T+5条件%s vs 基准%s"
-                       % (n_universe, d0, d1, eq["worst_day_loss"] * 100, eq["calib_n"],
-                          _pct(eq["calib_forward"]["conditional"][5]["mean"]),
-                          _pct(eq["calib_forward"]["baseline"][5]["mean"])))
+            % (
+                n_universe,
+                d0,
+                d1,
+                eq["worst_day_loss"] * 100,
+                eq["calib_n"],
+                _pct(eq["calib_forward"]["conditional"][5]["mean"]),
+                _pct(eq["calib_forward"]["baseline"][5]["mean"]),
+            ),
+        )
     except Exception:
         pass
     return payload
@@ -268,7 +383,7 @@ def selftest():
 
     # 4) conditional_forwards：构造"大跌后必续跌"序列，条件均值应显著负、下跌占比100%
     seq = [0.0, -0.04, -0.03, -0.02, 0.0, -0.04, -0.02, -0.01]
-    ev3 = threshold_events(seq, 0.03)   # r<=-0.03：索引1(-.04)/2(-.03)/5(-.04)
+    ev3 = threshold_events(seq, 0.03)  # r<=-0.03：索引1(-.04)/2(-.03)/5(-.04)
     assert ev3 == [1, 2, 5]
     cf = conditional_forwards(seq, ev3, horizons=(1, 3))
     assert cf["conditional"][1]["n"] == 3
@@ -296,14 +411,22 @@ def selftest():
     assert all(r["n_trigger"] == 0 for r in empty["sweep"])
 
     # 8) render 不崩且含三档标题
-    meta = {"n_universe": 4, "n_all": 4, "date_first": "d0", "date_last": "d5",
-            "n_mat": 6, "n_proxy": 6}
+    meta = {
+        "n_universe": 4,
+        "n_all": 4,
+        "date_first": "d0",
+        "date_last": "d5",
+        "n_mat": 6,
+        "n_proxy": 6,
+    }
     per = {m: analyze_method(dates, daily, horizons=HORIZONS) for m in METHODS}
     txt = render(meta, per)
     for kw in ("【一】", "【二】", "【三】", "halt", "条件"):
         assert kw in txt
-    print("circuit_review selftest ALL PASS（损失口径/远期复利/事件穿越/三档分档/续跌vs反弹条件分布/"
-          "阈值网格单调/空序列安全/渲染 共8组）")
+    print(
+        "circuit_review selftest ALL PASS（损失口径/远期复利/事件穿越/三档分档/续跌vs反弹条件分布/"
+        "阈值网格单调/空序列安全/渲染 共8组）"
+    )
     return 0
 
 

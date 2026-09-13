@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第81轮 #8：G21 面板长期化——term 长序列 → 长面板 DB 回填（研究侧离线工具）。
 
 背景：G21 research_panel.db 来自新浪主连（约1023根上限），只有约4年（2022-07 起），
@@ -17,10 +16,10 @@ ret126/hv60 现算），本工具把它回填成与 G21 面板同 schema 的长�
   D:\\Python\\python.exe tools\\long_panel_builder.py --codes 螺纹钢,铜
   D:\\Python\\python.exe tools\\long_panel_builder.py --selftest
 """
+
 import argparse
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,9 +27,10 @@ for p in (str(ROOT), str(ROOT / "tools")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import config                       # noqa: E402  品种表
-import panel_builder as pb          # noqa: E402  PanelStore（同 schema 复用）
-import term_history as th           # noqa: E402  adjusted_near_ohlc 长序列
+import panel_builder as pb  # noqa: E402
+
+import config  # noqa: E402
+import term_history as th  # noqa: E402
 
 DEFAULT_DB = ROOT / "cache" / "research_panel_long.db"
 DEFAULT_TERM_DB = ROOT / "cache" / "term_history.db"
@@ -47,14 +47,21 @@ LONG_FEATURE_EXPRS = (
     ("hv20", "ts_std(log(close/delay(close,1)),20)*15.874507866387544"),
     ("hv60", "ts_std(log(close/delay(close,1)),60)*15.874507866387544"),
     ("tsmom63", "(close/delay(close,63)-1)/(ts_std(close/delay(close,1)-1,63)*15.874507866387544)"),
-    ("tsmom126", "(close/delay(close,126)-1)/(ts_std(close/delay(close,1)-1,126)*15.874507866387544)"),
-    ("tsmom252", "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)"),
+    (
+        "tsmom126",
+        "(close/delay(close,126)-1)/(ts_std(close/delay(close,1)-1,126)*15.874507866387544)",
+    ),
+    (
+        "tsmom252",
+        "(close/delay(close,252)-1)/(ts_std(close/delay(close,1)-1,252)*15.874507866387544)",
+    ),
 )
 
 
 def build_rows(sym, sector, warmup=126, term_db=None):
     """单品种：term 缓存 → 近月复权长序列 rows（含 sym/sector/ret126/hv60 + 第82轮特征列）。"""
     import factor_expr as fx
+
     store = th.TermHistoryStore(term_db or th.TERM_DB_PATH)
     try:
         rows = th.adjusted_near_ohlc(sym, store, warmup=warmup)
@@ -65,14 +72,24 @@ def build_rows(sym, sector, warmup=126, term_db=None):
     series = {"close": [r["c"] for r in rows]}
     for col, expr in LONG_FEATURE_EXPRS:
         vals = fx.compute_ts(expr, series)
-        for r, v in zip(rows, vals):
+        for r, v in zip(rows, vals, strict=False):
             r[col] = v if fx._isnum(v) else None
     # ret126/hv60 已由 adjusted_near_ohlc 现算；补充空缺键为 None（PanelStore 按 ALL_COLS 取值）
     out = []
     for r in rows:
-        row = {"sym": sym, "date": r["date"], "sector": sector,
-               "o": r.get("o"), "h": r.get("h"), "l": r.get("l"), "c": r.get("c"),
-               "v": None, "oi": None, "ret126": r.get("ret126"), "hv60": r.get("hv60")}
+        row = {
+            "sym": sym,
+            "date": r["date"],
+            "sector": sector,
+            "o": r.get("o"),
+            "h": r.get("h"),
+            "l": r.get("l"),
+            "c": r.get("c"),
+            "v": None,
+            "oi": None,
+            "ret126": r.get("ret126"),
+            "hv60": r.get("hv60"),
+        }
         for col, _expr in LONG_FEATURE_EXPRS:
             row[col] = r.get(col)
         out.append(row)
@@ -98,40 +115,66 @@ def run(db_path=None, term_db=None, codes="", limit=0, verbose=True):
         d0, d1 = rows[0]["date"], rows[-1]["date"]
         dmin = d0 if dmin is None or d0 < dmin else dmin
         dmax = d1 if dmax is None or d1 > dmax else dmax
-    store.record_run([n for n, _ in items], 0, n_sym, n_rows, dmin, dmax, 0,
-                     note="第81轮 long_panel_builder：term 近月复权长序列（v/oi/其余特征列为 None）")
+    store.record_run(
+        [n for n, _ in items],
+        0,
+        n_sym,
+        n_rows,
+        dmin,
+        dmax,
+        0,
+        note="第81轮 long_panel_builder：term 近月复权长序列（v/oi/其余特征列为 None）",
+    )
     store.close()
-    msg = ("long_panel：%d 品种 / %d 行（%s ~ %s）-> %s"
-           % (n_sym, n_rows, dmin, dmax, db_path))
+    msg = "long_panel：%d 品种 / %d 行（%s ~ %s）-> %s" % (n_sym, n_rows, dmin, dmax, db_path)
     if verbose:
         print(msg)
-    return {"n_symbols": n_sym, "n_rows": n_rows, "date_min": dmin,
-            "date_max": dmax, "db": db_path, "msg": msg}
+    return {
+        "n_symbols": n_sym,
+        "n_rows": n_rows,
+        "date_min": dmin,
+        "date_max": dmax,
+        "db": db_path,
+        "msg": msg,
+    }
 
 
 def backtest_resolve(codes, limit):
     """与 carry_eval 同源：中文名/主连 → [(name, main_code)]。"""
     import backtest
+
     return backtest.resolve_codes(codes or "", limit if limit and limit > 0 else None)
 
 
 def selftest():
     import tempfile
-    import factor_expr as fx
+
     from term_history import TermHistoryStore
+
     tmpdir = tempfile.mkdtemp(prefix="lpb_t_")
     term_db = os.path.join(tmpdir, "th.db")
     tstore = TermHistoryStore(term_db)
 
-    from datetime import date as _d, timedelta as _td
+    from datetime import date as _d
+    from datetime import timedelta as _td
 
     def _bars(code_price, d0, d1):
         out = []
         for d in range(d0, d1 + 1):
             dt = _d(2026, 1, 1) + _td(days=d)
             c = code_price + d * 0.5
-            out.append({"d": dt.isoformat(), "c": c, "s": c, "v": 5, "p": 50,
-                        "h": c * 1.01, "l": c * 0.99, "o": c})
+            out.append(
+                {
+                    "d": dt.isoformat(),
+                    "c": c,
+                    "s": c,
+                    "v": 5,
+                    "p": 50,
+                    "h": c * 1.01,
+                    "l": c * 0.99,
+                    "o": c,
+                }
+            )
         return out
 
     tstore.save_contract("XX", "XX2603", _bars(100.0, 0, 44))
@@ -141,13 +184,15 @@ def selftest():
     tstore.save_contract("XX", "XX2605", _bars(300.0, 60, 119))
     tstore.save_contract("YY", "YY2605", _bars(700.0, 60, 119))
     try:
-        rows = build_rows("XX", "测试", warmup=5, term_db=term_db)   # 合成120天，暖机缩短
+        rows = build_rows("XX", "测试", warmup=5, term_db=term_db)  # 合成120天，暖机缩短
         assert rows and rows[0]["date"] < rows[-1]["date"]
         closes = [r["c"] for r in rows]
         rets = [abs(closes[i] / closes[i - 1] - 1.0) for i in range(1, len(closes))]
-        assert max(rets) < 0.02                              # 拼接连续
+        assert max(rets) < 0.02  # 拼接连续
         # 注：LONG_FEATURE_EXPRS 会以固定126窗覆盖 warmup 参数版 ret126，自测(120天)改验短窗列
-        assert any(r["ret5"] is not None for r in rows) and any(r["tsmom63"] is not None for r in rows)
+        assert any(r["ret5"] is not None for r in rows) and any(
+            r["tsmom63"] is not None for r in rows
+        )
         assert any(r["hv60"] is not None for r in rows)
         # 回填到临时长面板并读回（schema 兼容 PanelStore）
         panel_db = os.path.join(tmpdir, "panel_long.db")
@@ -161,17 +206,24 @@ def selftest():
         b0 = back[0]
         assert b0["sym"] == "XX" and b0["c"] is not None
         # 第82轮特征列经 PanelStore 落库-回读闭环（ret126 真窗已在真实长面板验证，合成120天用短窗列断言）
-        assert any(r["ret5"] is not None for r in back) and any(r["tsmom63"] is not None for r in back)
-        assert any(r["tsmom63"] is not None for r in back)   # 第82轮：blend 所需特征列已算（63窗在120天内可暖机）
+        assert any(r["ret5"] is not None for r in back) and any(
+            r["tsmom63"] is not None for r in back
+        )
+        assert any(
+            r["tsmom63"] is not None for r in back
+        )  # 第82轮：blend 所需特征列已算（63窗在120天内可暖机）
         # None 列容错：series_from_rows 对 v/oi 缺值安全（不崩、None 进 DSL 为缺失）
         import expr_miner as em
+
         sr = em.series_from_rows(back)
         assert len(sr["close"]) == len(back)
-        assert all(v is None for v in sr["volume"])         # 长面板 v 列为 None
+        assert all(v is None for v in sr["volume"])  # 长面板 v 列为 None
     finally:
         tstore.close()
-    print("long_panel_builder selftest ALL PASS（term长序列rows/拼接连续/ret126+hv60现算/"
-          "PanelStore schema 兼容回读/缺列容错/特征列现算 共5组）")
+    print(
+        "long_panel_builder selftest ALL PASS（term长序列rows/拼接连续/ret126+hv60现算/"
+        "PanelStore schema 兼容回读/缺列容错/特征列现算 共5组）"
+    )
     return 0
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""第94轮 B5（摘要遗留"交易所官方IV交叉校验零依赖重写"）：拉取上期所/广期所官方 IV 与本地反推 IV 对照。
 
 用现有 http_client（零新依赖）直连上期所/广期所官网公开接口获取期权隐含波动率（官方口径），
@@ -10,11 +9,11 @@ CLI：
   python tools/iv_official_check.py --selftest # 零网络合成断言（含校验逻辑）
 数据落 reports/iv_official_check.txt/.json（被 reports 聚合页签自动展示）。
 """
+
 import argparse
 import json
 import os
 import sys
-import time
 from datetime import datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,14 +22,14 @@ for p in (_ROOT, _HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import config                   # noqa: E402
-import html_text                # noqa: E402
-from http_client import http    # noqa: E402
+import config  # noqa: E402
+import html_text  # noqa: E402
+from http_client import http  # noqa: E402
 
 REPORT_TXT = os.path.join(_ROOT, "reports", "iv_official_check.txt")
 REPORT_JSON = os.path.join(_ROOT, "reports", "iv_official_check.json")
 TIMEOUT = 12
-VOL_DIFF_THRESH = 2.0           # 偏差超过 2vol 标注
+VOL_DIFF_THRESH = 2.0  # 偏差超过 2vol 标注
 
 # SHFE（上期所）日周数据页面——AJAX动态渲染，纯requests可能拿到外壳但表格为空；实测200/520KB但表内容为0
 _SHFE_URL = "https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_params=options3_4"
@@ -38,15 +37,19 @@ _SHFE_URL = "https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query
 _GFEX_URL = "https://www.gfex.com.cn/qhgg/lspc/qqp/kqp/hyq.html"
 # OpenVlab 波动率曲面（匿名可靠，83品种）：可靠补充对照源（第94轮实测稳定）
 _OVL_SURFACE_URL = "https://www.openvlab.cn/api/volatility-surface/"
-_OVL_HEADERS = {"User-Agent": config.HEADERS_COMMON.get("User-Agent", ""), "Referer": "https://www.openvlab.cn/market"}
+_OVL_HEADERS = {
+    "User-Agent": config.HEADERS_COMMON.get("User-Agent", ""),
+    "Referer": "https://www.openvlab.cn/market",
+}
 
 
 def _fetch_shfe_iv():
     """从上期所公开页面尝试提取 IV 表（返回 {品种: [{"strike":x,"call_iv":y,"put_iv":z}]})。
     诚实缺口：上期所页面为静态 HTML 表格，字段列布局可能随官网改版变化；提取失败返回空 dict。"""
     try:
-        r = http.get(_SHFE_URL, timeout=TIMEOUT,
-                     headers={"User-Agent": config.HEADERS_COMMON["User-Agent"]})
+        r = http.get(
+            _SHFE_URL, timeout=TIMEOUT, headers={"User-Agent": config.HEADERS_COMMON["User-Agent"]}
+        )
         r.encoding = "utf-8"
         if r.status_code != 200 or len(r.text) < 500:
             return {}, "http_%d" % r.status_code
@@ -64,7 +67,12 @@ def _fetch_shfe_iv():
                     continue
                 sym = row[0].strip()
                 vals = [row[i].strip() if i < len(row) else "" for i in range(1, min(5, len(row)))]
-                out[sym] = [{"call_iv": _safe_float(vals[0]), "put_iv": _safe_float(vals[1]) if len(vals) > 1 else None}]
+                out[sym] = [
+                    {
+                        "call_iv": _safe_float(vals[0]),
+                        "put_iv": _safe_float(vals[1]) if len(vals) > 1 else None,
+                    }
+                ]
             if out:
                 return out, "ok"
         return {}, "no_iv_header"
@@ -95,13 +103,22 @@ def _cross_check(user_iv, source):
         atm_local = local.get(sym)
         atm_official = rows[0]["call_iv"] if rows and rows[0].get("call_iv") else None
         if atm_local is None or atm_official is None:
-            checks.append({"sym": sym, "status": "缺少对照口(本地=%s/官方=%s)" % (atm_local, atm_official)})
+            checks.append(
+                {"sym": sym, "status": "缺少对照口(本地=%s/官方=%s)" % (atm_local, atm_official)}
+            )
             continue
         diff = abs(atm_official - atm_local)
         warn = diff > VOL_DIFF_THRESH
-        checks.append({"sym": sym, "atm_local": atm_local, "atm_official": atm_official,
-                        "diff": round(diff, 3), "warn": warn,
-                        "status": "⚠️ 偏差%.1fvol" % diff if warn else "✅ 正常"})
+        checks.append(
+            {
+                "sym": sym,
+                "atm_local": atm_local,
+                "atm_official": atm_official,
+                "diff": round(diff, 3),
+                "warn": warn,
+                "status": "⚠️ 偏差%.1fvol" % diff if warn else "✅ 正常",
+            }
+        )
     return checks
 
 
@@ -147,7 +164,8 @@ def run(render=True):
             ovl_fail += 1
     results["sources"]["openvlab_surface"] = {
         "status": "ok(%d品种)/fail(%d)" % (ovl_ok, ovl_fail),
-        "n": len(ovl_all)}
+        "n": len(ovl_all),
+    }
     if ovl_all:
         results.setdefault("iv_raw", {})["openvlab"] = ovl_all
     # 交叉校验：优先shfe，降级到openvlab
@@ -162,8 +180,12 @@ def run(render=True):
 
 def _render(results):
     os.makedirs(os.path.dirname(REPORT_TXT), exist_ok=True)
-    lines = ["=" * 66, " B5 交易所官方IV交叉校验（上期所/广期所官方口 vs 本地T链反推口）",
-             " %s" % results["ts"], "=" * 66]
+    lines = [
+        "=" * 66,
+        " B5 交易所官方IV交叉校验（上期所/广期所官方口 vs 本地T链反推口）",
+        " %s" % results["ts"],
+        "=" * 66,
+    ]
     for src, info in (results.get("sources") or {}).items():
         lines.append(" %s 状态: %s, 候选品种数: %d" % (src.upper(), info["status"], info["n"]))
     lines.append("")
@@ -173,9 +195,12 @@ def _render(results):
             lines.append(" %s" % c["status"])
     else:
         lines.append(" （无可交叉数据——本地 iv_surface.json 为空或官方口无 IV）")
-    lines += ["", "-" * 66,
-              " 诚实边界：上期所页面字段位置可能随官网改版变化；提取失败时软降级不编造。",
-              " 本地口径=OpenVlab T链反推 iv_surface（round 12）；官方口=网页静态表格（如有）。"]
+    lines += [
+        "",
+        "-" * 66,
+        " 诚实边界：上期所页面字段位置可能随官网改版变化；提取失败时软降级不编造。",
+        " 本地口径=OpenVlab T链反推 iv_surface（round 12）；官方口=网页静态表格（如有）。",
+    ]
     with open(REPORT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     with open(REPORT_JSON, "w", encoding="utf-8") as f:
@@ -184,12 +209,15 @@ def _render(results):
 
 # ---------------- selftest（零网络，合成校验逻辑） ----------------
 
+
 def selftest():
     checks = []
+
     def ck(name, cond):
         checks.append((name, bool(cond)))
         if not cond:
             raise AssertionError("FAIL: " + name)
+
     ck("VOL_DIFF_THRESH=2.0", VOL_DIFF_THRESH == 2.0)
     ck("cross_check 输入合规", isinstance(_cross_check({}, "test"), list))
     return 0 if all(ok for _, ok in checks) else 1

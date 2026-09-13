@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """【需求①/⑤】国内期货行情与日线指标：
 - fetch_quotes 批量拉取主力连续与任意月份合约行情（分批40个/请求），供需求⑤主力月份探测使用
 - fetch_daily_kline/compute_indicators 计算HV20/HV60、MA、ATR14、5/20日动量（技术因子+期权HV基准）
@@ -9,6 +8,7 @@
   [0]名称 [2]开盘 [3]最高 [4]最低 [6]买价 [7]卖价 [8]最新价 [10]昨结算 [13]持仓 [14]成交量 [15]交易所 [16]品种名 [17]日期
 中金所(IF/IH等)字段不同: [0]开盘 [1]最高 [2]最低 [3]最新价
 """
+
 import json
 import math
 import os
@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import config
-from http_client import http
 from data_router import REGISTRY
+from http_client import http
 from utils import LOG, clip
 
 
@@ -38,6 +38,7 @@ def _in_trading():
     造成大量无效请求；盘后直接复用已有缓存，跳过新浪/CDP 日线拉取。"""
     try:
         from utils import is_trading_time
+
         return bool(is_trading_time()[0])
     except Exception:
         return True  # 判定失败保守当交易中，不阻断正常链路
@@ -49,16 +50,16 @@ def _in_trading():
 # 修复：封锁期完全短路日线请求 + 失败缓存动态拉长到 60 分钟 + 整站封锁自动检测。
 
 _sina_lock = threading.Lock()
-_sina_block_until = 0.0       # 456 封锁到期（time.monotonic）
-_sina_block_streak = 0        # 连续 456 触发次数（用于递增封锁时长）
-_WAF_BLOCK_BASE = 60 * 60     # 456 封锁基础时长 1 小时（秒）
+_sina_block_until = 0.0  # 456 封锁到期（time.monotonic）
+_sina_block_streak = 0  # 连续 456 触发次数（用于递增封锁时长）
+_WAF_BLOCK_BASE = 60 * 60  # 456 封锁基础时长 1 小时（秒）
 _WAF_BLOCK_MAX = 6 * 60 * 60  # 连续触发时封锁时长上限 6 小时
 
 # 失败率统计（整站封锁检测）：连续失败率 ≥80% 判定整站封锁
-_KLINE_WINDOW = 600.0          # 统计窗口 10 分钟
+_KLINE_WINDOW = 600.0  # 统计窗口 10 分钟
 _KLINE_STAT = {"start": None, "ok": 0, "fail": 0}
-_FAIL_RATIO_TRIGGER = 0.80     # 失败率阈值
-_FAIL_RATIO_MIN_TOTAL = 16     # 至少 16 次请求才判定（避免小样本误判）
+_FAIL_RATIO_TRIGGER = 0.80  # 失败率阈值
+_FAIL_RATIO_MIN_TOTAL = 16  # 至少 16 次请求才判定（避免小样本误判）
 
 
 def _sina_waf_blocked():
@@ -82,10 +83,14 @@ def _sina_note_block():
         _sina_block_streak += 1
         dur = min(_WAF_BLOCK_BASE * (2 ** (_sina_block_streak - 1)), _WAF_BLOCK_MAX)
         _sina_block_until = time.time() + dur
-        LOG.warning("新浪WAF 456封锁：连续第%d次，封锁 %d 分钟（期间日线/akshare/CDP零请求）",
-                    _sina_block_streak, dur // 60)
+        LOG.warning(
+            "新浪WAF 456封锁：连续第%d次，封锁 %d 分钟（期间日线/akshare/CDP零请求）",
+            _sina_block_streak,
+            dur // 60,
+        )
         try:
             from data_router import REGISTRY
+
             REGISTRY.record("kline_sina_waf", False)
         except Exception:
             pass
@@ -119,12 +124,18 @@ def _kline_note_fail():
         if total >= _FAIL_RATIO_MIN_TOTAL and st["fail"] / total >= _FAIL_RATIO_TRIGGER:
             ok_val, fail_val = st["ok"], st["fail"]
             st["ok"], st["fail"] = 0, 0
-            LOG.warning("新浪日线整站失败率%.0f%%（%d/%d次），判定WAF封锁 %d 分钟",
-                        100 * fail_val / max(1, total), fail_val, total, _WAF_BLOCK_BASE // 60)
+            LOG.warning(
+                "新浪日线整站失败率%.0f%%（%d/%d次），判定WAF封锁 %d 分钟",
+                100 * fail_val / max(1, total),
+                fail_val,
+                total,
+                _WAF_BLOCK_BASE // 60,
+            )
             _sina_block_until = now + _WAF_BLOCK_BASE
             _sina_block_streak += 1
             try:
                 from data_router import REGISTRY
+
                 REGISTRY.record("kline_sina_waf", False)
             except Exception:
                 pass
@@ -135,6 +146,7 @@ def _kline_note_fail():
 # 任意时刻只有一次请求进入新浪，且间隔 >= SINA_REQ_GAP 秒（默认 3s ≈ 20次/min 安全线以内）。
 _sina_gate = threading.Lock()
 _sina_last_req = 0.0
+
 
 def _sina_throttle():
     """新浪 stock2 全局限流：恒速 >= SINA_REQ_GAP 秒/次。自动补齐等待，不阻塞主流程。"""
@@ -156,14 +168,14 @@ def fetch_quotes(codes):
     codes = [c for c in codes if c]
     quotes = {}
     for i in range(0, len(codes), 40):
-        chunk = codes[i:i + 40]
+        chunk = codes[i : i + 40]
         url = "https://hq.sinajs.cn/list=" + ",".join("nf_" + c for c in chunk)
         try:
             r = http.get(url, headers=config.HEADERS_SINA, timeout=config.TIMEOUT)
             r.encoding = "gbk"
         except Exception as e:
             LOG.warning("期货行情请求失败: %s", e)
-            REGISTRY.record("quote_sina", False)   # G11 主源健康上报
+            REGISTRY.record("quote_sina", False)  # G11 主源健康上报
             continue
         REGISTRY.record("quote_sina", True)
         for code in chunk:
@@ -175,12 +187,12 @@ def fetch_quotes(codes):
         # 第119轮：删除原东财 push2 第二兜底（TLS 指纹封锁持续断连）。
         try:
             from backup_sources import tqsdk_quote, tqsdk_start
-            tqsdk_start()   # 幂等：首次调用启动后台订阅，之后直接读缓存
+
+            tqsdk_start()  # 幂等：首次调用启动后台订阅，之后直接读缓存
             tq_quotes = tqsdk_quote(missing)
             if tq_quotes:
                 quotes.update(tq_quotes)
-                LOG.info("新浪缺失%d个品种，天勤TqSdk补回%d个",
-                         len(missing), len(tq_quotes))
+                LOG.info("新浪缺失%d个品种，天勤TqSdk补回%d个", len(missing), len(tq_quotes))
             REGISTRY.record("quote_tq", bool(tq_quotes))
         except Exception as e:
             LOG.debug("天勤行情兜底失败（不影响主流程）: %s", e)
@@ -188,6 +200,7 @@ def fetch_quotes(codes):
     # A1（第94轮）：解析健康探针——行情覆盖数（64品种全齐=64）
     try:
         import parser_health
+
         parser_health.record("sina_em_quotes", bool(quotes), len(quotes))
     except Exception:
         pass
@@ -222,7 +235,7 @@ def _parse_quote_inner(code, text, quotes):
     f = m.group(1).split(",")
     try:
         float(f[0])
-        is_cffex = True          # 中金所行情第一字段就是数字
+        is_cffex = True  # 中金所行情第一字段就是数字
     except (ValueError, IndexError):
         is_cffex = False
 
@@ -230,27 +243,46 @@ def _parse_quote_inner(code, text, quotes):
     if not is_cffex and len(f) >= 18:
         latest = _f(f[8])
         prev = _f(f[10])
-        q = {"name": f[16], "latest": latest, "open": _f(f[2]),
-             "high": _f(f[3]), "low": _f(f[4]),
-             "prev_settle": prev,
-             "chg_pct": (latest / prev - 1.0) if (latest > 0 and prev > 0) else 0.0,
-             "open_interest": _f(f[13]), "volume": _f(f[14]),
-             "date": f[17] if len(f) > 17 else "",
-             # G14（第92轮）：一档盘口快照字段（[6]买一价 [7]卖一价 [11]买一量 [12]卖一量
-             # [17]行情日期 [1]行情时间HHMMSS）。仅新浪主源有；东财兜底 dict 无这些键，消费端按 0 处理。
-             "bid": _f(f[6]), "ask": _f(f[7]),
-             "bid_vol": _f(f[11]) if len(f) > 11 else 0.0,
-             "ask_vol": _f(f[12]) if len(f) > 12 else 0.0,
-             "quote_date": f[17] if len(f) > 17 else "",
-             "quote_time": f[1] if len(f) > 1 else ""}
+        q = {
+            "name": f[16],
+            "latest": latest,
+            "open": _f(f[2]),
+            "high": _f(f[3]),
+            "low": _f(f[4]),
+            "prev_settle": prev,
+            "chg_pct": (latest / prev - 1.0) if (latest > 0 and prev > 0) else 0.0,
+            "open_interest": _f(f[13]),
+            "volume": _f(f[14]),
+            "date": f[17] if len(f) > 17 else "",
+            # G14（第92轮）：一档盘口快照字段（[6]买一价 [7]卖一价 [11]买一量 [12]卖一量
+            # [17]行情日期 [1]行情时间HHMMSS）。仅新浪主源有；东财兜底 dict 无这些键，消费端按 0 处理。
+            "bid": _f(f[6]),
+            "ask": _f(f[7]),
+            "bid_vol": _f(f[11]) if len(f) > 11 else 0.0,
+            "ask_vol": _f(f[12]) if len(f) > 12 else 0.0,
+            "quote_date": f[17] if len(f) > 17 else "",
+            "quote_time": f[1] if len(f) > 1 else "",
+        }
     elif is_cffex and len(f) >= 4:
         latest = _f(f[3])
-        q = {"name": f[-1] if f[-1] else code, "latest": latest,
-             "open": _f(f[0]), "high": _f(f[1]), "low": _f(f[2]),
-             "prev_settle": 0.0, "chg_pct": 0.0,
-             "open_interest": 0.0, "volume": _f(f[4]), "date": "",
-             "bid": 0.0, "ask": 0.0, "bid_vol": 0.0, "ask_vol": 0.0,
-             "quote_date": "", "quote_time": ""}
+        q = {
+            "name": f[-1] if f[-1] else code,
+            "latest": latest,
+            "open": _f(f[0]),
+            "high": _f(f[1]),
+            "low": _f(f[2]),
+            "prev_settle": 0.0,
+            "chg_pct": 0.0,
+            "open_interest": 0.0,
+            "volume": _f(f[4]),
+            "date": "",
+            "bid": 0.0,
+            "ask": 0.0,
+            "bid_vol": 0.0,
+            "ask_vol": 0.0,
+            "quote_date": "",
+            "quote_time": "",
+        }
     if q.get("latest", 0) > 0:
         quotes[code] = q
         return True
@@ -273,6 +305,7 @@ def fetch_daily_kline(symbol, retry=2):
     if getattr(config, "SINA_SERVER_ENABLED", False):
         try:
             from server_minute_client import _fetch_daily_via_server
+
             srv_bars = _fetch_daily_via_server(symbol)
             if srv_bars:
                 _kline_note_success()
@@ -281,8 +314,10 @@ def fetch_daily_kline(symbol, retry=2):
             pass
     # 新浪主源（显式禁用：SINA_DAILY_DISABLED=True 时不发任何 stock2 请求，代码保留待新 IP 后恢复）
     if not getattr(config, "SINA_DAILY_DISABLED", True):
-        url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-               f"InnerFuturesNewService.getDailyKLine?symbol={symbol}")
+        url = (
+            f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+            f"InnerFuturesNewService.getDailyKLine?symbol={symbol}"
+        )
         # 本机直连（WAF 封锁期短路）
         _sina_throttle()
         _sina_blocked = _sina_waf_blocked()
@@ -292,8 +327,7 @@ def fetch_daily_kline(symbol, retry=2):
             for _ in range(retry + 1):
                 _sina_throttle()
                 try:
-                    r = http.get(url, headers=config.HEADERS_SINA,
-                                     timeout=config.TIMEOUT)
+                    r = http.get(url, headers=config.HEADERS_SINA, timeout=config.TIMEOUT)
                     r.encoding = "utf-8"
                     if r.status_code == 456:
                         last_err = "IP被新浪WAF封锁(456)"
@@ -311,7 +345,8 @@ def fetch_daily_kline(symbol, retry=2):
     # 天勤 TqSdk 日线（主要活跃源，独立通道不受新浪/东财封锁影响；连接幂等、失败不影响主流程）
     try:
         from backup_sources import tqsdk_daily_kline, tqsdk_start
-        tqsdk_start()   # 幂等：确保连接就绪
+
+        tqsdk_start()  # 幂等：确保连接就绪
         tq_bars = tqsdk_daily_kline(symbol)
         if tq_bars:
             _kline_note_success()
@@ -337,10 +372,10 @@ _SINA_PROXY_SOURCES = [
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
 ]
-_SINA_PROXY_TTL = 20 * 60           # 代理池刷新间隔（秒）
-_SINA_PROXY_MAX_ATTEMPTS = 6        # 单品种最多尝试代理数
-_SINA_PROXY_TEST_TIMEOUT = 8        # 单个代理连通性测试超时（秒）
-_SINA_PROXY_REQ_GAP = 0.35          # 相邻代理请求间隔（秒）
+_SINA_PROXY_TTL = 20 * 60  # 代理池刷新间隔（秒）
+_SINA_PROXY_MAX_ATTEMPTS = 6  # 单品种最多尝试代理数
+_SINA_PROXY_TEST_TIMEOUT = 8  # 单个代理连通性测试超时（秒）
+_SINA_PROXY_REQ_GAP = 0.35  # 相邻代理请求间隔（秒）
 _sina_proxy_state = {"list": [], "updated": 0.0, "fails": {}}
 _sina_proxy_lock = threading.Lock()
 
@@ -349,6 +384,7 @@ def _fetch_proxy_candidates():
     """从 GitHub 公开列表拉取代理 IP（返回去重 IP:PORT 候选）。"""
     try:
         import urllib.request as _urllib_req
+
         cands = set()
         for src in _SINA_PROXY_SOURCES:
             try:
@@ -367,15 +403,16 @@ def _fetch_proxy_candidates():
 def _test_sina_proxy(proxy, timeout=None):
     """用新浪 stock2 日线接口（RB0）测试代理可达性；返回 bool。"""
     timeout = timeout or _SINA_PROXY_TEST_TIMEOUT
-    url = ("https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-           "InnerFuturesNewService.getDailyKLine?symbol=RB0")
+    url = (
+        "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+        "InnerFuturesNewService.getDailyKLine?symbol=RB0"
+    )
     try:
         import urllib.request as _urllib_req
-        handler = _urllib_req.ProxyHandler(
-            {"http": f"http://{proxy}", "https": f"http://{proxy}"})
+
+        handler = _urllib_req.ProxyHandler({"http": f"http://{proxy}", "https": f"http://{proxy}"})
         opener = _urllib_req.build_opener(handler)
-        r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA),
-                        timeout=timeout)
+        r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA), timeout=timeout)
         body = r.read().decode("utf-8", "replace")
         return bool(re.search(r"\((\[.*\])\)", body, re.S))
     except Exception:
@@ -388,10 +425,14 @@ def _sina_proxy_seed():
     try:
         seed_path = os.path.join(config.BASE_DIR, "data", "sina_proxy_seed.json")
         if os.path.exists(seed_path):
-            with open(seed_path, "r", encoding="utf-8") as f:
+            with open(seed_path, encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, list):
-                return [str(x).strip() for x in data if re.match(r"^\d+\.\d+\.\d+\.\d+:\d+$", str(x).strip())]
+                return [
+                    str(x).strip()
+                    for x in data
+                    if re.match(r"^\d+\.\d+\.\d+\.\d+:\d+$", str(x).strip())
+                ]
     except Exception:
         pass
     return []
@@ -402,7 +443,11 @@ def _refresh_sina_proxy_pool(force=False):
     首次启动优先加载本地种子（秒级可用），GitHub 拉取仅作为补充并后台等待。"""
     now = time.time()
     with _sina_proxy_lock:
-        if not force and now - _sina_proxy_state["updated"] < _SINA_PROXY_TTL and _sina_proxy_state["list"]:
+        if (
+            not force
+            and now - _sina_proxy_state["updated"] < _SINA_PROXY_TTL
+            and _sina_proxy_state["list"]
+        ):
             return _sina_proxy_state["list"]
     # 种子文件兜底：立即返回已验证的稳定 IP（不等网络拉取）
     seed = _sina_proxy_seed()
@@ -440,8 +485,13 @@ def _refresh_sina_proxy_pool(force=False):
         _sina_proxy_state["list"] = merged
         _sina_proxy_state["updated"] = now
         _sina_proxy_state["fails"] = {p: 0 for p in merged}
-    LOG.info("新浪代理池刷新：种子%d + 新发现%d = 共%d（TTL %d秒）",
-             len(seed), len(working), len(merged), _SINA_PROXY_TTL)
+    LOG.info(
+        "新浪代理池刷新：种子%d + 新发现%d = 共%d（TTL %d秒）",
+        len(seed),
+        len(working),
+        len(merged),
+        _SINA_PROXY_TTL,
+    )
     return merged
 
 
@@ -470,10 +520,13 @@ def _fetch_daily_via_proxy(symbol):
     pool = _sina_proxy_pool()
     if not pool:
         return []
-    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-           f"InnerFuturesNewService.getDailyKLine?symbol={symbol}")
+    url = (
+        f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+        f"InnerFuturesNewService.getDailyKLine?symbol={symbol}"
+    )
     # 随机起点轮换：避免每轮都从同一批开始被限流
     import random as _rnd
+
     start = _rnd.randint(0, max(0, len(pool) - 1))
     order = pool[start:] + pool[:start]
     for proxy in order[:_SINA_PROXY_MAX_ATTEMPTS]:
@@ -485,11 +538,15 @@ def _fetch_daily_via_proxy(symbol):
             continue
         try:
             import urllib.request as _urllib_req
+
             handler = _urllib_req.ProxyHandler(
-                {"http": f"http://{proxy}", "https": f"http://{proxy}"})
+                {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+            )
             opener = _urllib_req.build_opener(handler)
-            r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA),
-                            timeout=_SINA_PROXY_TEST_TIMEOUT)
+            r = opener.open(
+                _urllib_req.Request(url, headers=config.HEADERS_SINA),
+                timeout=_SINA_PROXY_TEST_TIMEOUT,
+            )
             body = r.read().decode("utf-8", "replace")
             if r.status == 456:
                 with _sina_proxy_lock:
@@ -516,9 +573,12 @@ def _fetch_intraday_via_proxy(symbol, period=30, lmt=20):
     pool = _sina_proxy_pool()
     if not pool:
         return []
-    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-           f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={int(period)}")
+    url = (
+        f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+        f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={int(period)}"
+    )
     import random as _rnd
+
     start = _rnd.randint(0, max(0, len(pool) - 1))
     order = pool[start:] + pool[:start]
     for proxy in order[:_SINA_PROXY_MAX_ATTEMPTS]:
@@ -529,11 +589,15 @@ def _fetch_intraday_via_proxy(symbol, period=30, lmt=20):
             continue
         try:
             import urllib.request as _urllib_req
+
             handler = _urllib_req.ProxyHandler(
-                {"http": f"http://{proxy}", "https": f"http://{proxy}"})
+                {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+            )
             opener = _urllib_req.build_opener(handler)
-            r = opener.open(_urllib_req.Request(url, headers=config.HEADERS_SINA),
-                            timeout=_SINA_PROXY_TEST_TIMEOUT)
+            r = opener.open(
+                _urllib_req.Request(url, headers=config.HEADERS_SINA),
+                timeout=_SINA_PROXY_TEST_TIMEOUT,
+            )
             body = r.read().decode("utf-8", "replace")
             if r.status == 456:
                 with _sina_proxy_lock:
@@ -545,7 +609,7 @@ def _fetch_intraday_via_proxy(symbol, period=30, lmt=20):
                 with _sina_proxy_lock:
                     _sina_proxy_state["fails"][proxy] = 0
                 bars = json.loads(m.group(1))
-                return bars[-int(lmt):] if lmt else bars
+                return bars[-int(lmt) :] if lmt else bars
             with _sina_proxy_lock:
                 _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
         except Exception:
@@ -553,7 +617,6 @@ def _fetch_intraday_via_proxy(symbol, period=30, lmt=20):
                 _sina_proxy_state["fails"][proxy] = _sina_proxy_state["fails"].get(proxy, 0) + 1
         time.sleep(_SINA_PROXY_REQ_GAP)
     return []
-
 
 
 def fetch_intraday_kline(symbol, period=30, retry=1):
@@ -572,13 +635,16 @@ def fetch_intraday_kline(symbol, period=30, retry=1):
     if getattr(config, "SINA_SERVER_ENABLED", False):
         try:
             from server_minute_client import _fetch_via_server
+
             srv_bars = _fetch_via_server(symbol, period, 1023)
             if srv_bars:
                 return srv_bars
         except Exception:
             pass
-    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
-           f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={period}")
+    url = (
+        f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+        f"InnerFuturesNewService.getFewMinLine?symbol={symbol}&type={period}"
+    )
     # 全局新浪节流（3s/次，防并发触发 456）→ 本机直连
     _sina_throttle()
     last_err = None
@@ -627,8 +693,7 @@ def _window_std(closes, end, window):
     lo = end - int(window)
     if lo < 0 or window < 2:
         return None
-    rets = [closes[k] / closes[k - 1] - 1.0
-            for k in range(lo + 1, end + 1) if closes[k - 1] > 0]
+    rets = [closes[k] / closes[k - 1] - 1.0 for k in range(lo + 1, end + 1) if closes[k - 1] > 0]
     if len(rets) < 2:
         return None
     return _sample_std(rets)
@@ -754,8 +819,8 @@ def _kdj_series(highs, lows, closes, period=9):
         return ks, ds, js
     k = d = 50.0
     for i in range(period - 1, len(closes)):
-        hh = max(highs[i - period + 1:i + 1])
-        ll = min(lows[i - period + 1:i + 1])
+        hh = max(highs[i - period + 1 : i + 1])
+        ll = min(lows[i - period + 1 : i + 1])
         rsv = 50.0 if abs(hh - ll) < 1e-12 else (closes[i] - ll) / (hh - ll) * 100.0
         k = 2.0 / 3.0 * k + 1.0 / 3.0 * rsv
         d = 2.0 / 3.0 * d + 1.0 / 3.0 * k
@@ -766,7 +831,7 @@ def _kdj_series(highs, lows, closes, period=9):
 def _hv_at(closes, end, period):
     if end < period or period <= 0:
         return None
-    seg = closes[end - period:end + 1]
+    seg = closes[end - period : end + 1]
     rets = [math.log(seg[i] / seg[i - 1]) for i in range(1, len(seg)) if seg[i - 1] > 0]
     if len(rets) < 5:
         return None
@@ -802,11 +867,13 @@ def _volatility_profile(closes):
         vals = [_hv_at(closes, i, win) for i in range(len(closes))]
         vals = [v for v in vals if v is not None]
         if len(vals) >= config.TECH_VOL_PERCENTILE_MIN:
-            cone[str(win)] = {"p10": _quantile(vals, 0.10),
-                              "p50": _quantile(vals, 0.50),
-                              "p90": _quantile(vals, 0.90),
-                              "current": vals[-1],
-                              "samples": len(vals)}
+            cone[str(win)] = {
+                "p10": _quantile(vals, 0.10),
+                "p50": _quantile(vals, 0.50),
+                "p90": _quantile(vals, 0.90),
+                "current": vals[-1],
+                "samples": len(vals),
+            }
     return hv_percentile, cone
 
 
@@ -822,7 +889,9 @@ def _majority_side(bull_flags, bear_flags):
 def technical_profile(closes, highs, lows):
     """RSI/MACD/KDJ/BOLL + 短中长三周期共振，供实时分析和回测共用。"""
     n = len(closes)
-    ma5_s, ma10_s, ma20_s, ma60_s = (_sma_series(closes, p) for p in (5, 10, 20, config.TECH_LONG_MA))
+    ma5_s, ma10_s, ma20_s, ma60_s = (
+        _sma_series(closes, p) for p in (5, 10, 20, config.TECH_LONG_MA)
+    )
     ema_fast = _ema_series(closes, config.TECH_MACD_FAST)
     ema_slow = _ema_series(closes, config.TECH_MACD_SLOW)
     dif_s, dea_s = [None] * n, [None] * n
@@ -834,7 +903,7 @@ def technical_profile(closes, highs, lows):
     if dif_values:
         dif_only = [v for _, v in dif_values]
         dea_only = _ema_series(dif_only, config.TECH_MACD_SIGNAL)
-        for (i, dif), dea in zip(dif_values, dea_only):
+        for (i, dif), dea in zip(dif_values, dea_only, strict=False):
             dif_s[i] = dif
             dea_s[i] = dea
             hist_s[i] = None if dea is None else (dif - dea) * 2.0
@@ -846,7 +915,9 @@ def technical_profile(closes, highs, lows):
     dif, dea, hist = dif_s[-1] or 0.0, dea_s[-1] or 0.0, hist_s[-1] or 0.0
     rsi, kdj_k, kdj_d, kdj_j = rsi_s[-1], k_s[-1], d_s[-1], j_s[-1]
     boll_mid = ma20 or 0.0
-    boll_std = _sample_std(closes[-config.TECH_BOLL_PERIOD:]) if n >= config.TECH_BOLL_PERIOD else 0.0
+    boll_std = (
+        _sample_std(closes[-config.TECH_BOLL_PERIOD :]) if n >= config.TECH_BOLL_PERIOD else 0.0
+    )
     boll_up = boll_mid + config.TECH_BOLL_STD * boll_std
     boll_low = boll_mid - config.TECH_BOLL_STD * boll_std
     ret5 = c / closes[-6] - 1.0 if n >= 6 and closes[-6] > 0 else 0.0
@@ -854,38 +925,57 @@ def technical_profile(closes, highs, lows):
 
     short_vote = _majority_side(
         [ma5 and c > ma5, ret5 > 0, kdj_k is not None and kdj_d is not None and kdj_k > kdj_d],
-        [ma5 and c < ma5, ret5 < 0, kdj_k is not None and kdj_d is not None and kdj_k < kdj_d])
-    medium_vote = _majority_side(
-        [ma20 and c > ma20, dif >= dea],
-        [ma20 and c < ma20, dif < dea])
+        [ma5 and c < ma5, ret5 < 0, kdj_k is not None and kdj_d is not None and kdj_k < kdj_d],
+    )
+    medium_vote = _majority_side([ma20 and c > ma20, dif >= dea], [ma20 and c < ma20, dif < dea])
     long_vote = _majority_side(
         [ma60 and c > ma60, ma20 and ma60 and ma20 > ma60],
-        [ma60 and c < ma60, ma20 and ma60 and ma20 < ma60])
+        [ma60 and c < ma60, ma20 and ma60 and ma20 < ma60],
+    )
     vote_sum = short_vote + medium_vote + long_vote
-    resonance_score = clip(vote_sum / 3.0 * config.TECH_RESONANCE_MAX,
-                           -config.TECH_RESONANCE_MAX, config.TECH_RESONANCE_MAX)
+    resonance_score = clip(
+        vote_sum / 3.0 * config.TECH_RESONANCE_MAX,
+        -config.TECH_RESONANCE_MAX,
+        config.TECH_RESONANCE_MAX,
+    )
     labels = {1: "多", -1: "空", 0: "中"}
     rsi_note = ""
     if rsi is not None and rsi >= config.TECH_RSI_OVERBOUGHT:
         rsi_note = "RSI超买"
     elif rsi is not None and rsi <= config.TECH_RSI_OVERSOLD:
         rsi_note = "RSI超卖"
-    resonance_note = (f"短{labels[short_vote]}/中{labels[medium_vote]}/长{labels[long_vote]}"
-                      f"，共振分{resonance_score:+.2f}")
+    resonance_note = (
+        f"短{labels[short_vote]}/中{labels[medium_vote]}/长{labels[long_vote]}"
+        f"，共振分{resonance_score:+.2f}"
+    )
     hv_percentile, vol_cone = _volatility_profile(closes)
-    return {"ma5": ma5 or 0.0, "ma10": ma10 or 0.0, "ma20": ma20 or 0.0,
-            "ma60": ma60 or 0.0, "ret5": ret5, "ret20": ret20,
-            "macd_dif": dif, "macd_dea": dea, "macd_hist": hist,
-            "rsi14": rsi if rsi is not None else 0.0,
-            "kdj_k": kdj_k if kdj_k is not None else 0.0,
-            "kdj_d": kdj_d if kdj_d is not None else 0.0,
-            "kdj_j": kdj_j if kdj_j is not None else 0.0,
-            "boll_up": boll_up, "boll_mid": boll_mid, "boll_low": boll_low,
-            "short_vote": short_vote, "medium_vote": medium_vote,
-            "long_vote": long_vote, "vote_sum": vote_sum,
-            "resonance_score": resonance_score, "resonance_note": resonance_note,
-            "rsi_note": rsi_note, "hv_percentile": hv_percentile,
-            "vol_cone": vol_cone}
+    return {
+        "ma5": ma5 or 0.0,
+        "ma10": ma10 or 0.0,
+        "ma20": ma20 or 0.0,
+        "ma60": ma60 or 0.0,
+        "ret5": ret5,
+        "ret20": ret20,
+        "macd_dif": dif,
+        "macd_dea": dea,
+        "macd_hist": hist,
+        "rsi14": rsi if rsi is not None else 0.0,
+        "kdj_k": kdj_k if kdj_k is not None else 0.0,
+        "kdj_d": kdj_d if kdj_d is not None else 0.0,
+        "kdj_j": kdj_j if kdj_j is not None else 0.0,
+        "boll_up": boll_up,
+        "boll_mid": boll_mid,
+        "boll_low": boll_low,
+        "short_vote": short_vote,
+        "medium_vote": medium_vote,
+        "long_vote": long_vote,
+        "vote_sum": vote_sum,
+        "resonance_score": resonance_score,
+        "resonance_note": resonance_note,
+        "rsi_note": rsi_note,
+        "hv_percentile": hv_percentile,
+        "vol_cone": vol_cone,
+    }
 
 
 def _bar_dt(bar):
@@ -907,17 +997,31 @@ def aggregate_30m_to_60m(bars):
         c = _f(b.get("c"))
         if c <= 0:
             continue
-        nb = {"d": b.get("d"), "o": _f(b.get("o")), "h": _f(b.get("h")),
-              "l": _f(b.get("l")), "c": c, "v": _f(b.get("v"))}
+        nb = {
+            "d": b.get("d"),
+            "o": _f(b.get("o")),
+            "h": _f(b.get("h")),
+            "l": _f(b.get("l")),
+            "c": c,
+            "v": _f(b.get("v")),
+        }
         dt = _bar_dt(nb)
-        if pending is None or dt is None or pending_dt is None or \
-                abs(dt - pending_dt - timedelta(minutes=30)).total_seconds() > 1:
+        if (
+            pending is None
+            or dt is None
+            or pending_dt is None
+            or abs(dt - pending_dt - timedelta(minutes=30)).total_seconds() > 1
+        ):
             pending, pending_dt = nb, dt
             continue
-        merged = {"d": nb["d"], "o": pending["o"],
-                  "h": max(pending["h"], nb["h"]),
-                  "l": min(pending["l"], nb["l"]), "c": nb["c"],
-                  "v": pending["v"] + nb["v"]}
+        merged = {
+            "d": nb["d"],
+            "o": pending["o"],
+            "h": max(pending["h"], nb["h"]),
+            "l": min(pending["l"], nb["l"]),
+            "c": nb["c"],
+            "v": pending["v"] + nb["v"],
+        }
         out.append(merged)
         pending, pending_dt = None, None
     return out
@@ -925,32 +1029,56 @@ def aggregate_30m_to_60m(bars):
 
 def compute_intraday_resonance(bars30):
     """30分钟做短/中周期，30m聚合出的60分钟做中/长周期，输出分钟级共振。"""
-    bars30 = [b for b in (bars30 or []) if _f(b.get("c")) > 0][-config.INTRADAY_30M_BARS:]
+    bars30 = [b for b in (bars30 or []) if _f(b.get("c")) > 0][-config.INTRADAY_30M_BARS :]
     if len(bars30) < 35:
-        return {"ok": False, "resonance_score": 0.0, "resonance_note": "30分钟K线不足",
-                "bars30": len(bars30), "bars60": 0}
+        return {
+            "ok": False,
+            "resonance_score": 0.0,
+            "resonance_note": "30分钟K线不足",
+            "bars30": len(bars30),
+            "bars60": 0,
+        }
     c30, h30, l30 = ([_f(b[k]) for b in bars30] for k in ("c", "h", "l"))
     p30 = technical_profile(c30, h30, l30)
     bars60 = aggregate_30m_to_60m(bars30)
     if len(bars60) < config.INTRADAY_60M_MIN_BARS:
-        return {"ok": False, "resonance_score": 0.0, "resonance_note": "60分钟聚合K线不足",
-                "bars30": len(bars30), "bars60": len(bars60)}
+        return {
+            "ok": False,
+            "resonance_score": 0.0,
+            "resonance_note": "60分钟聚合K线不足",
+            "bars30": len(bars30),
+            "bars60": len(bars60),
+        }
     c60, h60, l60 = ([_f(b[k]) for b in bars60] for k in ("c", "h", "l"))
     p60 = technical_profile(c60, h60, l60)
-    vote30 = p30["short_vote"] + p30["medium_vote"]      # -2..2
-    vote60 = p60["medium_vote"] + p60["long_vote"]      # -2..2
+    vote30 = p30["short_vote"] + p30["medium_vote"]  # -2..2
+    vote60 = p60["medium_vote"] + p60["long_vote"]  # -2..2
     total = vote30 + vote60
     side = 1 if total > 0 else (-1 if total < 0 else 0)
-    score = clip(side * abs(total) / 4.0 * config.INTRADAY_RESONANCE_MAX,
-                 -config.INTRADAY_RESONANCE_MAX, config.INTRADAY_RESONANCE_MAX)
+    score = clip(
+        side * abs(total) / 4.0 * config.INTRADAY_RESONANCE_MAX,
+        -config.INTRADAY_RESONANCE_MAX,
+        config.INTRADAY_RESONANCE_MAX,
+    )
     labels = {1: "多", -1: "空", 0: "中"}
-    note = (f"30m短{labels[p30['short_vote']]}/中{labels[p30['medium_vote']]}，"
-            f"60m中{labels[p60['medium_vote']]}/长{labels[p60['long_vote']]}，"
-            f"分钟共振分{score:+.2f}")
-    return {"ok": True, "resonance_score": score, "resonance_note": note,
-            "vote30": vote30, "vote60": vote60, "p30": p30, "p60": p60,
-            "bars30": len(bars30), "bars60": len(bars60),
-            "last30_time": bars30[-1].get("d", ""), "last60_time": bars60[-1].get("d", "")}
+    note = (
+        f"30m短{labels[p30['short_vote']]}/中{labels[p30['medium_vote']]}，"
+        f"60m中{labels[p60['medium_vote']]}/长{labels[p60['long_vote']]}，"
+        f"分钟共振分{score:+.2f}"
+    )
+    return {
+        "ok": True,
+        "resonance_score": score,
+        "resonance_note": note,
+        "vote30": vote30,
+        "vote60": vote60,
+        "p30": p30,
+        "p60": p60,
+        "bars30": len(bars30),
+        "bars60": len(bars60),
+        "last30_time": bars30[-1].get("d", ""),
+        "last60_time": bars60[-1].get("d", ""),
+    }
 
 
 def compute_indicators(bars, max_bars=140):
@@ -973,39 +1101,65 @@ def compute_indicators(bars, max_bars=140):
     tech = technical_profile(closes, highs, lows)
     trs = []
     for i in range(1, len(bars)):
-        tr = max(highs[i] - lows[i],
-                 abs(highs[i] - closes[i - 1]),
-                 abs(lows[i] - closes[i - 1]))
+        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
         trs.append(tr)
     atr = sum(trs[-14:]) / len(trs[-14:]) if trs else closes[-1] * 0.015
     n = len(closes)
-    return {"close": closes[-1], "prev_close": closes[-2] if n >= 2 else closes[-1],
-            "day_chg": (closes[-1] / closes[-2] - 1.0) if n >= 2 else 0.0,
-            "hv20": hv20, "hv60": hv60,
-            "ma5": tech["ma5"], "ma10": tech["ma10"], "ma20": tech["ma20"],
-            "atr": atr, "ret5": tech["ret5"], "ret20": tech["ret20"],
-            # G7 多窗口时序动量（影子键，不进 analyzer 综合分；历史不足为 None）
-            "ret63": tsmom["ret63"], "ret126": tsmom["ret126"], "ret252": tsmom["ret252"],
-            "tsmom63": tsmom["tsmom63"], "tsmom126": tsmom["tsmom126"],
-            "tsmom252": tsmom["tsmom252"], "tsmom_blend": tsmom["blend"],
-            "tsmom_n_valid": tsmom["n_valid"],
-            "tech": tech, "hv_percentile": tech["hv_percentile"],
-            "vol_cone": tech["vol_cone"],
-            "last_date": bars[-1].get("d", "")}
+    return {
+        "close": closes[-1],
+        "prev_close": closes[-2] if n >= 2 else closes[-1],
+        "day_chg": (closes[-1] / closes[-2] - 1.0) if n >= 2 else 0.0,
+        "hv20": hv20,
+        "hv60": hv60,
+        "ma5": tech["ma5"],
+        "ma10": tech["ma10"],
+        "ma20": tech["ma20"],
+        "atr": atr,
+        "ret5": tech["ret5"],
+        "ret20": tech["ret20"],
+        # G7 多窗口时序动量（影子键，不进 analyzer 综合分；历史不足为 None）
+        "ret63": tsmom["ret63"],
+        "ret126": tsmom["ret126"],
+        "ret252": tsmom["ret252"],
+        "tsmom63": tsmom["tsmom63"],
+        "tsmom126": tsmom["tsmom126"],
+        "tsmom252": tsmom["tsmom252"],
+        "tsmom_blend": tsmom["blend"],
+        "tsmom_n_valid": tsmom["n_valid"],
+        "tech": tech,
+        "hv_percentile": tech["hv_percentile"],
+        "vol_cone": tech["vol_cone"],
+        "last_date": bars[-1].get("d", ""),
+    }
 
 
 def _kline_fallback(cat):
     """日线指标失败/盘后跳过时的统一回退值（默认波动率，结构恒等，供失败缓存复用）。"""
-    return {"close": 0.0, "prev_close": 0.0, "day_chg": 0.0,
-            "hv20": config.DEFAULT_HV.get(cat, 0.25),
-            "hv60": config.DEFAULT_HV.get(cat, 0.25),
-            "ma5": 0.0, "ma10": 0.0, "ma20": 0.0,
-            "atr": 0.0, "ret5": 0.0, "ret20": 0.0,
-            "ret63": None, "ret126": None, "ret252": None,
-            "tsmom63": None, "tsmom126": None, "tsmom252": None,
-            "tsmom_blend": None, "tsmom_n_valid": 0,
-            "tech": {}, "hv_percentile": None, "vol_cone": {},
-            "last_date": ""}
+    return {
+        "close": 0.0,
+        "prev_close": 0.0,
+        "day_chg": 0.0,
+        "hv20": config.DEFAULT_HV.get(cat, 0.25),
+        "hv60": config.DEFAULT_HV.get(cat, 0.25),
+        "ma5": 0.0,
+        "ma10": 0.0,
+        "ma20": 0.0,
+        "atr": 0.0,
+        "ret5": 0.0,
+        "ret20": 0.0,
+        "ret63": None,
+        "ret126": None,
+        "ret252": None,
+        "tsmom63": None,
+        "tsmom126": None,
+        "tsmom252": None,
+        "tsmom_blend": None,
+        "tsmom_n_valid": 0,
+        "tech": {},
+        "hv_percentile": None,
+        "vol_cone": {},
+        "last_date": "",
+    }
 
 
 class KlineCache:
@@ -1017,11 +1171,11 @@ class KlineCache:
 
     def __init__(self):
         self.cache = {}
-        self.fail_cache = {}       # code -> (失败时间戳, fallback)。第115轮：新浪456封锁期缓存失败，
-                                   # 第116轮P0：封锁期 TTL 动态拉长到 60 分钟（防放大器）
+        self.fail_cache = {}  # code -> (失败时间戳, fallback)。第115轮：新浪456封锁期缓存失败，
+        # 第116轮P0：封锁期 TTL 动态拉长到 60 分钟（防放大器）
         self.intraday_cache = {}
         self.lock = threading.Lock()
-        self._was_trading = None   # 第116轮：收盘边沿检测，True→False 时补拉一次
+        self._was_trading = None  # 第116轮：收盘边沿检测，True→False 时补拉一次
 
     @staticmethod
     def _fail_ttl():
@@ -1055,7 +1209,7 @@ class KlineCache:
                 return hit[1], True
             fallback = _kline_fallback(cat)
             try:
-                bars = fetch_daily_kline(code)   # 内部已短路新浪，走天勤/CDP
+                bars = fetch_daily_kline(code)  # 内部已短路新浪，走天勤/CDP
                 if bars:
                     ind = compute_indicators(bars)
                     with self.lock:
@@ -1175,8 +1329,13 @@ class KlineCache:
         if not _in_trading():
             if hit:
                 return hit[1], True
-            return {"ok": False, "resonance_score": 0.0,
-                    "resonance_note": "分钟级暂缺", "bars30": 0, "bars60": 0}, False
+            return {
+                "ok": False,
+                "resonance_score": 0.0,
+                "resonance_note": "分钟级暂缺",
+                "bars30": 0,
+                "bars60": 0,
+            }, False
         try:
             ind = self._load_intraday(code)
             with self.lock:
@@ -1184,8 +1343,13 @@ class KlineCache:
             return ind, True
         except Exception as e:
             LOG.debug("%s 30/60分钟共振获取失败: %s", code, e)
-            return {"ok": False, "resonance_score": 0.0,
-                    "resonance_note": "分钟级暂缺", "bars30": 0, "bars60": 0}, False
+            return {
+                "ok": False,
+                "resonance_score": 0.0,
+                "resonance_note": "分钟级暂缺",
+                "bars30": 0,
+                "bars60": 0,
+            }, False
 
     def refresh_intraday_if_stale(self, code, cat=None, margin=0.9):
         # 第116轮：盘后跳过——分钟K冻结，同 stock2 主机被新浪盘后封锁
@@ -1218,14 +1382,21 @@ class KlineCache:
                 if hit and now - hit[0] < config.INTRADAY_KLINE_TTL:
                     out[code] = (hit[1], True)
                 elif not trading and hit:
-                    out[code] = (hit[1], True)   # 盘后复用过期缓存（分钟K不再变化）
+                    out[code] = (hit[1], True)  # 盘后复用过期缓存（分钟K不再变化）
                 else:
                     stale.append(code)
         if not trading:
             for code in stale:
-                out[code] = ({"ok": False, "resonance_score": 0.0,
-                              "resonance_note": "分钟级暂缺",
-                              "bars30": 0, "bars60": 0}, False)
+                out[code] = (
+                    {
+                        "ok": False,
+                        "resonance_score": 0.0,
+                        "resonance_note": "分钟级暂缺",
+                        "bars30": 0,
+                        "bars60": 0,
+                    },
+                    False,
+                )
             return out
         if stale:
             with ThreadPoolExecutor(max_workers=min(workers, len(stale))) as pool:
@@ -1239,7 +1410,14 @@ class KlineCache:
                         out[code] = (ind, True)
                     except Exception as e:
                         LOG.debug("%s 30/60分钟并发预热失败: %s", code, e)
-                        out[code] = ({"ok": False, "resonance_score": 0.0,
-                                      "resonance_note": "分钟级暂缺",
-                                      "bars30": 0, "bars60": 0}, False)
+                        out[code] = (
+                            {
+                                "ok": False,
+                                "resonance_score": 0.0,
+                                "resonance_note": "分钟级暂缺",
+                                "bars30": 0,
+                                "bars60": 0,
+                            },
+                            False,
+                        )
         return out

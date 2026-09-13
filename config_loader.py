@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 G10 配置外置加载器（纯标准库、零网络、可独立单测）。
 
@@ -13,6 +12,7 @@ G10 配置外置加载器（纯标准库、零网络、可独立单测）。
 
 设计铁律：缺 config.json / .env 时行为与历史逐字节一致；任何非法/未知项只告警不抛错。
 """
+
 import os
 
 # 受保护、不允许 config.json 覆盖的内部名（路径/库位/派生结构，机器相关，改动会破坏运行）
@@ -48,7 +48,14 @@ def _check_schema(name, value, default):
     rule = SCHEMA_RULES.get(name)
     if rule is None:
         return True, value
-    kind, spec = (rule[0], rule[1]) if isinstance(rule, tuple) and len(rule) == 2         and isinstance(rule[0], str) and rule[0] in ("enum",) else ("range", rule)
+    kind, spec = (
+        (rule[0], rule[1])
+        if isinstance(rule, tuple)
+        and len(rule) == 2
+        and isinstance(rule[0], str)
+        and rule[0] in ("enum",)
+        else ("range", rule)
+    )
     if kind == "enum":
         if value in spec:
             return True, value
@@ -86,7 +93,7 @@ def parse_dotenv(text):
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):].strip()
+            line = line[len("export ") :].strip()
         if "=" not in line:
             continue
         key, _, val = line.partition("=")
@@ -110,7 +117,7 @@ def load_dotenv(path, environ=None):
     if not path or not os.path.exists(path):
         return 0, 0
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             parsed = parse_dotenv(f.read())
     except OSError:
         return 0, 0
@@ -213,7 +220,9 @@ def apply_overrides(namespace, overrides, source="config.json"):
         ok, coerced = coerce_value(value, default)
         if not ok:
             report["skipped"][name] = "类型不符（默认 %s，给了 %s），保留默认" % (
-                type(default).__name__, type(value).__name__)
+                type(default).__name__,
+                type(value).__name__,
+            )
             continue
         ok2, reason = _check_schema(name, coerced, default)
         if not ok2:
@@ -227,10 +236,11 @@ def apply_overrides(namespace, overrides, source="config.json"):
 def load_config_file(path):
     """读取并 json 解析配置文件；不存在返回 (None, None)，损坏返回 (None, 错误串)。"""
     import json
+
     if not path or not os.path.exists(path):
         return None, None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f), None
     except OSError as exc:
         return None, "读取失败: %s" % exc

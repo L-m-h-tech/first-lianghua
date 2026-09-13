@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """G22（第34轮）多合约期限结构 + 持仓量(OI)连续历史重建 —— 研究侧数据底座。
 
 为什么需要它（第33轮对标结论）：
@@ -20,6 +19,7 @@
 纪律：纯标准库零新增依赖；本模块本轮**只被研究工具 tools/carry_eval.py 调用、不接入 main 常驻
 主链、不改综合分**；逐合约日K缓存到 cache/term_history.db（被 .gitignore，可随时重建、不入库）。
 """
+
 import math
 import os
 import sqlite3
@@ -121,8 +121,10 @@ def curve_loadings(p_near, p_next, p_far):
     level=(ln近+ln次+ln远)/3 平移；slope=ln近-ln远 斜率（>0 近高远低=Back）；
     curvature=ln近-2ln次+ln远 曲率。价格须全为正。
     """
+
     def _ln(x):
         return math.log(x) if x and x > 0 else None
+
     l1, l2, l3 = _ln(p_near), _ln(p_next), _ln(p_far)
     level = (l1 + l2 + l3) / 3.0 if None not in (l1, l2, l3) else None
     slope = (l1 - l3) if (l1 is not None and l3 is not None) else None
@@ -227,19 +229,32 @@ def build_term_series(contract_bars, roll_buffer_days=ROLL_BUFFER_DAYS, min_oi=M
             if oi > 0:
                 oi_sum += oi
             vol_sum += vol
-            live.append({"code": code, "yy": yy, "mm": mm,
-                         "settle": settle, "oi": oi, "vol": vol})
+            live.append({"code": code, "yy": yy, "mm": mm, "settle": settle, "oi": oi, "vol": vol})
         n_live = len(live)
         near, nxt, far = select_curve(on, live, roll_buffer_days, min_oi)
-        row = {"date": d, "near": None, "next": None, "far": None,
-               "near_s": None, "next_s": None, "far_s": None,
-               "carry_far": None, "carry_nn": None,
-               "level": None, "slope": None, "curv": None,
-               "oi_sum": oi_sum, "oi_near": None, "vol_sum": vol_sum,
-               "near_vol": None, "n_live": n_live}
+        row = {
+            "date": d,
+            "near": None,
+            "next": None,
+            "far": None,
+            "near_s": None,
+            "next_s": None,
+            "far_s": None,
+            "carry_far": None,
+            "carry_nn": None,
+            "level": None,
+            "slope": None,
+            "curv": None,
+            "oi_sum": oi_sum,
+            "oi_near": None,
+            "vol_sum": vol_sum,
+            "near_vol": None,
+            "n_live": n_live,
+        }
         if near:
-            row.update(near=near["code"], near_s=near["settle"], oi_near=near["oi"],
-                       near_vol=near["vol"])
+            row.update(
+                near=near["code"], near_s=near["settle"], oi_near=near["oi"], near_vol=near["vol"]
+            )
         if nxt:
             row.update(next=nxt["code"], next_s=nxt["settle"])
         if far:
@@ -251,9 +266,9 @@ def build_term_series(contract_bars, roll_buffer_days=ROLL_BUFFER_DAYS, min_oi=M
             g = month_gap_days(near["yy"], near["mm"], far["yy"], far["mm"])
             row["carry_far"] = annual_carry(near["settle"], far["settle"], g)
         if near:
-            lv, sl, cv = curve_loadings(near["settle"],
-                                        nxt["settle"] if nxt else None,
-                                        far["settle"] if far else None)
+            lv, sl, cv = curve_loadings(
+                near["settle"], nxt["settle"] if nxt else None, far["settle"] if far else None
+            )
             row["level"], row["slope"], row["curv"] = lv, sl, cv
         out.append(row)
     return out
@@ -279,7 +294,8 @@ class TermHistoryStore:
                 "CREATE TABLE IF NOT EXISTS ckline ("
                 "sym TEXT NOT NULL, code TEXT NOT NULL, d TEXT NOT NULL, "
                 "o REAL, h REAL, l REAL, c REAL, s REAL, v INTEGER, p INTEGER, "
-                "PRIMARY KEY(code,d))")
+                "PRIMARY KEY(code,d))"
+            )
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_ckline_sym ON ckline(sym)")
             # 已确认无数据/摘牌的合约，避免重复请求空合约
             self.conn.execute("CREATE TABLE IF NOT EXISTS cempty(code TEXT PRIMARY KEY, sym TEXT)")
@@ -311,13 +327,24 @@ class TermHistoryStore:
                 return 0
             rows = []
             for b in bars:
-                rows.append((sym, code, str(b.get("d", "")), futures_data._f(b.get("o")),
-                             futures_data._f(b.get("h")), futures_data._f(b.get("l")),
-                             futures_data._f(b.get("c")), _settle_of(b),
-                             int(futures_data._f(b.get("v")) or 0), int(futures_data._f(b.get("p")) or 0)))
+                rows.append(
+                    (
+                        sym,
+                        code,
+                        str(b.get("d", "")),
+                        futures_data._f(b.get("o")),
+                        futures_data._f(b.get("h")),
+                        futures_data._f(b.get("l")),
+                        futures_data._f(b.get("c")),
+                        _settle_of(b),
+                        int(futures_data._f(b.get("v")) or 0),
+                        int(futures_data._f(b.get("p")) or 0),
+                    )
+                )
             self.conn.executemany(
                 "INSERT OR REPLACE INTO ckline(sym,code,d,o,h,l,c,s,v,p) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                rows)
+                rows,
+            )
             self.conn.execute("DELETE FROM cempty WHERE code=?", (code,))
             self.conn.commit()
             return len(rows)
@@ -326,11 +353,13 @@ class TermHistoryStore:
         """读出某品种全部已缓存合约 {code: [bar...]}（bar 字段与新浪日K一致：d/o/h/l/c/s/v/p）。"""
         with self.lock:
             cur = self.conn.execute(
-                "SELECT code,d,o,h,l,c,s,v,p FROM ckline WHERE sym=? ORDER BY d", (sym,))
+                "SELECT code,d,o,h,l,c,s,v,p FROM ckline WHERE sym=? ORDER BY d", (sym,)
+            )
             out = {}
             for code, d, o, h, l, c, s, v, p in cur.fetchall():
                 out.setdefault(code, []).append(
-                    {"d": d, "o": o, "h": h, "l": l, "c": c, "s": s, "v": v, "p": p})
+                    {"d": d, "o": o, "h": h, "l": l, "c": c, "s": s, "v": v, "p": p}
+                )
             return out
 
     def cached_codes(self, sym):
@@ -389,14 +418,15 @@ def topup_decide(today, entries, stale_days=10):
     return out
 
 
-def topup_varieties(items, store, months_back=6, stale_days=10, workers=6, pause=0.1,
-                    today=None, verbose=True):
+def topup_varieties(
+    items, store, months_back=6, stale_days=10, workers=6, pause=0.1, today=None, verbose=True
+):
     """对品种列表做增量补K线（第77轮，G22续④常驻采集的离线等价物）。
 
     items=[(中文名, 主连code)]（与 carry_eval.resolve_codes 输出同形）。
     枚举每品种近 months_back 个月的合约：无缓存→下载（new）；仍挂牌且末根落后 stale_days→
     重拉合并（stale，INSERT OR REPLACE 幂等）；已退市不补。返回统计 dict。"""
-    import config
+
     today = today or date.today()
     months = []
     y, m = today.year, today.month
@@ -416,21 +446,27 @@ def topup_varieties(items, store, months_back=6, stale_days=10, workers=6, pause
                 continue
             entries.append((sym, code, yy, mm, store.max_bar_date(code)))
     plan = topup_decide(today, entries, stale_days=stale_days)
-    stats = {"checked": len(entries), "new": 0, "stale": 0, "fresh": len(entries) - len(plan),
-             "errors": []}
+    stats = {
+        "checked": len(entries),
+        "new": 0,
+        "stale": 0,
+        "fresh": len(entries) - len(plan),
+        "errors": [],
+    }
     todo = [(c, r) for c, r in plan.items()]
     job_sym = {}
     for sym, code, yy, mm, _maxd in entries:
         job_sym[code] = (sym, yy, mm)
     if verbose and todo:
-        print("top-up：检查 %d 个近月合约，需处理 %d（new %d / stale %d）"
-              % (len(entries), len(todo), stats["new"], stats["stale"]))
+        print(
+            "top-up：检查 %d 个近月合约，需处理 %d（new %d / stale %d）"
+            % (len(entries), len(todo), stats["new"], stats["stale"])
+        )
 
     def _job(item):
         code, reason = item
         sym, yy, mm = job_sym[code]
-        return fetch_one_contract(sym, yy, mm, store, pause=pause,
-                                  force=(reason == "stale"))
+        return fetch_one_contract(sym, yy, mm, store, pause=pause, force=(reason == "stale"))
 
     if todo:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -445,8 +481,9 @@ def topup_varieties(items, store, months_back=6, stale_days=10, workers=6, pause
     return stats
 
 
-def build_symbol_range(sym, start_yy, start_mm, end_yy, end_mm, store,
-                       workers=6, retry=2, pause=0.2, progress=False):
+def build_symbol_range(
+    sym, start_yy, start_mm, end_yy, end_mm, store, workers=6, retry=2, pause=0.2, progress=False
+):
     """枚举一个品种 [start,end] 的全部月份合约并下载落库（多线程、增量跳过已缓存）。
 
     返回 {code: status}。无效/未挂牌合约会被新浪返回空、自动登记 cempty，不影响其它合约。
@@ -482,8 +519,9 @@ def term_series_for(sym, store, **kw):
 
 
 # =========================== 第80轮：近月比例复权 OHLC 长序列（G25续长样本链） ===========================
-def adjusted_near_ohlc(sym, store, warmup=126, roll_buffer_days=ROLL_BUFFER_DAYS,
-                       min_oi=MIN_OPEN_INTEREST):
+def adjusted_near_ohlc(
+    sym, store, warmup=126, roll_buffer_days=ROLL_BUFFER_DAYS, min_oi=MIN_OPEN_INTEREST
+):
     """从逐合约缓存重建"近月合约比例复权"的 OHLC 长序列（第80轮，不联网）。
 
     近月选择复用 build_term_series（换月缓冲/剔除临交割/无量剔除）；换月日调整系数
@@ -491,6 +529,7 @@ def adjusted_near_ohlc(sym, store, warmup=126, roll_buffer_days=ROLL_BUFFER_DAYS
     另现算 ret126/hv60 两列（G25 引擎），供 regime 标签直接消费。
     返回 rows=[{date,c,h,l,o,ret126,hv60}]（按日期升序；无数据返回 []）。"""
     import factor_expr as _fx
+
     bars = store.load_contract_bars(sym)
     if not bars:
         return []
@@ -511,11 +550,16 @@ def adjusted_near_ohlc(sym, store, warmup=126, roll_buffer_days=ROLL_BUFFER_DAYS
         if not c or c <= 0:
             continue
         if prev_code is not None and code != prev_code and prev_close:
-            factor *= prev_close / c          # 换月拼接：新近月缩放到旧序列水平
-        rows.append({"date": r["date"], "c": c * factor,
-                     "h": futures_data._f(b.get("h")) * factor,
-                     "l": futures_data._f(b.get("l")) * factor,
-                     "o": futures_data._f(b.get("o")) * factor})
+            factor *= prev_close / c  # 换月拼接：新近月缩放到旧序列水平
+        rows.append(
+            {
+                "date": r["date"],
+                "c": c * factor,
+                "h": futures_data._f(b.get("h")) * factor,
+                "l": futures_data._f(b.get("l")) * factor,
+                "o": futures_data._f(b.get("o")) * factor,
+            }
+        )
         prev_code, prev_close = code, c
     if not rows:
         return []
@@ -540,11 +584,25 @@ def _selftest():
     # 2) select_curve：剔除临交割月/无量，按交割月排序选近/次/远
     on = date(2024, 12, 20)
     live = [
-        {"code": "X2501", "yy": 25, "mm": 1, "settle": 100.0, "oi": 10, "vol": 1},  # 距1/1=12天，保留=近
-        {"code": "X2412", "yy": 24, "mm": 12, "settle": 99.0, "oi": 10, "vol": 1},   # 已进交割月，剔除
-        {"code": "X2503", "yy": 25, "mm": 3, "settle": 102.0, "oi": 8, "vol": 1},    # 远
-        {"code": "X2502", "yy": 25, "mm": 2, "settle": 101.0, "oi": 9, "vol": 1},    # 次
-        {"code": "X2504", "yy": 25, "mm": 4, "settle": 0.0, "oi": 9, "vol": 1},      # 无价剔除
+        {
+            "code": "X2501",
+            "yy": 25,
+            "mm": 1,
+            "settle": 100.0,
+            "oi": 10,
+            "vol": 1,
+        },  # 距1/1=12天，保留=近
+        {
+            "code": "X2412",
+            "yy": 24,
+            "mm": 12,
+            "settle": 99.0,
+            "oi": 10,
+            "vol": 1,
+        },  # 已进交割月，剔除
+        {"code": "X2503", "yy": 25, "mm": 3, "settle": 102.0, "oi": 8, "vol": 1},  # 远
+        {"code": "X2502", "yy": 25, "mm": 2, "settle": 101.0, "oi": 9, "vol": 1},  # 次
+        {"code": "X2504", "yy": 25, "mm": 4, "settle": 0.0, "oi": 9, "vol": 1},  # 无价剔除
     ]
     near, nxt, far = select_curve(on, live, roll_buffer_days=3, min_oi=1)
     assert near["code"] == "X2501" and nxt["code"] == "X2502" and far["code"] == "X2503"
@@ -571,12 +629,18 @@ def _selftest():
     # 6) build_term_series：构造两个相邻月份合约，验证换月时近月滚动、carry 符号与 OI 汇总
     #   X2501 在 1月上半月存续、X2502/X2503 全程；近月在 X2501 摘牌后滚到 X2502
     bars = {
-        "X2501": [{"d": "2024-12-02", "c": 100.0, "s": 100.0, "v": 5, "p": 100},
-                  {"d": "2024-12-03", "c": 100.0, "s": 100.0, "v": 5, "p": 90}],
-        "X2502": [{"d": "2024-12-02", "c": 99.0, "s": 99.0, "v": 5, "p": 80},
-                  {"d": "2024-12-03", "c": 99.0, "s": 99.0, "v": 5, "p": 70}],
-        "X2503": [{"d": "2024-12-02", "c": 98.0, "s": 98.0, "v": 5, "p": 60},
-                  {"d": "2024-12-03", "c": 98.0, "s": 98.0, "v": 5, "p": 50}],
+        "X2501": [
+            {"d": "2024-12-02", "c": 100.0, "s": 100.0, "v": 5, "p": 100},
+            {"d": "2024-12-03", "c": 100.0, "s": 100.0, "v": 5, "p": 90},
+        ],
+        "X2502": [
+            {"d": "2024-12-02", "c": 99.0, "s": 99.0, "v": 5, "p": 80},
+            {"d": "2024-12-03", "c": 99.0, "s": 99.0, "v": 5, "p": 70},
+        ],
+        "X2503": [
+            {"d": "2024-12-02", "c": 98.0, "s": 98.0, "v": 5, "p": 60},
+            {"d": "2024-12-03", "c": 98.0, "s": 98.0, "v": 5, "p": 50},
+        ],
     }
     ser = build_term_series(bars, roll_buffer_days=0, min_oi=1)
     assert [r["date"] for r in ser] == ["2024-12-02", "2024-12-03"]
@@ -593,65 +657,93 @@ def _selftest():
 
     # 8) near_roll_nav：同一近月内吃结算价上涨（roll 保留），换月当天不跨合约计盈亏
     ts2 = [
-        {"near": "A", "near_s": 100.0}, {"near": "A", "near_s": 102.0},
+        {"near": "A", "near_s": 100.0},
+        {"near": "A", "near_s": 102.0},
         {"near": "A", "near_s": 104.04},
-        {"near": "B", "near_s": 80.0},    # 换月：价格跳到80，但不跨合约计收益，nav 延续
+        {"near": "B", "near_s": 80.0},  # 换月：价格跳到80，但不跨合约计收益，nav 延续
         {"near": "B", "near_s": 80.8},
     ]
     nav = near_roll_nav(ts2)
-    assert abs(nav[2] - 1.0404) < 1e-12     # A 段 100->102->104.04 复利
-    assert abs(nav[3] - 1.0404) < 1e-12     # 换月日 nav 不跳
+    assert abs(nav[2] - 1.0404) < 1e-12  # A 段 100->102->104.04 复利
+    assert abs(nav[3] - 1.0404) < 1e-12  # 换月日 nav 不跳
     assert abs(nav[4] - 1.0404 * 1.01) < 1e-12
     assert near_roll_nav([{"near": None, "near_s": None}]) == [None]
     # 9) 第77轮 top-up：max_bar_date 与补K线决策（纯函数：new/stale/退市不补）
     import tempfile
+
     tmpdir = tempfile.mkdtemp(prefix="th_t_")
     tstore = TermHistoryStore(os.path.join(tmpdir, "th.db"))
-    bars9 = [{"d": "2026-08-28", "c": 100.0, "s": 100.0, "v": 5, "p": 50},
-             {"d": "2026-09-01", "c": 101.0, "s": 101.0, "v": 6, "p": 55}]
+    bars9 = [
+        {"d": "2026-08-28", "c": 100.0, "s": 100.0, "v": 5, "p": 50},
+        {"d": "2026-09-01", "c": 101.0, "s": 101.0, "v": 6, "p": 55},
+    ]
     tstore.save_contract("RB", "RB2609", bars9)
     assert tstore.max_bar_date("RB2609") == "2026-09-01"
     assert tstore.max_bar_date("RB9999") is None
     today9 = date(2026, 9, 5)
-    plan = topup_decide(today9, [
-        ("RB", "RB2610", 26, 10, None),            # 无缓存 → new
-        ("RB", "RB2609", 26, 9, "2026-09-01"),     # 挂牌中、末根新鲜 → 不补
-        ("RB", "RB2609b", 26, 9, "2026-08-20"),    # 挂牌中、末根落后>10天 → stale
-        ("RB", "RB2601", 26, 1, "2025-12-30"),     # 已退市 → 不补
-    ], stale_days=10)
+    plan = topup_decide(
+        today9,
+        [
+            ("RB", "RB2610", 26, 10, None),  # 无缓存 → new
+            ("RB", "RB2609", 26, 9, "2026-09-01"),  # 挂牌中、末根新鲜 → 不补
+            ("RB", "RB2609b", 26, 9, "2026-08-20"),  # 挂牌中、末根落后>10天 → stale
+            ("RB", "RB2601", 26, 1, "2025-12-30"),  # 已退市 → 不补
+        ],
+        stale_days=10,
+    )
     assert plan == {"RB2610": "new", "RB2609b": "stale"}, plan
     tstore.close()
     # 10) 第80轮 近月比例复权 OHLC：换月拼接连续（换月日收益≈0）+ ret126/hv60 现算
     tstore2 = TermHistoryStore(os.path.join(tmpdir, "th2.db"))
+
     def _bars(code_price, d0, d1):
         out = []
         for d in range(d0, d1 + 1):
             dt = date(2026, 1, 1) + timedelta(days=d)
             c = code_price + d * 0.5
-            out.append({"d": dt.isoformat(), "c": c, "s": c, "v": 5, "p": 50,
-                        "h": c * 1.01, "l": c * 0.99, "o": c})
+            out.append(
+                {
+                    "d": dt.isoformat(),
+                    "c": c,
+                    "s": c,
+                    "v": 5,
+                    "p": 50,
+                    "h": c * 1.01,
+                    "l": c * 0.99,
+                    "o": c,
+                }
+            )
         return out
-    tstore2.save_contract("XX", "XX2603", _bars(100.0, 0, 44))    # 前段近月（45天）
-    tstore2.save_contract("XX", "XX2604", _bars(200.0, 30, 74))   # 中段（价格跳高，拼接应连续）
+
+    tstore2.save_contract("XX", "XX2603", _bars(100.0, 0, 44))  # 前段近月（45天）
+    tstore2.save_contract("XX", "XX2604", _bars(200.0, 30, 74))  # 中段（价格跳高，拼接应连续）
     tstore2.save_contract("XX", "XX2605", _bars(300.0, 60, 119))  # 后段（保证任一日都有非缓冲近月）
     rows10 = adjusted_near_ohlc("XX", tstore2, warmup=5)
     tstore2.close()
     assert len(rows10) >= 100 and rows10[0]["date"] < rows10[-1]["date"]
     closes10 = [r["c"] for r in rows10]
     rets = [closes10[i] / closes10[i - 1] - 1.0 for i in range(1, len(closes10))]
-    assert max(abs(r) for r in rets) < 0.02, max(abs(r) for r in rets)   # 换月拼接后无跳空
-    assert any(r["ret126"] is not None for r in rows10) and any(r["hv60"] is not None for r in rows10)
-    print("term_history selftest ALL PASS（月份代码/曲线选择换月缓冲/年化carry/NS载荷/"
-          "均值差分/期限序列重建与OI汇总/空输入/近月连续净值/top-up决策与max_bar_date/"
-          "近月比例复权OHLC 共10组）")
+    assert max(abs(r) for r in rets) < 0.02, max(abs(r) for r in rets)  # 换月拼接后无跳空
+    assert any(r["ret126"] is not None for r in rows10) and any(
+        r["hv60"] is not None for r in rows10
+    )
+    print(
+        "term_history selftest ALL PASS（月份代码/曲线选择换月缓冲/年化carry/NS载荷/"
+        "均值差分/期限序列重建与OI汇总/空输入/近月连续净值/top-up决策与max_bar_date/"
+        "近月比例复权OHLC 共10组）"
+    )
     return 0
 
 
 if __name__ == "__main__":
     import argparse as _ap
+
     _aparser = _ap.ArgumentParser(description="term_history 期限结构缓存（缺省=自检）")
-    _aparser.add_argument("--topup", action="store_true",
-                          help="第77轮：增量补K线（近月挂牌合约无缓存下载/末根落后重拉合并）")
+    _aparser.add_argument(
+        "--topup",
+        action="store_true",
+        help="第77轮：增量补K线（近月挂牌合约无缓存下载/末根落后重拉合并）",
+    )
     _aparser.add_argument("--codes", default="", help="逗号分隔中文名/主连，缺省=全品种")
     _aparser.add_argument("--months-back", type=int, default=6)
     _aparser.add_argument("--stale-days", type=int, default=10)
@@ -659,11 +751,17 @@ if __name__ == "__main__":
     _aargs = _aparser.parse_args()
     if _aargs.topup:
         import backtest
+
         _items = backtest.resolve_codes(_aargs.codes, None)
         _store = TermHistoryStore(TERM_DB_PATH)
         try:
-            _stats = topup_varieties(_items, _store, months_back=_aargs.months_back,
-                                     stale_days=_aargs.stale_days, workers=_aargs.workers)
+            _stats = topup_varieties(
+                _items,
+                _store,
+                months_back=_aargs.months_back,
+                stale_days=_aargs.stale_days,
+                workers=_aargs.workers,
+            )
         finally:
             _store.close()
         print("top-up 完成：%s" % _stats)

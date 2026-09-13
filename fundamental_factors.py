@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """第13轮 WP-C：基本面因子计算（纯函数、零网络、零第三方依赖，便于合成断言）。
 
 四个子因子，方向均遵循"现货/主力偏紧或偏多 -> 正分"：
@@ -8,6 +7,7 @@
   4) 基差 basis_factor：现货相对期货主力升水(基差率>0)=现货坚挺 -> 偏多。
 任一子因子数据缺失即跳过，并按"可得子项权重重新归一化"，缺数据不编造、不让单因子失真放大。
 """
+
 import math
 
 import config
@@ -50,13 +50,19 @@ def inventory_factor(series):
         wow = cur / stocks[-1 - config.FUND_INV_WOW_DAYS] - 1.0
     else:
         wow = None
-    level = (0.5 - pct) * 2.0                      # 低分位偏多、高分位偏空
+    level = (0.5 - pct) * 2.0  # 低分位偏多、高分位偏空
     flow = -_tanh(wow, 1.0 / config.FUND_INV_WOW_K) if wow is not None else 0.0
     flow_w = 0.4 if wow is not None else 0.0
     score = 0.6 * level + flow_w * flow
-    score = _clamp(score / (0.6 + flow_w))         # 缺周环比时按可得项归一
-    detail = {"current": cur, "pct": pct, "wow": wow, "n": len(pts),
-              "first_date": pts[0].get("date", ""), "last_date": pts[-1].get("date", "")}
+    score = _clamp(score / (0.6 + flow_w))  # 缺周环比时按可得项归一
+    detail = {
+        "current": cur,
+        "pct": pct,
+        "wow": wow,
+        "n": len(pts),
+        "first_date": pts[0].get("date", ""),
+        "last_date": pts[-1].get("date", ""),
+    }
     return score, detail
 
 
@@ -69,7 +75,7 @@ def rank_factor(long_oi, short_oi, prev_long=None, prev_short=None):
     L, S = float(long_oi or 0), float(short_oi or 0)
     if L + S <= 0:
         return None
-    net = (L - S) / (L + S)                        # 净多率，正=前20席净多
+    net = (L - S) / (L + S)  # 净多率，正=前20席净多
     pL, pS = float(prev_long or 0), float(prev_short or 0)
     delta = None
     if pL + pS > 0:
@@ -125,7 +131,7 @@ def build_fundamental(inv=None, rank=None, carry=None, basis=None):
     if not avail:
         return None
     wsum = sum(w for _, w, _ in avail)
-    raw = sum(w * _clamp(r[0]) for _, w, r in avail) / wsum   # [-1,1]
+    raw = sum(w * _clamp(r[0]) for _, w, r in avail) / wsum  # [-1,1]
     parts = {name: round(_clamp(r[0]), 2) for name, _, r in avail}
     sub = {name: r[1] for name, _, r in avail}
     score = _clamp(raw) * config.FUND_MAX_SCORE
@@ -147,14 +153,25 @@ def build_fundamental(inv=None, rank=None, carry=None, basis=None):
         seg.append(f"库存{inv_d['current']:g}/分位{inv_d['pct']:.0%}/周环比{wow_txt}")
     rk = sub.get("龙虎榜")
     if rk:
-        seg.append("前20席净多率{:.1%}{}".format(
-            rk["net"], "" if rk["delta"] is None else f"(较昨日{rk['delta']*100:+.1f}pct)"))
+        seg.append(
+            "前20席净多率{:.1%}{}".format(
+                rk["net"], "" if rk["delta"] is None else f"(较昨日{rk['delta'] * 100:+.1f}pct)"
+            )
+        )
     cy = sub.get("期限carry")
     if cy:
-        seg.append(f"年化carry {cy['annual_carry']*100:+.1f}%")
+        seg.append(f"年化carry {cy['annual_carry'] * 100:+.1f}%")
     bs = sub.get("基差")
     if bs:
-        seg.append(f"基差率{bs['basis_rate']*100:+.1f}%")
+        seg.append(f"基差率{bs['basis_rate'] * 100:+.1f}%")
     tone = "偏多" if raw > 0.12 else ("偏空" if raw < -0.12 else "中性")
     note = f"基本面{tone}(综合{score:+.2f})：" + "；".join(seg)
-    return {"score": score, "raw": raw, "parts": parts, "sub": sub, "note": note}
+    # 第145轮 #9 PIT对齐：数据日 as_of = 各子项中最晚的数据日期（库存/龙虎/基差各自带 date/last_date）；
+    # 无任何子项带日期（纯 carry 或纯数值）时 as_of=None——消费端回退采集日。
+    dates = []
+    for nm in ("库存仓单", "龙虎榜", "基差", "期限carry"):
+        d = (sub.get(nm) or {}).get("date") or (sub.get(nm) or {}).get("last_date")
+        if d:
+            dates.append(str(d)[:10])
+    as_of = max(dates) if dates else None
+    return {"score": score, "raw": raw, "parts": parts, "sub": sub, "note": note, "as_of": as_of}
