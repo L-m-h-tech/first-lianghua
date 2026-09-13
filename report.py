@@ -796,6 +796,7 @@ def _paper_compare_html():
                     "pos" if (r.get("float_pnl") or 0) >= 0 else "neg",
                 )
                 + _fcard("保证金占用", _yuan(r.get("margin_used") or 0))
+                + _fcard("挂单冻结", _yuan(r.get("pending_margin_locked") or 0))
                 + _fcard("可用资金", _yuan(r.get("available") or 0))
                 + "</div>"
             )
@@ -1613,8 +1614,13 @@ def paper_account_text(state, broker=None):
         " 动态权益: %s 元（%+.2f%%）   静态权益: %s 元   浮动盈亏: %s 元"
         % (_yuan(a["equity"]), ret * 100.0, _yuan(a["static"]), _yuan(snap.get("float_pnl", 0.0))),
         " 已实现净盈亏: %s 元   累计手续费: %s 元" % (_yuan(a["realized"]), _yuan(a["fees_paid"])),
-        " 保证金占用: %s 元   可用资金: %s 元   风险度(占用/动态权益): %s"
-        % (_yuan(a["margin_used"]), _yuan(a["available"]), _pct(a["risk_degree"], 2)),
+        " 保证金占用: %s 元   挂单冻结: %s 元   可用资金: %s 元   风险度(占用/动态权益): %s"
+        % (
+            _yuan(a["margin_used"]),
+            _yuan(a.get("pending_margin_locked", 0.0)),
+            _yuan(a["available"]),
+            _pct(a["risk_degree"], 2),
+        ),
         " 当前持仓 %d 个   在途挂单 %d 个   累计平仓 %d 笔（其中风控强平 %d）   约束排队尝试 %d 次"
         % (a["n_positions"], a["n_pending"], a["n_closed"], a["n_liquidations"], a["n_skipped"]),
         "",
@@ -2318,6 +2324,7 @@ def write_paper_account(state):
                     "static": a.get("static"),
                     "float_pnl": a.get("float_pnl"),
                     "margin_used": a.get("margin_used"),
+                    "pending_margin_locked": a.get("pending_margin_locked", 0.0),
                     "available": a.get("available"),
                     # 第111轮：绩效指标（performance 子集，缺失降级 None）
                     "ann_ret": perf.get("ann_ret"),

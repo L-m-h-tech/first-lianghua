@@ -601,6 +601,13 @@ class PaperBroker:
         if fill_price <= 0:
             self._upd_order(order, status="blocked", reason="无价/非法价，顺延")
             return None
+        # 第146轮：成交前把本腿自己的挂单冻结从 pf.external_locked 剔除（防"自锁"——
+        # 挂单冻结不应卡死自己成交时的 decide_lots 可用资金；成交后冻结自然释放，
+        # position 占用替代挂单冻结。失败/顺延时冻结保留，下一轮 on_cycle 入口重新同步）。
+        if is_open and getattr(pf, "external_locked", 0.0) > 0:
+            self_locked = self._order_locked_margin(order, px=fill_price)
+            if self_locked > 0:
+                pf.external_locked = max(0.0, getattr(pf, "external_locked", 0.0) - self_locked)
         atr = (order.get("raw") or {}).get("atr")
 
         if is_open:
@@ -755,6 +762,7 @@ class PaperBroker:
                     events.append(t)
             if not queue:
                 self.pending.pop(sym, None)
+        self._sync_external_locked()  # 第146轮：成交/出队后同步冻结
         return events
 
     def _enqueue(self, orders):
@@ -776,12 +784,29 @@ class PaperBroker:
                         }
                     )
                     continue
+                # 第146轮：挂单估算手数——冻结保证金用（decide_lots 估算，含冻结扣除）
+                action = o.get("action") or ""
+                if action in ("open", "reverse_open") and not o.get("lots_est"):
+                    sym = o["sym"]
+                    px = float(o.get("signal_price") or 0.0)
+                    direction = o.get("direction", 1)
+                    if px > 0:
+                        atr_val = (o.get("raw") or {}).get("atr")
+                        score_val = o.get("score")
+                        lots_est, _why = self.pf.decide_lots(
+                            sym, direction, px, atr=atr_val, score=score_val
+                        )
+                        o["lots_est"] = lots_est if lots_est > 0 else 1
+                    else:
+                        o["lots_est"] = 1
             self.pending.setdefault(o["sym"], []).append(o)
             self._ins_order(o)
+        self._sync_external_locked()
 
     def _cancel_pending(self, sym, reason="新信号覆盖旧挂单"):
         for o in self.pending.pop(sym, []):
             self._upd_order(o, status="cancelled", reason=reason)
+        self._sync_external_locked()
 
     # ---------------- 信号决策：阶段B ----------------
 
@@ -1085,6 +1110,10 @@ class PaperBroker:
                 by_quote[sym] = q
         self._cur_quote = by_quote  # G14 接线：供 _ob_exec_price 读取真实 bid/ask
 
+        # 第146轮：撮合前同步挂单冻结到 Portfolio（decide_lots/available 可用资金扣除冻结，
+        # 与实盘语义对齐：挂单即冻结保证金、成交后自动转为真实占用）
+        self._sync_external_locked()
+
         cycle_orders, cycle_trades = [], []
         # 阶段A：next 档先成交上一轮挂单（先平后开，严格晚于信号）
         cycle_trades += self._process_pending(ts, by_sym, by_quote)
@@ -1144,6 +1173,7 @@ class PaperBroker:
                         for o in old_q:
                             self._upd_order(o, status="cancelled", reason="信号转中性/消失，撤单")
                         self.pending.pop(sym, None)
+                        self._sync_external_locked()  # 第146轮：撤单后同步冻结
                     continue
                 if old_sig == new_sig:
                     # 同一意图的挂单仍在排队（等锁板打开/资金/仓位空出），不撤不重挂、避免委托虚增
@@ -1280,6 +1310,47 @@ class PaperBroker:
             )
         return total
 
+    def _order_locked_margin(self, order, px=None):
+        """单腿挂单冻结估算（第146轮，与 _pending_margin_locked 同口径）。
+
+        order: pending 中的 open/reverse_open 订单（含 lots_est）。
+        返回该腿估算冻结保证金；无合法价/乘数返回 0。"""
+        pf = self.pf
+        action = (order or {}).get("action") or ""
+        if action not in ("open", "reverse_open"):
+            return 0.0
+        sym = (order or {}).get("sym") or ""
+        mult = pf.mult_of(sym)
+        if mult <= 0:
+            return 0.0
+        lots_est = int((order or {}).get("lots_est") or 0)
+        if lots_est <= 0:
+            lots_est = 1
+        price = px if px and px > 0 else float((order or {}).get("signal_price") or 0.0)
+        if price <= 0:
+            return 0.0
+        rate = pf.margin_rate_of(sym)
+        return price * mult * lots_est * rate
+
+    def _sync_external_locked(self):
+        """第146轮：把当前 pending 挂单冻结同步到 Portfolio（decide_lots/available 扣减用）。
+        在挂单、撤单、成交、入口等多处调用，保证 pf.external_locked 始终反映最新挂单冻结。"""
+        self.pf.external_locked = self._pending_margin_locked()
+
+    def _pending_margin_locked(self, prices=None):
+        """第146轮：未成交挂单冻结保证金（实盘语义：挂单即冻结）。
+
+        统计 pending 队列中 open/reverse_open 腿的估算保证金冻结（_order_locked_margin 同口径）。
+        lots_est 在 _enqueue 时由 decide_lots 估算写入（信号轮）。
+        成交时 pending 出队 + position 建立 → 冻结自动释放转为真实占用，不 double count。
+        注意：调用方应在每腿成交前把本腿冻结从 pf.external_locked 扣除，避免"自锁"。"""
+        pf = self.pf
+        total = 0.0
+        for sym, queue in (self.pending or {}).items():
+            for o in queue:
+                total += self._order_locked_margin(o)
+        return total
+
     def _opt_premium_locked(self, chain_map=None):
         """在途期权权利金占用（纯函数）：买方=当前权利金×乘数×手数；缺链回退最近快照占用。"""
         if not chain_map:
@@ -1305,14 +1376,16 @@ class PaperBroker:
 
         期权盈亏/占用叠加到期货 Portfolio 上；初始资本只计一次（pf.equity0）。
         返回统一 equity/static/float_pnl/margin_used/available/risk_degree，
-        附带期权净贡献与占用供明细展示。期货强平触发仍走 pf 独立风险度（本方法仅统一口径）。"""
+        附带期权净贡献与占用供明细展示。期货强平触发仍走 pf 独立风险度（本方法仅统一口径）。
+        第146轮：margin_used 并入挂单冻结（_pending_margin_locked）——实盘委托即冻结。"""
         chain_map = chain_map or {}
         pf = self.pf
         opt_net = self._opt_net_pnl(chain_map)
         opt_locked = self._opt_premium_locked(chain_map)
+        pending_locked = self._pending_margin_locked()
         equity = pf.equity() + opt_net
         static = pf.static_equity() + (self.opt_realized - self.opt_fees)
-        margin = pf.margin_used() + opt_locked
+        margin = pf.margin_used() + opt_locked + pending_locked
         available = max(0.0, equity - margin)
         risk = (margin / equity) if equity > 1e-9 else 0.0
         return {
@@ -1324,6 +1397,7 @@ class PaperBroker:
             "risk_degree": risk,
             "opt_net_pnl": opt_net,
             "opt_premium_locked": opt_locked,
+            "pending_margin_locked": pending_locked,
         }
 
     def _opt_summary(self, ts, chain_map=None):
@@ -1371,6 +1445,9 @@ class PaperBroker:
         返回本期权 summary dict（含 snapshot/n_buy/n_close/n_skipped）。"""
         ts = str(ts or self._clock())[:19]
         chain_map = chain_map or {}
+        # 第146轮：期权入口同步挂单冻结（ua["available"] 已含 pending 冻结，
+        # 期权买入前统一可用资金判断 = 权益 - 期货持仓 - 期权锁定 - 期货挂单冻结）
+        self._sync_external_locked()
         score_map = {}
         for row in fut_rows or []:
             sym = (row.get("sym") or "").upper()
@@ -1769,6 +1846,7 @@ class PaperBroker:
                 db_id = o.get("id")
                 order["id"] = db_id
                 self.pending.setdefault(sym, []).insert(0, order)
+            self._sync_external_locked()  # 第146轮：restore 重建挂单后同步冻结
         except Exception:
             pass
         # G1续：重启后回填内存 OMS 台账与成交回报流水，使 orders_view/fills_view 跨进程连续
@@ -1910,6 +1988,7 @@ class PaperBroker:
             "margin_used": ua["margin_used"] if ua else pf.margin_used(),
             "available": ua["available"] if ua else pf.available(),
             "risk_degree": ua["risk_degree"] if ua else pf.risk_degree(),
+            "pending_margin_locked": (ua["pending_margin_locked"] if ua else 0.0),
             "n_positions": len(pf.positions),
             "n_pending": sum(len(q) for q in self.pending.values()),
             "n_closed": len(pf.closed),
@@ -1978,12 +2057,14 @@ class PaperBroker:
                     self.pending[s] = keep
                 else:
                     self.pending.pop(s, None)
+            self._sync_external_locked()  # 第146轮：撤单后同步冻结
             return n
         if sym is None:
             return 0
         for o in self.pending.pop(sym, []):
             self._upd_order(o, status="cancelled", reason=reason)
             n += 1
+        self._sync_external_locked()  # 第146轮：撤单后同步冻结
         return n
 
     def fills_view(self, sym=None, side=None, since=None):

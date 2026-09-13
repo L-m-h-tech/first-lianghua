@@ -187,6 +187,9 @@ class Portfolio:
         self.curve = []  # 权益/风险度曲线
         self.peak_equity = self.equity0
         self._last_prices = {}  # 最近成交价（无新bar时沿用盯市）
+        # 第146轮：挂单冻结保证金——由 PaperBroker 在撮合前设置，表示 pending open 腿占用的
+        # 预估保证金。decide_lots 的 cap_cash 会减去该冻结，防止超配；回测侧默认 0 不影响。
+        self.external_locked = 0.0
 
     # ---------- 第41轮 G26续：横截面风险型目标权重注入 ----------
     def set_risk_weights(self, wmap, meta=None):
@@ -361,9 +364,9 @@ class Portfolio:
         # 4) 可用资金：每手需保证金 + 开仓费（留 1% 现金缓冲，避免取整临界）
         rate = self.margin_rate_of(sym)
         need_per_lot = price * mult * rate + self.fee_yuan(sym, price, "open", 1)
-        cap_cash = (
-            max(0.0, self.available(prices) * 0.99) / need_per_lot if need_per_lot > 0 else 0.0
-        )
+        # 第146轮：可用资金扣除挂单冻结（与实盘语义对齐：挂单即冻结保证金）
+        raw_avail = max(0.0, self.available(prices) - getattr(self, "external_locked", 0.0)) * 0.99
+        cap_cash = raw_avail / need_per_lot if need_per_lot > 0 else 0.0
 
         binding = min(
             (

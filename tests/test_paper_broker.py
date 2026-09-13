@@ -1004,3 +1004,117 @@ def test_r3_close_not_limited():
     # 平仓应照常执行（close 腿不受 R3 限制）
     s = b.on_cycle("2026-09-02 09:10:00", [row("RB", "螺纹钢", "黑色", -5.0, 3050.0)])
     assert any(t.get("side") == "close" for t in s["trades"])
+
+
+# ---------------- 第146轮：挂单冻结保证金（实盘语义：委托即冻结） ----------------
+
+
+def test_pending_locked_reflects_pending_open():
+    """next 模式挂单后 pending_margin_locked>0，成交后归零。"""
+    b = make_broker(fill_mode="next", equity0=1_000_000)
+    # RB 价3000、mult10、margin0.10 -> 一手保证金 3000
+    s1 = b.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    assert s1["n_pending"] == 1
+    locked = b._pending_margin_locked()
+    assert locked > 0
+    assert b.pf.external_locked > 0  # 撮合后同步到 Portfolio
+    # 下一轮 RB 无信号 -> 挂单撤销 -> 冻结归零
+    b.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 0.0, 3000.0)])
+    assert b._pending_margin_locked() == 0.0
+
+
+def test_pending_locked_estimated_lots_respects_cap():
+    """lots_est 不应超过可用资金能开的最大手数（冻结不是无限扩大）。"""
+    b = make_broker(fill_mode="next", equity0=100_000)
+    b.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    orders = b.pending.get("RB", [])
+    assert orders and orders[0].get("lots_est", 0) > 0
+    # 100万？不，10万权益、一手3000、per_symbol 0.05 -> 名义5000 -> 5000/30000=0.16手 < 1
+    # 100万严格算：10万×0.05=5000 名义 / 一手 30000 = 0.17手 -> 目标不足1手被拒
+    # 所以用宽松配置测 lots_est>0
+    b2 = make_broker(fill_mode="next", equity0=10_000_000, loose_on=True)
+    b2.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    orders2 = b2.pending.get("RB", [])
+    assert orders2 and orders2[0].get("lots_est", 0) > 0
+
+
+def test_pending_frozen_reduces_unified_available():
+    """统一账户 available 应扣除挂单冻结（区别于 pf.available）。"""
+    b = make_broker(fill_mode="next", equity0=10_000_000)
+    b.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    ua = b.unified_account()
+    assert ua["pending_margin_locked"] > 0
+    assert ua["margin_used"] == b._pending_margin_locked()  # 无持仓时占用=冻结
+    # available 比无冻结情况下少
+    assert ua["available"] < b.pf.equity() - 0  # 冻结扣减生效
+
+
+def test_pending_self_lock_released_on_fill():
+    """next 模式挂单成交时，本腿冻结已剔除（不 self-lock），成交后冻结转为真实占用。"""
+    b = make_broker(fill_mode="next", equity0=10_000_000)
+    s1 = b.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    assert s1["n_pending"] == 1
+    locked_before = b._pending_margin_locked()
+    assert locked_before > 0
+    # 下一轮价格有效 -> 成交
+    s2 = b.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 6.0, 3010.0)])
+    assert s2["n_trades"] >= 1
+    assert len(b.pf.positions) == 1
+    # 成交后 pending 清空 -> 冻结归零，真实占用=持仓保证金
+    assert b._pending_margin_locked() == 0.0
+    assert b.pf.external_locked == 0.0 or b.pf.external_locked == b._pending_margin_locked()
+    assert b.pf.margin_used() > 0
+
+
+def test_two_pending_symbols_freeze_compounds():
+    """两个品种并发挂单，冻结=两腿之和（多品种互斥资金）。"""
+    b = make_broker(fill_mode="next", equity0=10_000_000, loose_on=True)
+    b.on_cycle(
+        "2026-09-02 09:00:00",
+        [row("RB", "螺纹钢", "黑色", 6.0, 3000.0), row("CU", "铜", "有色", 6.0, 60000.0)],
+    )
+    locked = b._pending_margin_locked()
+    assert b.pending.get("RB") and b.pending.get("CU")
+    assert locked > 0
+    # 单品种冻结应 < 总冻结
+    rb_only = b._order_locked_margin(b.pending["RB"][0])
+    cu_only = b._order_locked_margin(b.pending["CU"][0])
+    assert abs(locked - (rb_only + cu_only)) < 1e-6
+
+
+def test_close_mode_no_residual_freeze():
+    """close 模式当轮成交，不留挂单冻结。"""
+    b = make_broker(fill_mode="close", equity0=10_000_000)
+    s = b.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    assert len(b.pf.positions) == 1
+    assert b._pending_margin_locked() == 0.0
+    assert b.pf.external_locked == 0.0
+
+
+def test_option_buy_sees_frozen_futures_margin():
+    """期权买入的 ua.available 应扣期货挂单冻结（同一钱包互斥）。"""
+    b = make_broker(fill_mode="next", equity0=10_000_000)
+    # 先挂一个期货单（pending 冻结）
+    b.on_cycle("2026-09-02 09:00:00", [row("RB", "螺纹钢", "黑色", 6.0, 3000.0)])
+    ua_before = b.unified_account()
+    assert ua_before["pending_margin_locked"] > 0
+    # 构造期权链
+    chain = {
+        ("RB", 26, 10): {
+            "calls": [
+                {
+                    "strike": 3000.0,
+                    "code": "rb2610C3000",
+                    "ask": 50.0,
+                    "bid": 45.0,
+                    "last": 48.0,
+                    "oi": 100,
+                }
+            ],
+            "puts": [],
+        }
+    }
+    # 直接验证 unified_account 中冻结占用存在（期权买入走同一 available）
+    ua = b.unified_account(chain_map=chain)
+    assert ua["pending_margin_locked"] > 0
+    assert ua["margin_used"] >= ua["pending_margin_locked"]

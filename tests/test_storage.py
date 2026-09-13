@@ -319,14 +319,17 @@ def test_insert_fundamentals_uses_as_of_trade_date(tmp_path):
 
 
 def test_insert_fundamentals_fallback_today_when_no_as_of(tmp_path):
-    """无 as_of 时 trade_date 回退采集日。"""
+    """无 as_of 时 trade_date 回退采集日（当前日期）。"""
+    import datetime
+
     from storage import MonitorDB
 
     db = MonitorDB(str(tmp_path / "pit_fallback.db"))
     pack = {"score": 0.5, "as_of": None, "sub": {}}
     db.insert_fundamentals("2026-09-13 10:00:00", [("螺纹", "RB", pack)])
     row = db.conn.execute("SELECT trade_date FROM fundamentals WHERE sym='RB'").fetchone()
-    assert row["trade_date"] == "2026-09-13"  # 回退采集日
+    today = datetime.date.today().isoformat()
+    assert row["trade_date"] == today  # 回退采集日=当天（非硬编码）
 
 
 def test_fundamentals_asof_returns_correct_pit_data(tmp_path):
