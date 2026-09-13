@@ -942,36 +942,7 @@ PAPER_ACCOUNTS = [
      "options_max": None, "target_basis": "margin"},
 
     # ---- 期权交易风格（纯期权，不交易期货）----
-    {"name": "10万_期权", "equity0": 100_000, "fill_mode": "next", "entry_score": 5.0,
-     "per_symbol": 0.35, "max_symbol_weight": 0.08, "max_sector_weight": 0.15,
-     "max_concurrent": 10, "risk_liquidate": 1.0, "risk_safe": 0.9,
-     "opt_premium_ratio": 0.6, "stop_loss_ratio": 0.5, "priority": "option_only",
-     "futures_max": 0, "options_max": None, "target_basis": "margin",
-     "max_daily_orders": 60, "max_active_per_sym": 6},
-    {"name": "1万_期权", "equity0": 10_000, "fill_mode": "next", "entry_score": 5.5,
-     "per_symbol": 0.25, "max_symbol_weight": 0.35, "max_sector_weight": 0.40,
-     "max_concurrent": 1, "risk_liquidate": 0.9, "risk_safe": 0.8,
-     "opt_premium_ratio": 0.5, "stop_loss_ratio": 0.5, "priority": "option_only",
-     "futures_max": 0, "options_max": None, "target_basis": "margin",
-     "max_daily_orders": 60, "max_active_per_sym": 6},
-    {"name": "5000_期权", "equity0": 5_000, "fill_mode": "next", "entry_score": 5.0,
-     "per_symbol": 0.35, "max_symbol_weight": 0.40, "max_sector_weight": 0.50,
-     "max_concurrent": 999, "risk_liquidate": 0.8, "risk_safe": 0.7,
-     "opt_premium_ratio": 0.5, "stop_loss_ratio": 0.5, "priority": "option_only",
-     "max_daily_orders": 60, "max_active_per_sym": 6, "target_basis": "margin", "futures_max": 0},
-    {"name": "3000_期权", "equity0": 3_000, "fill_mode": "next", "entry_score": 5.0,
-     "per_symbol": 0.30, "max_symbol_weight": 0.40, "max_sector_weight": 0.40,
-     "max_concurrent": 999, "risk_liquidate": 0.7, "risk_safe": 0.6,
-     "opt_premium_ratio": 0.4, "stop_loss_ratio": 0.5, "priority": "option_only",
-     "futures_max": 0, "options_max": None, "target_basis": "margin",
-     "max_daily_orders": 60, "max_active_per_sym": 6},
-    {"name": "1000_期权", "equity0": 1_000, "fill_mode": "next", "entry_score": 5.0,
-     "per_symbol": 0.35, "max_symbol_weight": 0.35, "max_sector_weight": 0.35,
-     "max_concurrent": 999, "risk_liquidate": 0.7, "risk_safe": 0.6,
-     "opt_premium_ratio": 0.5, "stop_loss_ratio": 0.5, "priority": "option_only",
-     "futures_max": 0, "options_max": None, "target_basis": "margin",
-     "max_daily_orders": 60, "max_active_per_sym": 6},
-]
+    {"name": "10万_期权", "equity0": 100_000, "fill_mode": "next", "entry_score": 5.0,     "per_symbol": 0.35, "max_symbol_weight": 0.08, "max_sector_weight": 0.15,     "max_concurrent": 10, "risk_liquidate": 1.0, "risk_safe": 0.9,     "opt_premium_ratio": 0.6, "stop_loss_ratio": 0.5, "priority": "option_only",     "futures_max": 0, "options_max": None, "target_basis": "margin",     "max_daily_orders": 60, "max_active_per_sym": 6},    {"name": "1万_期权", "equity0": 10_000, "fill_mode": "close", "entry_score": 4.0,     "per_symbol": 0.4, "max_symbol_weight": 0.35, "max_sector_weight": 0.40,     "max_concurrent": 10, "risk_liquidate": 0.9, "risk_safe": 0.8,     "opt_premium_ratio": 0.6, "stop_loss_ratio": 0.55, "priority": "option_only",     "futures_max": 0, "options_max": None, "target_basis": "margin",     "max_daily_orders": 60, "max_active_per_sym": 6},    {"name": "5000_期权", "equity0": 5_000, "fill_mode": "close", "entry_score": 3.0,     "per_symbol": 0.55, "max_symbol_weight": 0.40, "max_sector_weight": 0.50,     "max_concurrent": 999, "risk_liquidate": 0.8, "risk_safe": 0.7,     "opt_premium_ratio": 0.7, "stop_loss_ratio": 0.65, "priority": "option_only",     "max_daily_orders": 60, "max_active_per_sym": 6, "target_basis": "margin", "futures_max": 0},    {"name": "3000_期权", "equity0": 3_000, "fill_mode": "close", "entry_score": 2.0,     "per_symbol": 0.7, "max_symbol_weight": 0.40, "max_sector_weight": 0.40,     "max_concurrent": 999, "risk_liquidate": 0.7, "risk_safe": 0.6,     "opt_premium_ratio": 0.75, "stop_loss_ratio": 0.75, "priority": "option_only",     "futures_max": 0, "options_max": None, "target_basis": "margin",     "max_daily_orders": 60, "max_active_per_sym": 6},    {"name": "1000_期权", "equity0": 1_000, "fill_mode": "close", "entry_score": 1.5,     "per_symbol": 0.75, "max_symbol_weight": 0.35, "max_sector_weight": 0.35,     "max_concurrent": 999, "risk_liquidate": 0.65, "risk_safe": 0.55,     "opt_premium_ratio": 0.8, "stop_loss_ratio": 0.8, "priority": "option_only",     "futures_max": 0, "options_max": None, "target_basis": "margin",     "max_daily_orders": 60, "max_active_per_sym": 6},]
 
 # ================= G14（第92轮）：一档盘口低频快照自采（新浪主连快照，5分钟级、非逐笔） =================
 # 用途：统计真实买卖价差、校准回测滑点、给 G1 纸面提供保守成交价。只采集不改任何评分/撮合口径。
