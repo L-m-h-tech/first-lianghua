@@ -1,19 +1,21 @@
-r"""从信查期货（wj.xcqihuo.cn）API 抓取"交易所标准保证金/手续费"，构建回测运行时 CSV
-data/futures_margins.csv + data/futures_fees.csv（替代原银河期货口径，v2 数据接入）。
+r"""从三立期货（山西三立期货，wj.xcqihuo.cn）API 抓取"交易所标准保证金/手续费"，
+构建回测运行时 CSV data/futures_margins.csv + data/futures_fees.csv（替代原银河期货口径，v2 数据接入）。
 
-数据源：https://wj.xcqihuo.cn:4433/  （中国期货交易所合约数据，87 品种/866 合约，无登录，动态页）
+数据源：https://wj.xcqihuo.cn:4433/  （三立期货合约数据查询，87 品种/866 合约，无登录，动态页）
   API: GET /webroot/service/79036642-68d9-4e8e-baef-2f9e336b18c0/contract?XXX=20260910
        返回 {"output": [{exchange_name, contract_id, variety_id, variety_name, unit,
                         curr_price, rise_limit, fall_limit, buy_margin, sell_margin,
                         open_fee_amt, open_fee_qty, offset_fee_amt, offset_fee_qty,
                         short_offset_fee_amt, short_offset_fee_qty, remark, ...}]}
 
-口径（用户已确认）：
+口径（用户已确认，第146轮）：
 - 保证金：broker_margin 直接用交易所标准档（buy_margin，投机），exchange_margin 双写同值并注记；
-- 手续费加一分：固定费品种 per_lot = 交易所qty + 0.01；比例费品种 amt 保持交易所比例不变、
+- 手续费加一分（无论金额型/比例型）：per_lot = 交易所qty + 0.01；比例费品种 amt 保持交易所比例不变、
   另每手保底 +0.01 固定费（per_lot=0.01）。开/平/平今同理；
 - limit_basic = (rise_limit - fall_limit)/(rise_limit + fall_limit)（反推已验证：RB 0.0501/C 0.06/AU 0.14/IF 0.10）；
-- 乘数：margins 用 API unit（报价口径，JD=10）；fees 用项目既有 MULTIPLIERS（吨口径，JD=5）；
+- 乘数：margins 与 fees 均用 API unit（报价口径，JD=10）——side_fee 用 multiplier 算一手名义
+  （notional=price×mult），比例手续费依赖它，必须与 margins 一致（原 FEE_MULTIPLIERS 硬编码表
+  EC/EG/JD/LG/PR/PS/SR 7 品种口径错误，已移除）；
 - 品种集：config.VARIETIES（64 品种全齐断言），与既有表结构完全一致（逐字段同名）。
 
 仅维护工具用 requests（运行时仍只读标准库 CSV）。
@@ -80,73 +82,8 @@ EXCH_SHORT = {
     "上海国际能源交易中心": "INE",
 }
 
-# 手续费表"吨/物理单位"口径乘数（与 build_fee_table.MULTIPLIERS 一致；JD 报价口径=10、吨口径=5）
-FEE_MULTIPLIERS = {
-    "RB": 10,
-    "HC": 10,
-    "SS": 5,
-    "CU": 5,
-    "AL": 5,
-    "AO": 20,
-    "ZN": 5,
-    "PB": 5,
-    "NI": 1,
-    "SN": 1,
-    "AU": 1000,
-    "AG": 15,
-    "RU": 10,
-    "BR": 5,
-    "FU": 10,
-    "BU": 10,
-    "SP": 10,
-    "SC": 1000,
-    "NR": 10,
-    "LU": 10,
-    "BC": 5,
-    "EC": 50,
-    "A": 10,
-    "B": 10,
-    "M": 10,
-    "Y": 10,
-    "P": 10,
-    "C": 10,
-    "CS": 10,
-    "RR": 10,
-    "JD": 5,
-    "LH": 16,
-    "LG": 90,
-    "L": 5,
-    "V": 5,
-    "PP": 5,
-    "EG": 10,
-    "EB": 5,
-    "PG": 20,
-    "J": 100,
-    "JM": 60,
-    "I": 100,
-    "SR": 10,
-    "CF": 5,
-    "CY": 5,
-    "TA": 5,
-    "MA": 10,
-    "PX": 5,
-    "PF": 5,
-    "PR": 15,
-    "SH": 30,
-    "FG": 20,
-    "SA": 20,
-    "UR": 20,
-    "RM": 10,
-    "OI": 10,
-    "PK": 5,
-    "AP": 10,
-    "CJ": 5,
-    "SF": 5,
-    "SM": 5,
-    "SI": 5,
-    "LC": 1,
-    "PS": 3,
-}
+# 第146轮：FEE_MULTIPLIERS 硬编码表已移除——fees 乘数改用 API unit（报价口径），
+# 直接与 margins 表一致，避免 side_fee 比例手续费名义计算错误（JD/EC/EG 等7品种）。
 
 
 def _num(x):
@@ -205,7 +142,6 @@ def build_tables(raw_rows, date_str):
     api_syms = set(main_rows)
     missing = cfg_syms - api_syms
     assert not missing, "API 缺品种: %s" % sorted(missing)
-    assert set(FEE_MULTIPLIERS) >= cfg_syms, "FEE_MULTIPLIERS 缺品种"
 
     margin_rows, fee_rows = [], []
     for cname, meta in cfg.items():
@@ -218,7 +154,7 @@ def build_tables(raw_rows, date_str):
         quote_mult = int(_num(r.get("unit")) or 0)
         # 不同月份 buy_margin 上浮情况（主力 vs 全合约众数/最大），写入 note
         mono = sorted({_num(x.get("buy_margin")) for x in by_sym_of(raw_rows, sym)})
-        note = "交易所标准保证金(信查期货数据)；全品种月份档=%s" % (
+        note = "交易所标准保证金(三立期货数据)；全品种月份档=%s" % (
             "/".join("%.2f%%" % (m * 100) for m in mono[:6]) + ("" if len(mono) <= 6 else "…")
         )
         margin_rows.append(
@@ -231,7 +167,7 @@ def build_tables(raw_rows, date_str):
                 "limit_basic": ("%.4f" % limit_basic) if limit_basic else "",
                 "multiplier": quote_mult,
                 "as_of": date_str,
-                "source": "交易所标准保证金(信查期货,自动抓取)",
+                "source": "交易所标准保证金(三立期货,自动抓取)",
                 "note": note,
             }
         )
@@ -241,7 +177,10 @@ def build_tables(raw_rows, date_str):
                 "name": cname,
                 "exchange": exchange,
                 "account_flag": "投机",
-                "multiplier": FEE_MULTIPLIERS[sym],
+                # 第146轮修正：fees 乘数改用 API unit（报价口径，与 margins 一致）——
+                # side_fee 用 multiplier 算一手名义（notional=price×mult），比例手续费依赖它；
+                # 原 FEE_MULTIPLIERS 硬编码 EC/EG/JD/LG/PR/PS/SR 7 品种口径错误（JD 5→10 等）。
+                "multiplier": quote_mult,
                 "open_amt_rate": _fee(_num(r.get("open_fee_amt")), 7),
                 "open_per_lot": _fee(_num(r.get("open_fee_qty")) + ADD_ONE_FEN, 2),
                 "close_amt_rate": _fee(_num(r.get("offset_fee_amt")), 7),
@@ -275,7 +214,7 @@ def write_csv(path, fields, rows):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="信查期货 API → futures_margins/fees CSV")
+    ap = argparse.ArgumentParser(description="三立期货 API → futures_margins/fees CSV")
     ap.add_argument("--date", default=datetime.now().strftime("%Y%m%d"), help="交易日 yyyyMMdd")
     ap.add_argument("--json", default=None, help="本地已落 JSON（离线）")
     ap.add_argument(

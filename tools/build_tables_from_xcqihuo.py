@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""信查期货 commission.xlsx → 同时更新 futures_fees.csv + futures_margins.csv。
+"""三立期货 commission.xlsx → 同时更新 futures_fees.csv + futures_margins.csv。
 自动检测：若两个表的 as_of 已是最新（基于 xlsx 文件修改日期），则跳过直接退出；否则运行一次后停止。
 
 用法：
@@ -134,12 +134,11 @@ def parse_rows(xlsx_path: str, add_one: bool):
         o_rate, o_lot = parse_fee(row[8])
         c_rate, c_lot = parse_fee(row[9])
         t_rate, t_lot = parse_fee(row[10])
-        if add_one and o_lot is not None and o_lot > 0:
-            o_lot = round(o_lot + 0.01, 4)
-        if add_one and c_lot is not None and c_lot > 0:
-            c_lot = round(c_lot + 0.01, 4)
-        if add_one and t_lot is not None and t_lot > 0:
-            t_lot = round(t_lot + 0.01, 4)
+        # 第146轮口径修正（用户确认）：金额型每手+0.01；比例型（o_lot=0）同样每手保底+0.01 固定费
+        if add_one:
+            o_lot = round((o_lot or 0.0) + 0.01, 4)
+            c_lot = round((c_lot or 0.0) + 0.01, 4)
+            t_lot = round((t_lot or 0.0) + 0.01, 4)
         fee_rows.append(
             {
                 "sym": code,
@@ -166,8 +165,8 @@ def parse_rows(xlsx_path: str, add_one: bool):
                 "limit_basic": "0",
                 "multiplier": str(mult),
                 "as_of": date,
-                "source": "交易所标准保证金(信查期货,commission.xlsx)",
-                "note": "信查期货 commission.xlsx 手续费表同期提取；买/卖保证金率=broker_margin",
+                "source": "交易所标准保证金(三立期货,commission.xlsx)",
+                "note": "三立期货 commission.xlsx 手续费表同期提取；买/卖保证金率=broker_margin",
             }
         )
     wb.close()
@@ -193,7 +192,7 @@ def write_csv(rows, fields, csv_path: Path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="信查 commission.xlsx → fees + margins CSV（增量检测，最新跳过）"
+        description="三立 commission.xlsx → fees + margins CSV（增量检测，最新跳过）"
     )
     parser.add_argument("--xlsx", type=Path, default=DEFAULT_XLSX, help="commission.xlsx 路径")
     parser.add_argument("--force", action="store_true", help="强制重新生成（忽略日期检测）")
