@@ -167,7 +167,8 @@ class State:
                             "max_concurrent", "risk_liquidate", "risk_safe",
                             "opt_premium_ratio", "stop_loss_ratio", "priority",
                             "futures_max", "options_max", "target_basis",
-                            "risk_sizing", "risk_gross")}   # 第136轮：ERC 影子账户接线
+                            "risk_sizing", "risk_gross",
+                            "max_daily_orders", "max_active_per_sym")}   # 第140轮 R3 + 第141轮账户级委托流控覆盖
                         broker = paper_broker.PaperBroker(
                             db_path=db_path, name=name, **kwargs)
                         self.papers[name] = broker

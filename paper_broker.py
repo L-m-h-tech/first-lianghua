@@ -246,7 +246,8 @@ class PaperBroker:
                  max_concurrent=None, risk_liquidate=None, risk_safe=None,
                  opt_premium_ratio=None, stop_loss_ratio=None,
                  priority="futures_first", futures_max=None, options_max=None,
-                 priority_expiry_days=None, target_basis=None):
+                 priority_expiry_days=None, target_basis=None,
+                 max_daily_orders=None, max_active_per_sym=None):   # 第141轮：账户级委托流控覆盖
         # 第102轮：独立数据库文件（每账户独立 SQLite）
         if db_path and db is None:
             import storage as _storage  # noqa: F401
@@ -306,8 +307,8 @@ class PaperBroker:
         # 第140轮 R3：日订单总数 / 每品种活动委托上限（防信号抖动频繁开平）
         self._daily_orders = {}    # 交易日 -> {(sym): 当日累计委托数}
         self._daily_orders_day = None
-        self._max_daily_orders = getattr(config, "PAPER_MAX_DAILY_ORDERS", 200)
-        self._max_active_per_sym = getattr(config, "PAPER_MAX_ACTIVE_ORDERS_PER_SYM", 1)
+        self._max_daily_orders = max_daily_orders or getattr(config, "PAPER_MAX_DAILY_ORDERS", 30)
+        self._max_active_per_sym = max_active_per_sym or getattr(config, "PAPER_MAX_ACTIVE_ORDERS_PER_SYM", 3)
         # G1续（第63轮）：内存级 OMS 全状态委托台账（id->最新委托快照）与成交回报流水，
         # 让纯内存模式也能像 DB 模式一样回溯任意终态委托/全部成交；纯增量、不改变既有撮合输出。
         self._orders_by_id = {}
