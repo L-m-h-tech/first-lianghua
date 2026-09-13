@@ -303,6 +303,11 @@ class PaperBroker:
         self.pending = {}          # sym -> [order, ...] next 档待成交队列（先平后开）
         self._open_seq = {}        # sym -> 开仓序号（生成 pos_ref）
         self.pos_ref = {}          # sym -> 当前持仓 pos_ref
+        # 第140轮 R3：日订单总数 / 每品种活动委托上限（防信号抖动频繁开平）
+        self._daily_orders = {}    # 交易日 -> {(sym): 当日累计委托数}
+        self._daily_orders_day = None
+        self._max_daily_orders = getattr(config, "PAPER_MAX_DAILY_ORDERS", 200)
+        self._max_active_per_sym = getattr(config, "PAPER_MAX_ACTIVE_ORDERS_PER_SYM", 1)
         # G1续（第63轮）：内存级 OMS 全状态委托台账（id->最新委托快照）与成交回报流水，
         # 让纯内存模式也能像 DB 模式一样回溯任意终态委托/全部成交；纯增量、不改变既有撮合输出。
         self._orders_by_id = {}
@@ -381,6 +386,40 @@ class PaperBroker:
                 "contract_code": row.get("contract_code") or self._known_contract.get(row["sym"], ("", ""))[0],
                 "main_month": row.get("main_month") or self._known_contract.get(row["sym"], ("", ""))[1],
                 "raw": {"atr": row.get("atr")}}
+
+    def _roll_daily_orders(self, ts):
+        """按结算日归零当日订单计数（跨交易日自动重置）。"""
+        day = str(ts or "")[:10]
+        if self._daily_orders_day != day:
+            self._daily_orders = {}
+            self._daily_orders_day = day
+
+    def _r3_allow_new_orders(self, ts, sym, orders):
+        """第140轮 R3：日订单总数上限（对开/反手开新腿生效）。
+
+        返回 (可下单的 orders, 被拦截的订单)；平仓/反手平仓腿不受限（只防频繁开仓）。
+        超限时记入 pf.skipped 并诚实标注。活动委托上限在 _enqueue 入队时闸口执行。"""
+        open_legs = [o for o in orders if (o.get("action") or "").startswith("open") or
+                     (o.get("action") or "").startswith("reverse_open")]
+        if not open_legs:
+            return orders, []
+        keep, blocked = [], []
+        self._roll_daily_orders(ts)
+        day = str(ts or "")[:10]
+        for o in orders:
+            if (o.get("action") or "").startswith("open") or (o.get("action") or "").startswith("reverse_open"):
+                daily_n = self._daily_orders.get(day, {}).get(sym, 0)
+                if daily_n >= self._max_daily_orders:
+                    blocked.append(o)
+                    self.pf.skipped.append({
+                        "dt": ts, "sym": sym,
+                        "reason": "R3委托流控(当日累计%d/上限%d)" % (
+                            daily_n, self._max_daily_orders),
+                        "available": self.pf.available(),
+                        "price": float(o.get("signal_price") or 0.0)})
+                    continue
+            keep.append(o)
+        return keep, blocked
 
     def _next_pos_ref(self, sym):
         n = self._open_seq.get(sym, 0) + 1
@@ -548,6 +587,17 @@ class PaperBroker:
 
     def _enqueue(self, orders):
         for o in orders:
+            # 第140轮 R3：活动委托上限（每品种 pending 队列长度）——入队闸口
+            if self._max_active_per_sym and (o.get("action") or "").startswith(("open", "reverse_open")):
+                sym = o["sym"]
+                if len(self.pending.get(sym) or []) >= self._max_active_per_sym:
+                    self.pf.skipped.append({
+                        "dt": o.get("ts", ""), "sym": sym,
+                        "reason": "R3委托流控(活动委托%d/上限%d)" % (
+                            len(self.pending.get(sym) or []), self._max_active_per_sym),
+                        "available": self.pf.available(),
+                        "price": float(o.get("signal_price") or 0.0)})
+                    continue
             self.pending.setdefault(o["sym"], []).append(o)
             self._ins_order(o)
 
@@ -791,6 +841,28 @@ class PaperBroker:
             if not sym:
                 continue
             orders = self._decide(ts, row)
+            # 第140轮 R3：委托流控（日订单总数/活动委托上限）——先于 R1/R2 过滤但只拦新开仓
+            if orders:
+                orders, _blocked = self._r3_allow_new_orders(ts, sym, orders)
+                if orders:
+                    for o in orders:
+                        if (o.get("action") or "").startswith("open") or (o.get("action") or "").startswith("reverse_open"):
+                            self._roll_daily_orders(ts)
+                            day = str(ts or "")[:10]
+                            self._daily_orders.setdefault(day, {}).setdefault(sym, 0)
+                            self._daily_orders[day][sym] += 1
+            # 第140轮 R1：委托级风控上链——row["risk"] 为 veto（risk_gate.apply_gate 已写入，
+            # 管道同源于 run_cycle）时，剔除开仓/反手开仓腿（保留平仓/反手平仓腿）。风控只拦新仓不拦离场。
+            if orders and (row.get("risk") or {}).get("level") == "veto":
+                kept = [o for o in orders if (o.get("action") or "") in ("close", "reverse_close")]
+                if len(kept) != len(orders):
+                    dropped = [o for o in orders if o not in kept]
+                    self.rg_veto_skips = getattr(self, "rg_veto_skips", 0) + len(dropped)
+                    self.pf.skipped.append({
+                        "dt": ts, "sym": sym,
+                        "reason": "风控veto拦截(%s)" % "；".join((row.get("risk") or {}).get("veto") or []),
+                        "available": self.pf.available(), "price": float(row.get("price") or 0.0)})
+                    orders = kept
             # G5④ 组合熔断：断路器停开时剔除开新仓腿（保留平仓腿）；breaker=None(默认observe)时原样返回
             if self.breaker is not None:
                 orders = circuit_breaker.filter_orders(orders, self.breaker.open_allowed())

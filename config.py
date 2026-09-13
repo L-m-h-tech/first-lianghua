@@ -652,11 +652,15 @@ RISK_GATE_BLACKLIST_FAIL_ROUNDS = 3      # 连续多少轮无有效行情（价�
 RISK_GATE_BLACKLIST_RECOVER_ROUNDS = 5   # 连续多少轮恢复有效行情 → 自动解禁
 # 第138轮 E5：组合层保证金占用硬上限（risk_degree=保证金占用/权益 的硬顶，开新仓被拒）——防杠杆击穿
 PORTFOLIO_MAX_RISK_DEGREE = 0.90         # 开仓后 risk_degree 不得超过该值；超过则拒开（组合硬顶）
+# 第140轮 R3：纸面委托流控（防信号抖动频繁开平）——每品种同日累计开仓委托数 / 同时活动委托数上限
+PAPER_MAX_DAILY_ORDERS = 30             # 每品种当日累计开仓委托上限（超过则新开仓被拒）
+PAPER_MAX_ACTIVE_ORDERS_PER_SYM = 3     # 每品种同时活动(pending)委托上限（防队列堆积）         # 开仓后 risk_degree 不得超过该值；超过则拒开（组合硬顶）
 
 # ---- G5④（第48轮）组合层单日浮亏熔断（与上面单品种信号级 risk_gate 正交；见 circuit_breaker.py）----
 # 纪律：默认 observe 只计算/标注、绝不改变纸面成交（等价旧版）；显式 paper_halt 才在 halt/delever 时停开新仓（平仓照常）。
 CIRCUIT_ENABLED = True            # 总开关：False 时 PaperBroker 不挂断路器
-CIRCUIT_ACTION = "observe"        # observe=只标注(默认,allow_open恒True) / paper_halt=纸面层停开新仓 / paper_delever=停开+delever档按比例自动减仓（只平不反向；真实账户永不自动操作，纸面默认关）
+CIRCUIT_ACTION = "paper_halt"     # 第140轮 R2：组合回撤熔断硬挂钩（纸面默认停开新仓）——halt档 filter_orders 剔除开仓腿，平仓不受限；
+                                # 可选 observe=只标注(allow_open恒True) / paper_delever=停开+delever档按比例自动减仓（只平不反向；真实账户永不自动操作）
 CIRCUIT_WARN_LOSS = 0.02          # 单日浮亏≥2% -> warn（只提示降杠杆）
 CIRCUIT_HALT_LOSS = 0.03          # 单日浮亏≥3% -> halt（paper_halt/paper_delever 停开新仓、当日粘性、日切解除）
 CIRCUIT_DELEVER_LOSS = 0.05       # 单日浮亏≥5% -> delever（observe/paper_halt仅文字建议；paper_delever按CIRCUIT_DELEVER_RATIO自动减仓）

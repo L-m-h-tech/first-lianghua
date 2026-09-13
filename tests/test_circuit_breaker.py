@@ -138,13 +138,19 @@ def test_paper_halt_blocks_new_open_but_allows_close(loose_config):
 
 
 def test_default_observe_broker_never_blocks(loose_config):
-    # 默认 circuit=None（config.CIRCUIT_ACTION=observe）：即便浮亏也照常开新仓
+    # 第140轮 R2 前旧默认：circuit=None（observe）即便浮亏也照常开新仓——保底行为保留为显式 observe
     broker = _broker(None)
-    assert broker.breaker is None
+    broker.breaker = None
     broker.on_cycle("2026-09-03 09:05:00", [pb._row("RB", "螺纹", "黑色", 5.0, 3000.0)])
     r2 = broker.on_cycle("2026-09-03 10:05:00", [pb._row("HC", "热卷", "黑色", 5.0, 3000.0)])
     assert any(t.get("sym") == "HC" and t.get("side") == "open" for t in r2["trades"])
     assert r2["circuit"] is None
+
+
+def test_default_paper_halt_mounts_breaker(loose_config):
+    # 第140轮 R2：config.CIRCUIT_ACTION 默认 paper_halt → PaperBroker 默认挂熔断器（硬挂钩）
+    broker = _broker(None)
+    assert broker.breaker is not None and broker.breaker.action_mode == "paper_halt"
 
 
 # ==================== 第51轮 G5④ delever 自动减仓（paper_delever） ====================

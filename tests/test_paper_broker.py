@@ -760,3 +760,82 @@ def test_paper_trading_only_gate_skips_off_hours():
     # 开关关闭 → 不跳过（旧行为）
     _skip3 = (not _trading_now) and False
     assert _skip3 is False
+
+
+# ---------- 第140轮 R1：委托级风控上链（veto 拦截开仓） ----------
+
+def test_r1_veto_blocks_open_but_keeps_close():
+    """row["risk"].level=veto → 拦截开仓腿，保留平仓腿。"""
+    b = make_broker(fill_mode="close")
+    # 开仓时带 veto
+    row_open = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
+    row_open["risk"] = {"level": "veto", "veto": ["流动性不足"], "reasons": ["⛔流动性不足"]}
+    s = b.on_cycle("2026-09-02 09:05:00", [row_open])
+    assert not any(t.get("side") == "open" for t in s["trades"])
+    assert b.pf.skipped and any("veto" in r.get("reason", "") for r in b.pf.skipped)
+    # 先手动开一笔（绕过 veto）再平仓：平仓腿不受 veto 拦截
+    b2 = make_broker(fill_mode="close")
+    b2.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    row_close = row("RB", "螺纹钢", "黑色", -5.0, 3050.0)
+    row_close["risk"] = {"level": "veto", "veto": ["流动性不足"], "reasons": ["⛔流动性不足"]}
+    s2 = b2.on_cycle("2026-09-02 09:10:00", [row_close])
+    assert any(t.get("side") == "close" for t in s2["trades"])  # 平仓不受 veto 拦截
+
+
+def test_r1_pass_level_not_blocked():
+    """risk.level=pass/warn → 正常开仓。"""
+    b = make_broker(fill_mode="close")
+    r = row("RB", "螺纹钢", "黑色", 5.0, 3000.0)
+    r["risk"] = {"level": "pass", "veto": [], "warn": [], "reasons": []}
+    s = b.on_cycle("2026-09-02 09:05:00", [r])
+    assert any(t.get("side") == "open" for t in s["trades"])
+
+
+def test_r1_no_risk_key_acts_as_before():
+    """无 risk 键（旧管线/未评估）→ 行为与旧版一致，不拦截。"""
+    b = make_broker(fill_mode="close")
+    s = b.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert any(t.get("side") == "open" for t in s["trades"])
+
+
+# ---------- 第140轮 R3：委托流控（日订单/活动委托上限） ----------
+
+def test_r3_daily_order_cap_blocks_new_open():
+    """同品种当日累计开仓委托达上限 → 后续新开仓被拒。"""
+    b = make_broker(fill_mode="close")
+    b._max_daily_orders = 2
+    b._max_active_per_sym = 10
+    # 交替方向触发多次开仓：开多(score=5) → 反向开空(score=-5) → 再开多(score=5)
+    b.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    b.on_cycle("2026-09-02 09:10:00", [row("RB", "螺纹钢", "黑色", -5.0, 3010.0)])
+    assert b._daily_orders.get("2026-09-02", {}).get("RB", 0) == 2
+    # 第3次（再反向开多）超上限 → 开仓腿被拒，计数不增
+    s3 = b.on_cycle("2026-09-02 09:15:00", [row("RB", "螺纹钢", "黑色", 5.0, 3005.0)])
+    assert b._daily_orders.get("2026-09-02", {}).get("RB", 0) == 2
+    assert any("R3委托流控" in r.get("reason", "") for r in b.pf.skipped)
+
+
+def test_r3_active_cap_blocks_second_pending():
+    """next 档活动委托达上限 → 同一品种后续开仓挂单被拒。"""
+    b = make_broker(fill_mode="next")
+    b._max_daily_orders = 100
+    b._max_active_per_sym = 1
+    # 第1笔 RB 开多挂单 pending（僵住不成交）
+    b.on_cycle("2026-09-02 09:05:00", [row("RB", "螺纹钢", "黑色", 5.0, 3000.0)])
+    assert len(b.pending.get("RB", [])) == 1
+    # 手动再塞一笔同品种 open 模拟排队堆积 → 超 active 上限被 _enqueue 拒绝
+    b._enqueue([{"ts": "x", "sym": "RB", "action": "open", "side": "buy", "direction": 1,
+                 "status": "pending", "signal_price": 3000, "name": "螺纹钢"}])
+    assert len(b.pending.get("RB", [])) == 1          # 第2笔被拒
+    assert any("R3委托流控" in r.get("reason", "") for r in b.pf.skipped)
+
+
+def test_r3_close_not_limited():
+    """平仓腿不受 R3 上限限制（只防频繁开仓，不阻碍离场）。"""
+    b = make_broker(fill_mode="close")
+    b._max_daily_orders = 0            # 开仓全被拒
+    # 直接注入持仓（绕过 R3 开仓限制）
+    b.pf.open("RB", "螺纹钢", "黑色", 1, 3000.0, "2026-09-02 09:05:00", atr=None, score=5.0)
+    # 平仓应照常执行（close 腿不受 R3 限制）
+    s = b.on_cycle("2026-09-02 09:10:00", [row("RB", "螺纹钢", "黑色", -5.0, 3050.0)])
+    assert any(t.get("side") == "close" for t in s["trades"])

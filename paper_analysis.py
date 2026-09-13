@@ -57,6 +57,14 @@ def paper_analyze(state, quotes, watchlist=None):
         fut_rows = []
     if not fut_rows:
         return out
+    # 第140轮 R1：委托级风控上链——paper_ticker 独立管线与 run_cycle 同源地对每行
+    # 执行 risk_gate.apply_gate（写入 row["risk"]），供 paper_broker 在委托流上拦截 veto。
+    try:
+        import risk_gate
+        for row in fut_rows:
+            risk_gate.apply_gate(row)
+    except Exception:
+        pass
     out["fut_rows"] = fut_rows
 
     # 2. 期权链装饰（挂 option_chain/iv_surface，供 analyze_option/recommend 消费）
