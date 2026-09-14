@@ -986,7 +986,7 @@ def _paper_compare_html():
         '<th class="th-num">最大回撤</th><th class="th-num">风险度</th>'
         '<th class="th-num">期/权持仓</th><th class="th-num">已实现</th>'
         '<th class="th-num">手续费</th><th class="th-num">近60日夏普</th><th class="th-num">近60日回撤</th>'
-        '<th>可交易性</th><th>详情</th></tr>'
+        "<th>可交易性</th><th>详情</th></tr>"
     )
     style_order = {"激进": 0, "基准": 1, "保守": 2, "赌徒": 3}
     for eq0k in tier_order:
@@ -1113,7 +1113,7 @@ def _paper_compare_html():
                 f'<td class="num">{r.get("fees") or 0:,.0f}</td>'
                 # 第150轮：近60日滚动夏普/回撤（策略衰减直观信号；None=样本不足诚实缺项）
                 f'<td class="num {"neg" if (r.get("roll_sharpe_60") or 0) < 0 else "pos"}">'
-                f'{r.get("roll_sharpe_60") if r.get("roll_sharpe_60") is not None else "--"}</td>'
+                f"{r.get('roll_sharpe_60') if r.get('roll_sharpe_60') is not None else '--'}</td>"
                 f'<td class="num">{_pct(r.get("roll_maxdd_60")) if r.get("roll_maxdd_60") is not None else "--"}</td>'
                 f'<td class="wrap">{aff_html}</td>'
                 f"<td>{dd}</td>"

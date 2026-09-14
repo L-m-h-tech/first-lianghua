@@ -324,9 +324,7 @@ def ensure_running():
         if launch_ths() and _wait_for_ready():
             return True
         if attempt < retries:
-            LOG.warning(
-                "同花顺启动/就绪失败（第%d/%d次），5秒后重试...", attempt, retries
-            )
+            LOG.warning("同花顺启动/就绪失败（第%d/%d次），5秒后重试...", attempt, retries)
             time.sleep(5)
     LOG.warning("同花顺启动失败（已重试%d次）", retries)
     return False

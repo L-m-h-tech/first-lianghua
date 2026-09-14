@@ -1128,10 +1128,20 @@ def test_fill_falls_back_known_contract():
     b._known_contract["RB"] = ("rb2610", "2610")
     # 构造 contract_code 为空的 pending open 订单（模拟上一 session 遗留的旧挂单）
     order = {
-        "ts": "t1", "sym": "RB", "name": "螺纹钢", "sector": "黑色",
-        "action": "open", "side": "buy", "direction": 1, "lots": 0,
-        "signal_price": 3100.0, "score": 6.0, "fill_mode": "next",
-        "status": "pending", "contract_code": "", "main_month": "",
+        "ts": "t1",
+        "sym": "RB",
+        "name": "螺纹钢",
+        "sector": "黑色",
+        "action": "open",
+        "side": "buy",
+        "direction": 1,
+        "lots": 0,
+        "signal_price": 3100.0,
+        "score": 6.0,
+        "fill_mode": "next",
+        "status": "pending",
+        "contract_code": "",
+        "main_month": "",
         "raw": {"atr": None},
     }
     b.pending["RB"] = [order]
@@ -1148,10 +1158,20 @@ def test_fill_no_known_contract_keeps_empty():
     """_known_contract 无记录时，空合约保持为空（不编造）。"""
     b = make_broker(fill_mode="next", equity0=1_000_000)
     order = {
-        "ts": "t1", "sym": "RB", "name": "螺纹钢", "sector": "黑色",
-        "action": "open", "side": "buy", "direction": 1, "lots": 0,
-        "signal_price": 3100.0, "score": 6.0, "fill_mode": "next",
-        "status": "pending", "contract_code": "", "main_month": "",
+        "ts": "t1",
+        "sym": "RB",
+        "name": "螺纹钢",
+        "sector": "黑色",
+        "action": "open",
+        "side": "buy",
+        "direction": 1,
+        "lots": 0,
+        "signal_price": 3100.0,
+        "score": 6.0,
+        "fill_mode": "next",
+        "status": "pending",
+        "contract_code": "",
+        "main_month": "",
         "raw": {"atr": None},
     }
     b.pending["RB"] = [order]

@@ -20,7 +20,10 @@ r"""成交量 PCR 采集器 tools/pcr_vol_collector.py（第132轮，研究侧�
      一次调用覆盖该品种当日全部合约（快源；INE 无接口、DCE 接口偶发挂→自动落天勤）；
   2. 天勤 TqSdk 逐合约日K——只补 AKShare 未覆盖的 (品种,日期) 缺口（慢源，精度兜底）；
   3. 交易所官网直取（上期所/广期所直连、郑商所/大商所 scrapling 绕412）——留作冗余第二源。
-source 字段记录实际来源（akshare/tqsdk），便于后续口径对照。
+第151轮：接入新浪 etag 快源（hq.sinajs.cn P_OP_ 批量快照）为**最新交易日首选**——
+  从 option_chains 提取到期月全部合约代码 → 批量拉当日成交量 → 按 C/P 合计（本机 hq 域
+  未被 456 封锁、秒级响应）；失败/历史日期仍由 akshare/tqsdk 兜底。
+source 字段记录实际来源（sina/akshare/tqsdk），便于后续口径对照。
 
 CLI: python tools/pcr_vol_collector.py [--backfill 15] [--syms RB,MA,SR] [--limit 0]
      [--selftest]
@@ -106,6 +109,69 @@ def _retry(fn, attempts=3, delays=(3, 6)):
             if k < attempts - 1:
                 _time.sleep(delays[min(k, len(delays) - 1)])
     raise last
+
+
+# ---------------- 新浪 etag 快源（第151轮：hq.sinajs.cn P_OP_ 批量快照，秒级响应） ----------------
+def _sina_codes(monitor_db, sym):
+    """从 option_chains 最新快照 raw_json 提取该品种 calls/puts 的全部合约代码。
+    返回 [(code, cp)] 列表，如 [('ru2611C15500','C'), ...]；无数据返回空列表。"""
+    import json as _json
+
+    try:
+        row = _q(
+            monitor_db,
+            """SELECT raw_json FROM option_chains
+                                WHERE sym=? AND cycle>=1 ORDER BY created_real DESC LIMIT 1""",
+            (sym,),
+        )
+        if not row:
+            return []
+        raw = _json.loads(
+            row[0][0]
+        )  # _q 返回 fetchall()（tuple 列表），row[0][0] 才是 raw_json 字符串
+    except Exception:
+        return []
+    codes = []
+    for leg in raw.get("calls") or []:
+        c = leg.get("code")
+        if c:
+            codes.append((c, "C"))
+    for leg in raw.get("puts") or []:
+        c = leg.get("code")
+        if c:
+            codes.append((c, "P"))
+    return codes
+
+
+def sina_day(sym, monitor_db, fetch_fn=None):
+    """新浪 P_OP_ 批量快照 → (call_vol, put_vol)；失败返回 None。
+
+    从 option_chains 提取最新到期月全部合约代码 → 走云服务器 round-robin 批量拉
+    当日成交量（第151轮：hq.sinajs.cn/etag.php 由 sina_proxy_server /pops 转发，
+    本机不直连新浪）→ 按 C/P 合计 → pcr_vol = put_vol / call_vol。
+    fetch_fn: 注入用（测试）；None 时用 server_minute_client.fetch_pops_via_server。"""
+    legs = _sina_codes(monitor_db, sym)
+    if not legs:
+        return None
+    if fetch_fn is None:
+        try:
+            from server_minute_client import fetch_pops_via_server
+        except ImportError:
+            return None
+        fetch_fn = fetch_pops_via_server
+    codes_str = ",".join("P_OP_" + c for c, _ in legs)
+    try:
+        vol_map = fetch_fn(codes_str)
+    except Exception:
+        return None
+    if not vol_map:
+        return None
+    # 服务器 /pops 返回的 key 是去前缀后的合约代码（如 rb2701C3000），与 legs 中一致
+    call_vol = sum(vol_map.get(c, 0) for c, cp in legs if cp == "C")
+    put_vol = sum(vol_map.get(c, 0) for c, cp in legs if cp == "P")
+    if call_vol + put_vol <= 0:
+        return None
+    return (call_vol, put_vol)
 
 
 # ---------------- AKShare 交易所快源（第133轮） ----------------
@@ -363,41 +429,71 @@ def run(
             "rows": all_rows,
         }
 
-    # ---- fast 协同模式（第133轮） ----
+    # ---- fast 协同模式（第133轮 AKShare 批量 + 天勤补缺口；第151轮接入新浪 etag 快源） ----
     from concurrent.futures import ThreadPoolExecutor
 
     dates = recent_trading_days(monitor_db, backfill)
     if not dates:
         raise SystemExit("minute_bars 无交易日可推——先让主链积累分钟数据")
+    latest_date = dates[-1] if dates else ""
     print(
-        "快模式: %d 个交易日 × %d 品种，AKShare 批量优先、天勤补缺口" % (len(dates), len(expiries))
+        "快模式: %d 个交易日 × %d 品种，新浪 etag 优先(最新日)、AKShare 补历史、天勤兜底"
+        % (len(dates), len(expiries))
     )
 
+    # ---- 新浪 etag 快源（第151轮）：hq.sinajs.cn P_OP_ 批量快照，秒级响应（本机 hq 域未被 456） ----
+    # 只覆盖最新交易日（P_OP_ 是当日实时快照，无历史日期）；失败/历史缺口仍由 akshare/tqsdk 兜底。
+    sina_covered = {}  # (sym, date) -> row
+    if latest_date:
+        try:
+            for sym in expiries:
+                r = sina_day(sym, monitor_db)
+                if r and r[0] + r[1] > 0:
+                    sina_covered[(sym, latest_date)] = {
+                        "call_vol": r[0],
+                        "put_vol": r[1],
+                        "pcr_vol": round(r[1] / r[0], 4) if r[0] > 0 else None,
+                        "sym": sym,
+                        "trade_date": latest_date,
+                        "source": "sina",
+                        "n_calls": None,
+                        "n_puts": None,
+                    }
+        except Exception as e:
+            print("  新浪 etag 快源失败（继续 AKShare/天勤）: %s" % e)
+    print("  新浪 etag 覆盖 %d/%d 个 (品种,最新日) 对" % (len(sina_covered), len(expiries)))
+
     ak_day = ak_day_fn or _ak_day
-    pairs = [(d, sym) for d in dates for sym in expiries]
+    # 历史日期全量 + 最新日未覆盖的品种 → AKShare
+    pairs = [(d, sym) for d in dates for sym in expiries if (sym, d) not in sina_covered]
     ak_covered = {}  # (sym, date) -> {call,put}
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        for (d, sym), r in zip(
-            pairs, pool.map(lambda p: ak_day(p[1], ex_of.get(p[1], ""), p[0]), pairs), strict=False
-        ):
-            if r is not None:
-                ak_covered[(sym, d)] = {
-                    "call_vol": r[0],
-                    "put_vol": r[1],
-                    "pcr_vol": round(r[1] / r[0], 4) if r[0] > 0 else None,
-                    "sym": sym,
-                    "trade_date": d,
-                    "source": "akshare",
-                    "n_calls": None,
-                    "n_puts": None,
-                }
+    if pairs:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for (d, sym), r in zip(
+                pairs,
+                pool.map(lambda p: ak_day(p[1], ex_of.get(p[1], ""), p[0]), pairs),
+                strict=False,
+            ):
+                if r is not None:
+                    ak_covered[(sym, d)] = {
+                        "call_vol": r[0],
+                        "put_vol": r[1],
+                        "pcr_vol": round(r[1] / r[0], 4) if r[0] > 0 else None,
+                        "sym": sym,
+                        "trade_date": d,
+                        "source": "akshare",
+                        "n_calls": None,
+                        "n_puts": None,
+                    }
     print("  AKShare 覆盖 %d/%d 个 (品种,日期) 对" % (len(ak_covered), len(pairs)))
 
-    # 天勤补缺口：按品种分组（一次 collect_variety 拿全日期，只写缺失对）
+    # 天勤补缺口：sina + akshare 都未覆盖的 (品种,日期)
+    covered_all = dict(sina_covered)
+    covered_all.update(ak_covered)
     missing_by_sym = defaultdict(set)
     for d in dates:
         for sym in expiries:
-            if (sym, d) not in ak_covered:
+            if (sym, d) not in covered_all:
                 missing_by_sym[sym].add(d)
     tq_rows, n_tq = [], 0
     if missing_by_sym:
@@ -430,11 +526,13 @@ def run(
                     )
         finally:
             api.close()
-    n = write_rows(monitor_db, list(ak_covered.values()) + tq_rows)
+    sina_rows = list(sina_covered.values())
+    n = write_rows(monitor_db, sina_rows + list(ak_covered.values()) + tq_rows)
     return {
         "written": n,
         "mode": mode,
         "n_syms": len(expiries),
+        "sina_pairs": len(sina_covered),
         "ak_pairs": len(ak_covered),
         "tq_rows": n_tq,
         "ok_syms": len(expiries) - len(errors),
@@ -459,8 +557,8 @@ def render(res):
     ]
     if res["mode"] == "fast":
         L.append(
-            "AKShare 批量覆盖 %d 个 (品种,日期) ｜ 天勤补缺口 %d 行"
-            % (res.get("ak_pairs", 0), res.get("tq_rows", 0))
+            "新浪 etag 覆盖 %d 个 (品种,最新日) ｜ AKShare 批量 %d ｜ 天勤补缺口 %d 行"
+            % (res.get("sina_pairs", 0), res.get("ak_pairs", 0), res.get("tq_rows", 0))
         )
     if res["errors"]:
         L.append(

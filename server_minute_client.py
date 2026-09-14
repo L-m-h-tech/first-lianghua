@@ -125,3 +125,51 @@ def _fetch_daily_via_server(sina_code):
         except Exception:
             continue
     return []
+
+
+# ---- 新浪 hq P_OP_ 期权成交量快照（第151轮，走云服务器） ----
+def fetch_pops_via_server(codes):
+    """通过云服务器拉取 P_OP_ 批量快照：round-robin 选台，失败自动换台重试。
+
+    codes: 逗号分隔的完整代码（如 "P_OP_rb2701C3000,P_OP_rb2701P3000"，需带 P_OP_ 前缀）。
+    返回 {code: volume} 或 {}（全部失败）。服务器端点 /pops?codes=xxx（第151轮新增）。
+    """
+    servers = getattr(config, "SINA_SERVER_URLS", [])
+    if not servers:
+        return {}
+    timeout = getattr(config, "SINA_SERVER_TIMEOUT", 20.0)
+    alive = [s for s in servers if s not in _dead]
+    if not alive:
+        with _lock:
+            _dead.clear()
+            alive = servers[:]
+    if not alive:
+        return {}
+
+    global _next
+    tried = 0
+    while tried < min(len(alive), 3):
+        with _lock:
+            srv = alive[_next % len(alive)]
+            _next += 1
+        tried += 1
+        url = f"{srv}/pops?codes={codes}"
+        try:
+            req = Request(url, headers={"User-Agent": "futures_monitor/1.0"})
+            resp = urlopen(req, timeout=timeout)
+            body = resp.read().decode("utf-8", "replace")
+            if "456" in body[:128]:
+                with _lock:
+                    _dead.add(srv)
+                continue
+            data = json.loads(body)
+            if isinstance(data, dict) and "volumes" in data:
+                return data["volumes"]
+        except HTTPError as e:
+            if e.code == 456:
+                with _lock:
+                    _dead.add(srv)
+            continue
+        except Exception:
+            continue
+    return {}

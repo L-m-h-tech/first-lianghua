@@ -91,3 +91,103 @@ def test_write_rows_idempotent(tmp_path):
     n = conn.execute("SELECT COUNT(*) FROM option_pcr_vol").fetchone()[0]
     conn.close()
     assert n == 1
+
+
+# ---------------- 第151轮：新浪 etag 快源（_sina_codes / sina_day 走云服务器） ----------------
+def test_sina_codes_extracts_from_raw_json(tmp_path):
+    """_sina_codes 从 option_chains raw_json 提取 calls/puts 合约代码。"""
+    import json
+    import sqlite3
+
+    db = str(tmp_path / "m.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE option_chains(
+        id INTEGER PRIMARY KEY, sym TEXT, cycle INTEGER, expiry TEXT,
+        raw_json TEXT, created_real REAL)""")
+    raw = json.dumps(
+        {
+            "calls": [{"code": "rb2701C2750"}, {"code": "rb2701C3000"}],
+            "puts": [{"code": "rb2701P2750"}],
+        }
+    )
+    conn.execute(
+        "INSERT INTO option_chains(sym,cycle,expiry,raw_json,created_real) VALUES('RB',32,'2701',?,1)",
+        (raw,),
+    )
+    conn.commit()
+    conn.close()
+    codes = PC._sina_codes(db, "RB")
+    assert ("rb2701C2750", "C") in codes
+    assert ("rb2701C3000", "C") in codes
+    assert ("rb2701P2750", "P") in codes
+    assert len(codes) == 3
+
+
+def test_sina_codes_empty_when_no_chain(tmp_path):
+    """无链数据时 _sina_codes 返回空列表。"""
+    import sqlite3
+
+    db = str(tmp_path / "m2.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE option_chains(
+        id INTEGER PRIMARY KEY, sym TEXT, cycle INTEGER, expiry TEXT,
+        raw_json TEXT, created_real REAL)""")
+    conn.commit()
+    conn.close()
+    assert PC._sina_codes(db, "RB") == []
+
+
+def test_sina_day_sums_volumes_by_cp(tmp_path):
+    """sina_day 走云服务器 fetch_pops_via_server，按 C/P 合计成交量（key 匹配去前缀）。"""
+    import json
+    import sqlite3
+
+    db = str(tmp_path / "m3.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE option_chains(
+        id INTEGER PRIMARY KEY, sym TEXT, cycle INTEGER, expiry TEXT,
+        raw_json TEXT, created_real REAL)""")
+    raw = json.dumps(
+        {
+            "calls": [{"code": "rb2701C2750"}, {"code": "rb2701C3000"}],
+            "puts": [{"code": "rb2701P2750"}],
+        }
+    )
+    conn.execute(
+        "INSERT INTO option_chains(sym,cycle,expiry,raw_json,created_real) VALUES('RB',32,'2701',?,1)",
+        (raw,),
+    )
+    conn.commit()
+    conn.close()
+
+    def _fake_fetch(codes_str):
+        assert "P_OP_rb2701C2750" in codes_str and "P_OP_rb2701P2750" in codes_str
+        return {"rb2701C2750": 2.0, "rb2701C3000": 3.0, "rb2701P2750": 4.0}
+
+    r = PC.sina_day("RB", db, fetch_fn=_fake_fetch)
+    assert r == (5.0, 4.0)
+
+
+def test_sina_day_returns_none_on_all_zero(tmp_path):
+    """服务器返回全 0 成交量时 sina_day 返回 None（不写假数据）。"""
+    import json
+    import sqlite3
+
+    db = str(tmp_path / "m4.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE option_chains(
+        id INTEGER PRIMARY KEY, sym TEXT, cycle INTEGER, expiry TEXT,
+        raw_json TEXT, created_real REAL)""")
+    raw = json.dumps(
+        {
+            "calls": [{"code": "rb2701C2750"}],
+            "puts": [{"code": "rb2701P2750"}],
+        }
+    )
+    conn.execute(
+        "INSERT INTO option_chains(sym,cycle,expiry,raw_json,created_real) VALUES('RB',32,'2701',?,1)",
+        (raw,),
+    )
+    conn.commit()
+    conn.close()
+    assert PC.sina_day("RB", db, fetch_fn=lambda codes: {}) is None

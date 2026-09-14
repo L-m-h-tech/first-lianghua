@@ -109,6 +109,42 @@ def fetch_minute(symbol, period, lmt):
     return bars, None
 
 
+# ---- hq.sinajs.cn 期权成交量快照转发（第151轮） ----
+_HQ_URL = "https://hq.sinajs.cn/etag.php?list=%s"
+
+
+def fetch_pop_volumes(codes_str):
+    """转发 hq.sinajs.cn/etag.php P_OP_ 批量快照 → {code: volume} 或 None。
+    codes_str: 逗号分隔的完整代码（如 "P_OP_rb2701C3000,P_OP_rb2701P3000"），不需要带前缀。
+    hq 域未被 456 封锁，秒级返回；走服务器限流器以分散负载、防未来封锁。"""
+    url = _HQ_URL % codes_str
+    throttle()  # 共享限流器（与 stock2 同频，防止服务器带宽/并发超限）
+    req = Request(url, headers=HEADERS)
+    try:
+        resp = urlopen(req, timeout=8)
+        text = resp.read().decode("gbk", errors="replace")
+        out = {}
+        for line in text.splitlines():
+            m = re.match(r'var hq_str_P_OP_([A-Za-z0-9]+)="(.*)"', line)
+            if not m:
+                continue
+            code = m.group(1)
+            fields = m.group(2).split(",")
+            # 第110轮：成交量字段 index 11（不同交易所有偏移，保守取 P_OP_ 快照第11位=成交量）
+            # 验证：rb2610C3000 原始返回第11位=0.500（当日成交量）
+            vol = 0.0
+            if len(fields) > 11:
+                try:
+                    vol = float(fields[11])
+                except (ValueError, IndexError):
+                    pass
+            if vol > 0:
+                out[code] = vol
+        return out
+    except Exception as e:
+        return None
+
+
 # ---- HTTP Handler ----
 _stats = {"daily": 0, "minute": 0, "fail": 0, "start": time.time()}
 _stats_lock = threading.Lock()
@@ -162,6 +198,28 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"symbol": symbol, "period": period, "count": len(bars), "bars": bars})
 
+        elif parsed.path == "/pops":
+            # 第151轮：新浪 hq.sinajs.cn 期权成交量快照（P_OP_ 批量）；codes 逗号分隔不带前缀
+            codes = params.get("codes", [""])[0].strip()
+            if not codes:
+                self._json(
+                    {
+                        "error": "missing codes",
+                        "usage": "/pops?codes=P_OP_rb2701C3000,P_OP_rb2701P3000",
+                    },
+                    400,
+                )
+                return
+            vols = fetch_pop_volumes(codes)
+            with _stats_lock:
+                _stats["pops"] = _stats.get("pops", 0) + 1
+            if vols is None:
+                with _stats_lock:
+                    _stats["fail"] += 1
+                self._json({"error": "hq fetch failed", "codes": codes}, 502)
+            else:
+                self._json({"count": len(vols), "volumes": vols})
+
         elif parsed.path == "/health":
             uptime = time.time() - _stats["start"]
             self._json({"status": "ok", "uptime_s": int(uptime), **_stats})
@@ -170,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(
                 {
                     "error": "unknown path",
-                    "usage": "/daily?symbol=RB0 | /minute?symbol=RB0&period=30&lmt=1023 | /health",
+                    "usage": "/daily?symbol=RB0 | /minute?symbol=RB0&period=30&lmt=1023 | /pops?codes=P_OP_xxx | /health",
                 },
                 404,
             )
