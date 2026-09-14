@@ -222,6 +222,7 @@ _DASHBOARD_TABS = [
         "数据采集装置(界面操作)",
     ),  # 第N轮：装置 save_report 实时写入（量化报告集成遗留项）
     ("__device__", "装置健康详情"),  # 协同：读取 report_device.json 结构化展示源健康/软件/告警
+    ("__servers__", "云服务器健康"),  # 第156轮 A3：读 reports/server_health.json（server_health 线程探测）
     ("__paper_cmp__", "纸面账户对比"),  # 第102轮：15账户对比（读 paper_compare.json）
     ("history_report.txt", "交易时段·当日归档"),
     ("offhours_report.txt", "非交易时段·最近5轮"),
@@ -272,22 +273,36 @@ def _dashboard_html():
   #meta { margin-left: auto; font-size: 12px; color: #9a9a9a; white-space: nowrap; }
   #view { width: 100%%; height: calc(100vh - 45px); border: 0; background: #fff; }
   #charts-panel { display: none; width: 100%%; height: calc(100vh - 45px); overflow-y: auto; }
+  @keyframes banner-flash { 0%%,100%% { opacity: 1; } 50%% { opacity: 0.55; } }
+  /* 第156轮 C12：移动端适配——窄屏标签横滚、面板/表格横向滚动、字号略缩 */
+  @media (max-width: 860px) {
+    #bar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 6px 4px; }
+    #meta { display: none; }
+    .tab { font-size: 12px; padding: 4px 8px; white-space: nowrap; flex-shrink: 0; }
+    #view { height: calc(100vh - 40px); }
+    #research-panel, #newdata-panel, #device-panel, #servers-panel, #paper-cmp-panel {
+      padding: 10px; font-size: 13px; overflow-x: auto; }
+    #research-panel .rp-grid { grid-template-columns: 1fr; }
+    #research-panel .rp-pre { max-height: 220px; }
+  }
   /*__CP_STYLE__*/
 </style>
-<script src="assets/echarts.min.js"></script>
 </head>
 <body>
-<div id="bar">
+  <div id="bar">
   <b>期货监控实时看板</b>
   %s
   <span id="meta"></span>
   <span id="paper-cd" style="display:none;margin-left:10px;color:#f0a35e;font-size:12px;white-space:nowrap;"></span>
 </div>
-<iframe id="view" src="%s"></iframe>
+<div id="emergency-banner" style="display:none;background:linear-gradient(90deg,#8b0000,#c0392b,#8b0000);color:#fff;font-weight:bold;font-size:14px;text-align:center;padding:8px 14px;border-bottom:2px solid #e74c3c;animation:banner-flash 1s ease-in-out infinite;position:relative;z-index:10;">⚠ <span id="emergency-text">紧急轮动</span> ⚠</div>
+<div id="loading-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);color:#aaa;font-size:18px;z-index:100;justify-content:center;align-items:center;pointer-events:none;">加载中…</div>
+<iframe id="view" src="%s" onload="document.getElementById('loading-overlay').style.display='none';"></iframe>
 <div id="charts-panel">/*__CP_DOM__*/</div>
   <div id="research-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;">/*__RP_DOM__*/</div>
   <div id="newdata-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;color:#e8e8e8;padding:16px;font-size:14px;line-height:1.6;">/*__ND_DOM__*/</div>
   <div id="device-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;color:#e8e8e8;padding:16px;font-size:14px;line-height:1.6;">/*__DV_DOM__*/</div>
+  <div id="servers-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;color:#e8e8e8;padding:16px;font-size:14px;line-height:1.6;">/*__SRV_DOM__*/</div>
   <div id="paper-cmp-panel" style="display:none;width:100%%;height:calc(100vh - 45px);overflow-y:auto;background:#17181c;color:#e8e8e8;padding:16px;font-size:14px;line-height:1.6;">/*__CMP_DOM__*/</div>
 <script>
   var cur = "%s";
@@ -302,30 +317,34 @@ def _dashboard_html():
     var isRp = src === '__research__';
     var isNd = src === '__newdata__';
     var isDv = src === '__device__';
+    var isSrv = src === '__servers__';
     var isCmp = src === '__paper_cmp__';
     var view = document.getElementById('view');
     var panel = document.getElementById('charts-panel');
     var rpanel = document.getElementById('research-panel');
     // 纸面对比页签改为 iframe 加载独立 paper_compare.html（ticker 每分钟重写），
     // 不再用静态内嵌面板——面板保持隐藏以兼容旧 DOM。
-    view.style.display = (isCp || isRp || isNd || isDv) ? 'none' : 'block';
+    view.style.display = (isCp || isRp || isNd || isDv || isSrv) ? 'none' : 'block';
     panel.style.display = isCp ? 'block' : 'none';
     rpanel.style.display = isRp ? 'block' : 'none';
     var ndpanel = document.getElementById('newdata-panel');
     if (ndpanel) ndpanel.style.display = isNd ? 'block' : 'none';
     var dvpanel = document.getElementById('device-panel');
     if (dvpanel) dvpanel.style.display = isDv ? 'block' : 'none';
+    var srvpanel = document.getElementById('servers-panel');
+    if (srvpanel) srvpanel.style.display = isSrv ? 'block' : 'none';
     var cmppanel = document.getElementById('paper-cmp-panel');
     if (cmppanel) cmppanel.style.display = 'none';
     // 纸面页签（基准/对比）显示"距下次纸面刷新"倒计时；其余页签隐藏
     var paperCd = document.getElementById('paper-cd');
     if (paperCd) paperCd.style.display = (src === 'paper_account.txt' || isCmp) ? 'inline' : 'none';
-    if (isCp) { if (window.ChartPanel) window.ChartPanel.activate(); }
+    if (isCp) { ensureEcharts(function(){ if (window.ChartPanel) window.ChartPanel.activate(); }); }
     else if (isRp) { /* 研究聚合为静态注入，无需重载 */ }
     else if (isNd) { /* 新数据因子为静态注入，无需重载 */ }
     else if (isDv) { /* 装置健康为静态注入，无需重载 */ }
-    else if (isCmp) { view.src = 'paper_compare.html?t=' + Date.now(); }
-    else { view.src = src + '?t=' + Date.now(); }
+    else if (isSrv) { /* 云服务器健康为静态注入，无需重载 */ }
+    else if (isCmp) { document.getElementById('loading-overlay').style.display='flex'; view.src = 'paper_compare.html?t=' + Date.now(); }
+    else { document.getElementById('loading-overlay').style.display='flex'; view.src = src + '?t=' + Date.now(); }
     var btns = document.querySelectorAll('.tab');
     for (var i = 0; i < btns.length; i++)
       btns[i].classList.toggle('active', btns[i].getAttribute('data-src') === src);
@@ -380,11 +399,25 @@ def _dashboard_html():
   }
   // ---- 新报告探测：每10秒轻量探测 report_status.js，仅当程序真写出新一轮（定时轮动或原油急动紧急轮动）时才重载当前报告，平时不刷新内容 ----
   var POLL_MS = 10000, lastStatusTs = null;
+  // D15：ECharts 懒加载——仅首次激活图表页签时注入 assets/echarts.min.js，首次加载约 100ms 后白屏消失
+  var echartsLoaded = false, echartsPending = null;
+  function ensureEcharts(cb) {
+    if (window.echarts) { echartsLoaded = true; cb(); return; }
+    if (echartsPending) { echartsPending = cb; return; }
+    echartsPending = cb;
+    var s = document.createElement('script');
+    s.src = 'assets/echarts.min.js?t=' + Date.now();
+    s.onload = function () { echartsLoaded = true; echartsPending(); echartsPending = null; s.remove(); };
+    s.onerror = function () { echartsPending = null; s.remove(); setGen('ECharts 加载失败（检查 reports/assets/echarts.min.js 是否存在）'); };
+    document.head.appendChild(s);
+  }
   function reloadView() {
     if (cur === CHARTS_VIEW) { if (window.ChartPanel) window.ChartPanel.reload(); return; }
     if (cur === '__research__') { return; }   // 静态研究索引：不随轮动重载
+    if (cur === '__servers__') { location.reload(); return; }   // 静态注入，需整页刷新获取新探测结果
     if (cur === '__device__') { location.reload(); return; }   // 静态注入，需整页刷新获取新写入内容
     var view = document.getElementById('view');
+    document.getElementById('loading-overlay').style.display='flex';
     view.src = (cur === '__paper_cmp__' ? 'paper_compare.html' : cur) + '?t=' + Date.now();
   }
   function pollStatus() {
@@ -415,6 +448,16 @@ def _dashboard_html():
     line += ' ｜ 计划下一轮 ' + pad2(nextAt.getHours()) + ':' + pad2(nextAt.getMinutes()) +
             ':' + pad2(nextAt.getSeconds()) + '（倒计时 ' + pad2(mm) + ':' + pad2(ss) + '）';
     document.getElementById('meta').textContent = line;
+    // C9：紧急轮动红色横幅——REPORT_STATUS.emergency 非空时显示闪烁横幅，空时隐藏
+    var emBanner = document.getElementById('emergency-banner');
+    if (emBanner) {
+      var st2 = window.REPORT_STATUS;
+      if (st2 && st2.emergency) {
+        emBanner.style.display = 'block';
+        var emTxt = document.getElementById('emergency-text');
+        if (emTxt) emTxt.textContent = (st2.emergency_tag || '紧急轮动') + ' · ' + st2.ts;
+      } else { emBanner.style.display = 'none'; }
+    }
     // 纸面刷新倒计时：ticker 每 PAPER_TICK_INTERVAL 秒撮合一次，页面仅纸面页签显示
     var paperCd = document.getElementById('paper-cd');
     if (paperCd && (cur === 'paper_account.txt' || cur === '__paper_cmp__')) {
@@ -469,6 +512,7 @@ def _dashboard_html():
         .replace("/*__RP_DOM__*/", _research_reports_html())
         .replace("/*__ND_DOM__*/", _newdata_panel_html())
         .replace("/*__DV_DOM__*/", _device_panel_html())
+        .replace("/*__SRV_DOM__*/", _servers_panel_html())
         .replace("/*__CMP_DOM__*/", _paper_compare_html())
     )
 
@@ -676,6 +720,109 @@ def _device_panel_html():
     except Exception:
         pass
     return "\n".join(parts)
+
+
+def _servers_panel_html():
+    """第156轮 A3：云服务器健康页签——读 reports/server_health.json（server_health.health_loop 线程
+    每 SERVER_HEALTH_INTERVAL 秒探测 data/server_ips.txt 各台 /health 后写入）渲染表格。
+
+    每行：IP、在线状态、运行时长、daily/minute/pops 累计计数（探测进程内）、失败计数。
+    文件缺失（监控未启动/探测线程未写）时显示提示，不影响看板。"""
+    srv_json = os.path.join(
+        getattr(config, "SERVER_HEALTH_FILE", "") or os.path.join(config.BASE_DIR, "reports", "server_health.json")
+    )
+    parts = [
+        '<div style="font-weight:bold;font-size:16px;border-bottom:1px solid #444;padding-bottom:6px;">'
+        "云服务器健康（Sina 代理集群）</div>"
+    ]
+    try:
+        import json as _json
+
+        with open(srv_json, encoding="utf-8") as f:
+            rep = _json.load(f)
+    except OSError:
+        parts.append(
+            '<p style="margin:12px 0;color:#b8b8b8;">健康页未生成——主程序运行后由 server_health 线程'
+            "每 %d 秒探测一次 data/server_ips.txt（若 IP 有变，编辑该文件后重启即可）。</p>"
+            % getattr(config, "SERVER_HEALTH_INTERVAL", 300)
+        )
+        return "\n".join(parts)
+    except Exception as e:
+        parts.append(f'<p style="margin:12px 0;color:#b8b8b8;">健康页解析失败: {e}</p>')
+        return "\n".join(parts)
+
+    upd = _esc_safe(rep.get("generated_at") or "--")
+    n_total = int(rep.get("n_total") or 0)
+    n_online = int(rep.get("n_online") or 0)
+    ok_color = "#37c27a" if n_online == n_total else ("#e05b5b" if n_online == 0 else "#f0a35e")
+    parts.append(
+        f'<p style="margin:8px 0;">探测时间: {upd} ｜ 在线 <span style="color:{ok_color};font-weight:bold;">'
+        f"{n_online}/{n_total}</span> 台（47.92.x 网段若被新浪 hq 域拒绝会显示离线，属已知限制）</p>"
+    )
+
+    servers = rep.get("servers") or []
+    if not servers:
+        parts.append('<p style="margin:12px 0;color:#b8b8b8;">无探测记录（server_ips.txt 为空或线程未写入）。</p>')
+        return "\n".join(parts)
+
+    def _row_cells(s):
+        url = str(s.get("url") or "")
+        ip = url.replace("http://", "").split(":")[0]
+        online = bool(s.get("online"))
+        badge = (
+            '<span style="color:#37c27a;">在线</span>'
+            if online
+            else '<span style="color:#e05b5b;">离线</span>'
+        )
+        if online:
+            up = s.get("uptime_s")
+            up_txt = "--"
+            if isinstance(up, (int, float)):
+                h, rem = divmod(int(up), 3600)
+                m = rem // 60
+                up_txt = f"{h}h{m}m"
+            err = ""
+            daily = int(s.get("daily", 0))
+            minute = int(s.get("minute", 0))
+            pops = int(s.get("pops", 0))
+            fail = int(s.get("fail", 0))
+            fail_txt = (
+                f'<span style="color:#e05b5b;">{fail}</span>' if fail else str(fail)
+            )
+        else:
+            up_txt = "--"
+            daily = minute = pops = 0
+            fail = 0
+            fail_txt = "0"
+            err = _esc_safe(s.get("error") or "")
+        return f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;white-space:nowrap;font-family:monospace;font-size:13px;">{ip}</td>' \
+            f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;white-space:nowrap;">{badge}{(" <span style=color:#b8b8b8;font-size:12px;>" + err + "</span>") if err else ""}</td>' \
+            f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;white-space:nowrap;text-align:right;font-family:monospace;">{up_txt}</td>' \
+            f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;text-align:right;font-family:monospace;">{daily}</td>' \
+            f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;text-align:right;font-family:monospace;">{minute}</td>' \
+            f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;text-align:right;font-family:monospace;">{pops}</td>' \
+            f'<td style="padding:6px 10px;border-bottom:1px solid #2a2d33;text-align:right;font-family:monospace;">{fail_txt}</td>'
+
+    head = (
+        "<tr><th style='text-align:left;'>IP</th><th style='text-align:left;'>状态</th>"
+        "<th>运行时长</th><th>daily</th><th>minute</th><th>pops</th><th>fail</th></tr>"
+    )
+    body = "".join(f"<tr>{_row_cells(s)}</tr>" for s in servers)
+    parts.append(
+        '<div style="overflow-x:auto;margin-top:10px;">'
+        '<table style="border-collapse:collapse;font-size:13px;color:#d6d6d6;">'
+        f"{head}{body}</table></div>"
+    )
+    parts.append(
+        '<p style="margin:8px 0;color:#9a9a9a;font-size:12px;">'
+        "计数 = 该台代理进程自启动以来的请求累计（daily=日线K / minute=分钟K / pops=期权成交量快照）；"
+        "fail 为本机探测超时/拒绝次数。来源文件 data/server_ips.txt，探测周期 config.SERVER_HEALTH_INTERVAL。</p>"
+    )
+    return "\n".join(parts)
+
+
+def _esc_safe(s):
+    return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # ---------- 第102轮：纸面账户对比页签 ----------
@@ -954,6 +1101,7 @@ def _paper_compare_html():
         ".b-badge{background:#0e639c;color:#fff;padding:0 4px;border-radius:3px;font-size:11px;}"
         ".g-badge{background:#e17055;color:#fff;padding:0 4px;border-radius:3px;font-size:11px;}"
         ".cmp-table tr.gambler td{background:#241812;}"
+        ".cmp-table tr.decay td{background:rgba(239,107,107,0.12) !important;} .cmp-table tr.decay td.num{color:#ff9b9b;}"  # C11：近60日夏普转负=策略衰减整行红染
         ".risk-wrap{width:90px;height:10px;background:#333;border-radius:5px;overflow:hidden;display:inline-block;vertical-align:middle;}"
         ".risk-bar{height:100%;}"
         ".dd{margin:2px 0;}"
@@ -1069,6 +1217,14 @@ def _paper_compare_html():
             baseline = style == "基准"
             gambler = style == "赌徒"
             _row_cls = ' class="gambler"' if gambler else (' class="baseline"' if baseline else "")
+            # C11：近60日夏普转负 → 整行衰减高亮（与单元格 neg 着色叠加，一眼可见）
+            if (r.get("roll_sharpe_60") or 0) < 0:
+                _row_cls = (_row_cls or ' class=""').replace('class="', 'class="decay ')
+            decay_badge = (
+                ' <span class="g-badge" style="background:#c0392b;" title="近60日滚动夏普为负">衰减</span>'
+                if (r.get("roll_sharpe_60") or 0) < 0
+                else ""
+            )
             bd = (
                 ' <span class="g-badge">赌徒</span>'
                 if gambler
@@ -1078,12 +1234,13 @@ def _paper_compare_html():
             )
             opt_flag = ' <span class="opt-badge">期权</span>' if r.get("n_opt_pos", 0) > 0 else ""
             name_html = (
-                '<a class="acct" href="paper_detail_%s.html" title="打开该账户详情页">%s</a>%s%s'
+                '<a class="acct" href="paper_detail_%s.html" title="打开该账户详情页">%s</a>%s%s%s'
                 % (
                     r.get("name", "").replace(" ", "_").replace("/", "_"),
                     _esc(r.get("name")),
                     bd,
                     opt_flag,
+                    decay_badge,
                 )
             )
             dd = _detail_html(r)
@@ -1162,12 +1319,14 @@ def _tier_accent(eq0k):
 
 
 def _research_reports_html(max_rows=14, max_bytes=2200):
-    """聚合 reports/*.txt（排除看板实时页签已覆盖的）成卡片网格 HTML。
+    """聚合 reports/*.txt（排除看板实时页签已覆盖的）成按类别分组的折叠卡片 HTML（第156轮 D16）。
 
     每卡：报告名 + 类别 + 更新时间 + 内容摘要(<pre> 前 max_rows 行/前 max_bytes 字符) +
-    全文链接（新标签打开 txt）。纯展示、只读、html 转义防注入。"""
+    全文链接（新标签打开 txt）。同前缀多个产出（如 factor_health 的 txt/json 成对、实验台账等）
+    按 _REPORT_CATEGORY 归组后同一 <details> 折叠，避免 30+ 卡片平铺互相重复。
+    纯展示、只读、html 转义防注入。"""
     reports_dir = os.path.join(config.BASE_DIR, "reports")
-    cards = []
+    groups = {}  # cat -> [card_html]
     if os.path.isdir(reports_dir):
         for fn in sorted(os.listdir(reports_dir)):
             if not fn.endswith(".txt") or fn in _REPORT_TAB_EXCLUDED:
@@ -1192,7 +1351,7 @@ def _research_reports_html(max_rows=14, max_bytes=2200):
             lines = head.splitlines()
             body = "\n".join(lines[:max_rows])
             esc = html.escape
-            cards.append(
+            groups.setdefault(cat, []).append(
                 '<div class="rp-card">'
                 '<div class="rp-head"><span class="rp-name">%s</span>'
                 '<span class="rp-cat">%s</span><span class="rp-time">%s</span></div>'
@@ -1200,10 +1359,29 @@ def _research_reports_html(max_rows=14, max_bytes=2200):
                 '<div class="rp-foot"><a href="%s" target="_blank" rel="noopener">查看全文（新标签）</a></div>'
                 "</div>" % (esc(fn), esc(cat), esc(mt), esc(body), esc(fn))
             )
-    grid = "\n".join(cards)
+    total = sum(len(v) for v in groups.values())
+    # 类别排序：卡多的在前，其次按类别名；每类一个 <details> 折叠（默认展开前两类）
+    ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    secs = []
+    for i, (cat, cards) in enumerate(ordered):
+        open_attr = " open" if i < 2 else ""
+        secs.append(
+            f'<details class="rp-group"{open_attr}>'
+            f'<summary class="rp-summary">{html.escape(cat)}'
+            f'<span class="rp-count">{len(cards)} 份</span></summary>'
+            f'<div class="rp-grid">{"".join(cards)}</div></details>'
+        )
+    grid = "\n".join(secs)
     return """<style>
   #research-panel { padding: 12px; }
-  .rp-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(430px,1fr)); gap: 12px; }
+  .rp-group { margin: 10px 0; }
+  .rp-summary { cursor: pointer; color:#7ecbff; font-weight:bold; font-size:14px; padding:6px 4px;
+                border-bottom:1px solid #2e3238; list-style:none; user-select:none; }
+  .rp-summary::-webkit-details-marker { display:none; }
+  .rp-summary::before { content:"▸ "; color:#8a8f98; }
+  details[open] > .rp-summary::before { content:"▾ "; }
+  .rp-count { color:#8a8f98; font-weight:normal; font-size:12px; margin-left:8px; }
+  .rp-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(430px,1fr)); gap: 12px; padding-top:8px; }
   .rp-card { background:#202229; border:1px solid #33363d; border-radius:6px; padding:10px 12px; }
   .rp-head { display:flex; align-items:baseline; gap:10px; margin-bottom:6px; flex-wrap:wrap; }
   .rp-name { color:#7ecbff; font-weight:bold; font-size:13px; }
@@ -1215,11 +1393,9 @@ def _research_reports_html(max_rows=14, max_bytes=2200):
   .rp-foot a { color:#7ecbff; font-size:12px; text-decoration:none; }
   .rp-foot a:hover { text-decoration:underline; }
 </style>
-<div class="rp-grid">
 %s
-</div>
-<p style="color:#8a8f98;font-size:12px;margin-top:10px">共 %d 份研究报告（自动聚合 reports/*.txt，排除实时看板既有页签；点击卡片内链接可在新标签查看全文）</p>
-""" % (grid, len(cards))
+<p style="color:#8a8f98;font-size:12px;margin-top:10px">共 %d 份研究报告（%d 类，自动聚合 reports/*.txt，排除实时看板既有页签；点击卡片内链接可在新标签查看全文）</p>
+""" % (grid, total, len(ordered))
 
 
 def write_dashboard():

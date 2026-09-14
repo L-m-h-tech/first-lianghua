@@ -757,6 +757,132 @@ class MonitorDB:
         below = sum(1 for v in hist if v <= current_pcr)
         return below / len(hist)
 
+    def pcr_vol_latest_per_sym(self):
+        """第156轮 A2：读取 option_pcr_vol 表各品种最新交易日成交量 PCR。
+        返回列表 [{sym, name, trade_date, pcr_vol, call_vol, put_vol, total_vol}]，
+        按 pcr_vol 升序（最低=最看多在前，最高=最看空在后）。无表/无数据返回 []。
+
+        数据由 tools/pcr_vol_collector.py（天勤+AKShare 三源协同）按日写入，39品种×15日已积累。"""
+        try:
+            with self.lock:
+                rows = self.conn.execute(
+                    """SELECT sym, trade_date, pcr_vol, call_vol, put_vol
+                       FROM option_pcr_vol
+                       WHERE (sym, trade_date) IN (
+                         SELECT sym, MAX(trade_date) FROM option_pcr_vol GROUP BY sym
+                       ) AND pcr_vol IS NOT NULL
+                       ORDER BY pcr_vol"""
+                ).fetchall()
+        except Exception:
+            return []
+        out = []
+        for r in rows:
+            cv = r["call_vol"] or 0.0
+            pv = r["put_vol"] or 0.0
+            out.append({
+                "sym": r["sym"],
+                "trade_date": r["trade_date"],
+                "pcr_vol": round(float(r["pcr_vol"]), 3),
+                "call_vol": round(cv),
+                "put_vol": round(pv),
+                "total_vol": round(cv + pv),
+            })
+        return out
+
+    def signals_latest_round(self, limit=200):
+        """第156轮 B7：最近一轮 signals 全部非中性信号行，按 score 降序。
+        返回 [{variety, score, label, direction}]；无记录返回 []（非中性信号每天每键一行）。"""
+        try:
+            with self.lock:
+                row = self.conn.execute("SELECT MAX(ts) AS t FROM signals").fetchone()
+                if not row or not row["t"]:
+                    return []
+                rows = self.conn.execute(
+                    "SELECT variety, score, label, direction_int FROM signals"
+                    " WHERE ts=? ORDER BY ABS(score) DESC, score DESC LIMIT ?",
+                    (row["t"], int(limit)),
+                ).fetchall()
+        except Exception:
+            return []
+        return [
+            {
+                "variety": r["variety"],
+                "score": round(float(r["score"] or 0.0), 2),
+                "label": r["label"] or "",
+                "direction": int(r["direction_int"] or 0),
+            }
+            for r in rows
+        ]
+
+    def signals_score_trend(self, days=14):
+        """第156轮 B7：近 days 天每天平均 |score| 与信号条数（按 ts 日期聚合）。
+        返回 [{date, avg_abs, n}] 升序；无记录返回 []。"""
+        try:
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            with self.lock:
+                rows = self.conn.execute(
+                    "SELECT substr(ts,1,10) AS d, AVG(ABS(score)) AS avg_abs, COUNT(*) AS n"
+                    " FROM signals WHERE ts>=? GROUP BY d ORDER BY d",
+                    (cutoff,),
+                ).fetchall()
+        except Exception:
+            return []
+        return [
+            {
+                "date": r["d"],
+                "avg_abs": round(float(r["avg_abs"] or 0.0), 2),
+                "n": int(r["n"] or 0),
+            }
+            for r in rows
+        ]
+
+    def fundamentals_latest_for_charts(self, limit=200):
+        """第156轮 D14：读 fundamentals 表最新 trade_date 全品种 库存分位/龙虎净多 摘要。
+
+        返回 {trade_date, rows:[{sym, inv_pct, inv_wow, jhd_net, jhd_delta}...]}；
+        子项缺失的行对应字段置 None（缺库存只给龙虎榜、反之亦然）。无数据返回 {}。"""
+        try:
+            with self.lock:
+                row = self.conn.execute(
+                    "SELECT MAX(trade_date) AS d FROM fundamentals"
+                ).fetchone()
+                if not row or not row["d"]:
+                    return {}
+                d = row["d"]
+                rows = self.conn.execute(
+                    "SELECT sym, raw_json FROM fundamentals WHERE trade_date=?",
+                    (d,),
+                ).fetchall()
+        except Exception:
+            return {}
+        out = {"trade_date": d, "rows": []}
+        for r in rows:
+            try:
+                pack = json.loads(r["raw_json"])
+                sub = pack.get("sub") or {}
+            except Exception:
+                continue
+            inv = sub.get("库存仓单") or {}
+            jhd = sub.get("龙虎榜") or {}
+            inv_pct = inv.get("pct")
+            inv_wow = inv.get("wow")
+            jhd_net = jhd.get("net")
+            jhd_delta = jhd.get("delta")
+            if inv_pct is None and jhd_net is None:
+                continue
+            out["rows"].append(
+                {
+                    "sym": r["sym"],
+                    "inv_pct": round(float(inv_pct), 3) if inv_pct is not None else None,
+                    "inv_wow": round(float(inv_wow), 4) if inv_wow is not None else None,
+                    "jhd_net": round(float(jhd_net), 4) if jhd_net is not None else None,
+                    "jhd_delta": round(float(jhd_delta), 4) if jhd_delta is not None else None,
+                }
+            )
+        if not out["rows"]:
+            return {}
+        return out
+
     # ---------------- 写入：基本面日频快照（第13轮） ----------------
 
     def insert_fundamentals(self, ts, rows):

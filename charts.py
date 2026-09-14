@@ -304,6 +304,198 @@ def outcomes_payload(db, days=None):
 # ---------------- ④ 因子 IC（tools/factor_eval.py 写的 JSON sidecar） ----------------
 
 
+def jykc_payload(state=None):
+    """阶段D可视化：交易可查(jykc)仓单当日变动（state.fund_jykc，第153轮阶段D已接入综合分）。
+
+    state.fund_jykc: {品种名(中文): {total_vol, total_chge, chge_rate, data_date}}
+    chge_rate 为百分数（14.13 = 当日仓单 +14.13%）；仓单增=可交割货源增加=偏空，减=偏多
+    （与 fundamental_factors.jykc_factor 同口径，只展示不改分）。
+    返回 {data_date, chg_unit:"%", n, rows:[{name,total_vol,chge_rate}...]}，rows 按 chge_rate 升序
+    （横向柱最大值落顶）。空/缺数据返回 None（显空态）。"""
+    d = getattr(state, "fund_jykc", None) if state is not None else None
+    if not d:
+        return None
+    data_date = ""
+    rows = []
+    for name, info in d.items():
+        if not isinstance(info, dict):
+            continue
+        if not data_date:
+            data_date = str(info.get("data_date") or "")
+        cr = info.get("chge_rate")
+        try:
+            cr = float(cr) if cr not in (None, "") else None
+        except (TypeError, ValueError):
+            cr = None
+        if cr is None or not math.isfinite(cr):
+            continue
+        tv = info.get("total_vol")
+        try:
+            tv = round(float(tv)) if tv not in (None, "") else None
+        except (TypeError, ValueError):
+            tv = None
+        rows.append({"name": str(name), "total_vol": tv, "chge_rate": round(cr, 2)})
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r["chge_rate"])
+    return {"data_date": data_date, "chg_unit": "%", "n": len(rows), "rows": rows}
+
+
+def pcr_vol_payload(state=None):
+    """A2 期权成交量PCR情绪图：读 option_pcr_vol 表各品种最新交易日成交量 PCR（state.db）。
+    PCR = 看跌成交量 ÷ 看涨成交量：>1 = 看跌期权成交占比高 = 偏空情绪（红）；
+    <1 = 偏多情绪（绿）。返回 {trade_date, base, n, rows:[{sym, pcr_vol, total_vol}...]}
+    rows 按 pcr_vol 升序（横向柱最大值落顶、最看多在前）。空/缺数据返回 None。"""
+    db = getattr(state, "db", None) if state is not None else None
+    if db is None or not hasattr(db, "pcr_vol_latest_per_sym"):
+        return None
+    try:
+        rows = db.pcr_vol_latest_per_sym()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    rows = sorted(rows, key=lambda r: r["pcr_vol"])
+    return {
+        "trade_date": rows[-1]["trade_date"],
+        "base": 1.0,
+        "n": len(rows),
+        "rows": [{"sym": r["sym"], "pcr_vol": r["pcr_vol"], "total_vol": r["total_vol"]} for r in rows],
+    }
+
+
+def spread_bp_payload(state=None):
+    """B6 盘口真实价差监控：读 tick_snapshots 各品种真实买卖价差（state.db.sym_spread_calibration）。
+
+    spread_bp 为基点（1bp=万分之一）：值越小=流动性越好（绿）；越大=流动性差（红）。
+    返回 {n, rows:[{sym, spread_bp_avg, spread_bp_median, n}...]}，按 median 升序（横向柱最流动在前）。
+    空/缺数据（sample<n）返回 None。"""
+    db = getattr(state, "db", None) if state is not None else None
+    if db is None or not hasattr(db, "sym_spread_calibration"):
+        return None
+    try:
+        cal = db.sym_spread_calibration()
+    except Exception:
+        return None
+    if not cal:
+        return None
+    rows = [
+        {
+            "sym": sym,
+            "spread_bp_avg": round(float(v.get("spread_bp_avg", 0.0)), 2),
+            "spread_bp_median": round(float(v.get("spread_bp_median", 0.0)), 2),
+            "n": int(v.get("n", 0)),
+            "asof": str(v.get("asof") or ""),
+        }
+        for sym, v in cal.items()
+        if v.get("spread_bp_median") is not None
+    ]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r["spread_bp_median"])
+    return {"n": len(rows), "rows": rows}
+
+
+def signals_payload(state=None):
+    """B7 信号强度时间序列：读 signals 表最近一轮各品种信号强度 + 近14天平均强度趋势（state.db）。
+
+    返回 {latest:{ts?, rows:[{variety,score,label,direction}...]}, trend:[{date,avg_abs,n}...]}。
+    任一块空则对应置空列表；两块都空返回 None（显空态）。"""
+    db = getattr(state, "db", None) if state is not None else None
+    if db is None or not hasattr(db, "signals_latest_round") or not hasattr(db, "signals_score_trend"):
+        return None
+    try:
+        latest = db.signals_latest_round()
+        trend = db.signals_score_trend()
+    except Exception:
+        return None
+    if not latest and not trend:
+        return None
+    return {"latest": latest, "trend": trend}
+
+
+def risk_agg_payload(state=None):
+    """B8 组合集中度/风险聚合总览：遍历各账户汇总 risk_degree 与最大集中持仓（state.last_papers / state.papers）。
+
+    返回 {n_accounts, accounts:[{name, equity, risk_degree, n_pos, max_conc_sym, max_conc_pct}...]}
+    按 risk_degree 降序（最高风险在前）。空/缺数据返回 None。"""
+    papers = getattr(state, "papers", None) or {}
+    lp = getattr(state, "last_papers", None) or {}
+    if not papers or not lp:
+        return None
+    accounts = []
+    for name, broker in papers.items():
+        if broker is None:
+            continue
+        summary = lp.get(name) or {}
+        snap = summary.get("snapshot") or {}
+        risk = snap.get("risk_degree")
+        try:
+            risk = round(float(risk) if risk is not None else 0.0, 4)
+        except (TypeError, ValueError):
+            risk = 0.0
+        equity = snap.get("equity")
+        try:
+            equity = round(float(equity) if equity is not None else 0.0, 2)
+        except (TypeError, ValueError):
+            equity = 0.0
+        n_pos = snap.get("n_positions") or 0
+        # 读持仓明细算最大集中度（positions_view thread-safe via broker._locked）
+        max_conc = {"sym": "", "pct": 0.0}
+        try:
+            positions = broker.positions_view()
+        except Exception:
+            positions = []
+        total_margin = sum(p.get("margin", 0) for p in positions)
+        if positions and total_margin > 0:
+            top = max(positions, key=lambda p: abs(p.get("margin", 0)))
+            max_conc = {
+                "sym": top.get("sym", ""),
+                "pct": round(abs(top.get("margin", 0)) / total_margin, 3) if total_margin else 0.0,
+            }
+        accounts.append({
+            "name": name,
+            "equity": equity,
+            "risk_degree": risk,
+            "n_pos": int(n_pos),
+            "max_conc_sym": max_conc.get("sym", ""),
+            "max_conc_pct": max_conc.get("pct", 0.0),
+        })
+    if not accounts:
+        return None
+    accounts.sort(key=lambda a: a["risk_degree"], reverse=True)
+    return {"n_accounts": len(accounts), "accounts": accounts}
+
+
+def fund_basic_payload(state=None):
+    """D14 基本面速览图形化：读 fundamentals 表最新快照的 库存分位 / 龙虎榜净多（state.db）。
+
+    返回 {trade_date, inv:[{sym, pct, wow}...]按分位降序, jhd:[{sym, net, delta}...]按净多降序}。
+    某子块全缺则置 []；两块都空返回 None（显空态）。"""
+    db = getattr(state, "db", None) if state is not None else None
+    if db is None or not hasattr(db, "fundamentals_latest_for_charts"):
+        return None
+    try:
+        d = db.fundamentals_latest_for_charts()
+    except Exception:
+        return None
+    if not d or not d.get("rows"):
+        return None
+    inv = [
+        {"sym": r["sym"], "pct": r["inv_pct"], "wow": r["inv_wow"]}
+        for r in d["rows"]
+        if r.get("inv_pct") is not None
+    ]
+    jhd = [
+        {"sym": r["sym"], "net": r["jhd_net"], "delta": r["jhd_delta"]}
+        for r in d["rows"]
+        if r.get("jhd_net") is not None
+    ]
+    inv.sort(key=lambda x: x["pct"], reverse=True)
+    jhd.sort(key=lambda x: x["net"], reverse=True)
+    return {"trade_date": d.get("trade_date", ""), "inv": inv, "jhd": jhd}
+
+
 def paper_payload(state=None, max_points=1200):
     """⑤ 纸面账户影子净值：从 storage.paper_equity 每轮快照取最近窗口（升序），结构对齐
     parse_equity_csv 以便前端复用同一套权益/回撤/风险度渲染。无 state/无表/空表返回 None（显空态）。
@@ -1138,6 +1330,36 @@ def build_payload(state=None):
         payload["outcomes"] = outcomes_payload(getattr(state, "db", None))
     except Exception:
         payload["outcomes"] = None
+    # 阶段D可视化：交易可查(jykc)仓单当日变动（state.fund_jykc，第153轮已接入综合分）
+    try:
+        payload["jykc"] = jykc_payload(state)
+    except Exception:
+        payload["jykc"] = None
+    # A2：期权成交量PCR情绪图（option_pcr_vol 表，39品种最新交易日）
+    try:
+        payload["pcr_vol"] = pcr_vol_payload(state)
+    except Exception:
+        payload["pcr_vol"] = None
+    # B6：盘口真实价差监控（tick_snapshots 品种买卖价差中位数）
+    try:
+        payload["spread_bp"] = spread_bp_payload(state)
+    except Exception:
+        payload["spread_bp"] = None
+    # B7：信号强度时间序列（signals 表最近一轮分布 + 近14天平均强度）
+    try:
+        payload["signals"] = signals_payload(state)
+    except Exception:
+        payload["signals"] = None
+    # B8：组合集中度/风险聚合总览（各账户 risk_degree + 最大集中持仓）
+    try:
+        payload["risk_agg"] = risk_agg_payload(state)
+    except Exception:
+        payload["risk_agg"] = None
+    # D14：基本面速览（fundamentals 表库存分位 + 龙虎榜净多）
+    try:
+        payload["fund_basic"] = fund_basic_payload(state)
+    except Exception:
+        payload["fund_basic"] = None
     # ④ 因子 IC（研究工具 JSON）
     try:
         payload["factor_ic"] = factor_payload()
@@ -1334,6 +1556,10 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
     <h3>横截面·全品种强度与多空广度 <span class="sub">红=相对偏强 / 绿=相对偏弱</span></h3>
     <div class="chips" id="xs-chips"></div>
     <div id="c-xs" class="chart" style="height:300px"></div>
+    <h3 style="margin-top:10px;">横截面·强弱热力图 <span class="sub">按板块分组的全品种色块：颜色越深=|xs|越大；悬停看细值</span></h3>
+    <div id="c-xs-grid"></div>
+    <h3 style="margin-top:10px;">横截面·前5强势 / 前5弱势 <span class="sub">D13：Top 变化色块卡（红=强势 / 绿=弱势）</span></h3>
+    <div id="c-top-blocks"></div>
   </div>
   <div class="card">
     <h3>③ 因子预测力·分周期 meta RankIC <span class="sub">&gt;0=因子越支持信号后续越赚（factor_eval.json）</span></h3>
@@ -1350,6 +1576,43 @@ _PANEL_DOM = r"""<div class="cp-head"><b>期货监控 · 图表看板</b><span c
   <div class="card">
     <h3>分周期实际胜率 <span class="sub">signal_outcomes 已到期样本（总/做多/做空）</span></h3>
     <div id="c-out" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>④a 仓单当日变动（交易可查） <span class="sub">fund_jykc：红=仓单增加（偏空）/ 绿=仓单减少（偏多）；悬停看总量</span></h3>
+    <div class="chips" id="jykc-chips"></div>
+    <div id="c-jykc" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>④b 期权成交量PCR情绪 <span class="sub">看跌/看涨成交量比；&gt;1=偏空（红）/ &lt;1=偏多（绿）；悬停看总量</span></h3>
+    <div class="chips" id="pcrvol-chips"></div>
+    <div id="c-pcrvol" class="chart" style="height:420px"></div>
+  </div>
+  <div class="card">
+    <h3>④c 盘口真实价差（tick_snapshots） <span class="sub">各品种真实买卖价差中位数（bp，越小流动性越好）；悬停看均值/样本数</span></h3>
+    <div class="chips" id="spreadbp-chips"></div>
+    <div id="c-spreadbp" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card">
+    <h3>④d 信号强度·最近一轮分布 <span class="sub">signals 表当轮非中性信号：红=做多 / 绿=做空，|score| 越大越强</span></h3>
+    <div id="c-sig-latest" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>④d2 信号强度·近14天平均 <span class="sub">每日平均 |score|（柱=信号条数）；趋势回升=市场分歧加大</span></h3>
+    <div id="c-sig-trend" class="chart" style="height:300px"></div>
+  </div>
+  <div class="card">
+    <h3>④e 组合风险聚合 <span class="sub">26账户 risk_degree（红≥70%预警）+ 最大集中品种占比；悬停看持仓数</span></h3>
+    <div class="chips" id="riskagg-chips"></div>
+    <div id="c-riskagg" class="chart" style="height:380px"></div>
+  </div>
+  <div class="card">
+    <h3>④f 基本面速览·库存分位 <span class="sub">高分位=累库偏空（红）；悬停看周环比；数据来自 fundamentals 表</span></h3>
+    <div class="chips" id="fund-inv-chips"></div>
+    <div id="c-fund-inv" class="chart" style="height:320px"></div>
+  </div>
+  <div class="card">
+    <h3>④f2 基本面速览·龙虎榜净多 <span class="sub">净多=（多头-空头）/持仓总量：正值=多方占优（红），负值=空方占优（绿）</span></h3>
+    <div id="c-fund-jhd" class="chart" style="height:320px"></div>
   </div>
   <div class="card full">
     <h3>⑤ 纸面账户·影子净值 <span class="sub">paper_equity 每轮快照（PAPER_ENABLED 开启后积累；含真实手续费+滑点，虚拟资金非实盘）</span></h3>
@@ -1484,7 +1747,9 @@ _PANEL_JS = r"""(function () {
 var UP = "#ef6b6b", DOWN = "#43c589", NEUT = "#8a8a8a", BLUE = "#7ecbff", GOLD = "#ffd66b";
 var AXIS = "#9a9a9a", SPLIT = "#2c2c2c", BG = "#1c1c1c";
 var CHART_IDS = ["c-equity", "c-dd", "c-risk", "c-sector", "c-xs",
-                 "c-ic", "c-mono", "c-cal", "c-out",
+                 "c-ic", "c-mono", "c-cal", "c-out", "c-jykc", "c-pcrvol", "c-spreadbp",
+                 "c-sig-latest", "c-sig-trend",
+                 "c-riskagg", "c-fund-inv", "c-fund-jhd",
                  "c-paper", "c-paper-dd", "c-paper-risk",
                  "c-paper-mm", "c-paper-dd-mm",
                  "c-tear-uw", "c-tear-rs", "c-tear-m",
@@ -1804,7 +2069,12 @@ function renderTear(t) {
 function renderCross(cs) {
   if (!cs || !cs.rows.length) {
     empty("c-sector", "暂无横截面数据：监控完成一轮分析后自动生成（非交易时段同样生成）。");
-    empty("c-xs", "暂无横截面数据。"); return;
+    empty("c-xs", "暂无横截面数据。");
+    var xg = document.getElementById("c-xs-grid");
+    if (xg) xg.innerHTML = '<div class="empty">暂无横截面数据。</div>';
+    var tb = document.getElementById("c-top-blocks");
+    if (tb) tb.innerHTML = '<div class="empty">暂无横截面数据。</div>';
+    return;
   }
   var sec = cs.sectors.slice().sort(function (a, b) { return a.avg_xs - b.avg_xs; });
   mk("c-sector").setOption({
@@ -1844,6 +2114,77 @@ function renderCross(cs) {
     series: [{type: "bar", data: rows.map(function (d) {
       return {value: d.xs, itemStyle: {color: signedColor(d.xs)}}; }), barWidth: 9}]
   });
+  renderXsGrid(cs);
+  renderTopBlocks(cs);
+}
+
+function renderTopBlocks(cs) {
+  // D13：期货分析 Top 变化卡片——横截面前5强势/前5弱势色块卡（cs.top_long/top_short）
+  var el = document.getElementById("c-top-blocks");
+  if (!el) return;
+  if (!cs || !cs.rows.length) {
+    el.innerHTML = '<div class="empty">暂无横截面数据。</div>';
+    return;
+  }
+  function blocks(arr, face) {
+    var color = face === "long" ? "rgba(239,107,107,0.85)" : "rgba(67,197,137,0.85)";
+    return '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 10px;">' +
+      arr.map(function (t) {
+        var xsTxt = t.xs != null ? " xs " + t.xs.toFixed(2) : "";
+        var scTxt = t.score != null ? "｜分 " + t.score.toFixed(1) : "";
+        return '<span title="' + t.name + xsTxt + scTxt + '" style="display:inline-block;' +
+          'min-width:44px;padding:5px 9px;border-radius:4px;font-size:12px;text-align:center;' +
+          'background:' + color + ';color:#fff;font-weight:bold;">' + t.name + '</span>';
+      }).join("") + "</div>";
+  }
+  var html = "";
+  html += '<div style="color:' + (cs.top_long && cs.top_long.length ? UP : "#777") + ';font-weight:bold;font-size:12px;">前5强势</div>';
+  html += (cs.top_long && cs.top_long.length) ? blocks(cs.top_long, "long")
+                                             : '<div style="color:#777;font-size:11px;">无数据</div>';
+  html += '<div style="color:' + (cs.top_short && cs.top_short.length ? DOWN : "#777") + ';font-weight:bold;font-size:12px;">前5弱势</div>';
+  html += (cs.top_short && cs.top_short.length) ? blocks(cs.top_short, "short")
+                                                : '<div style="color:#777;font-size:11px;">无数据</div>';
+  el.innerHTML = html;
+}
+
+function renderXsGrid(cs) {
+  // A4：横截面强弱热力图——按板块分组的全品种色块网格（红=偏强 / 绿=偏弱），
+  // 与上方 c-xs 排序柱状图互补：柱状看排序，网格看全貌。
+  var el = document.getElementById("c-xs-grid");
+  if (!el) return;
+  if (!cs || !cs.rows.length) {
+    el.innerHTML = '<div class="empty">暂无横截面数据：监控完成一轮分析后自动生成。</div>';
+    return;
+  }
+  var cats = [];
+  var byCat = {};
+  cs.rows.forEach(function (r) {
+    if (!byCat[r.cat]) { byCat[r.cat] = []; cats.push(r.cat); }
+    byCat[r.cat].push(r);
+  });
+  function tileBg(xs) {
+    // 无 xs 用灰色；按 |xs| 分层浓度（1.0/1.8/2.6 阈值，与 signedColor 同语义）
+    if (xs == null || !isFinite(xs)) return {bg: "#333", fg: "#bbb"};
+    var a = Math.min(0.95, 0.28 + Math.abs(xs) * 0.18);
+    return xs > 0 ? {bg: "rgba(239,107,107," + a + ")", fg: "#fff"}
+                  : {bg: "rgba(67,197,137," + a + ")", fg: "#fff"};
+  }
+  var html = "";
+  cats.forEach(function (cat) {
+    html += '<div style="margin:6px 0 2px;color:#8cf;font-weight:bold;font-size:12px;">' + cat + '</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
+    byCat[cat].forEach(function (r) {
+      var t = tileBg(r.xs);
+      var tip = r.name + " xs " + (r.xs != null ? r.xs.toFixed(2) : "--") +
+        "｜综合分 " + (r.score != null ? r.score.toFixed(1) : "--") +
+        "｜当日 " + pct(r.chg) + "｜" + r.label;
+      html += '<span title="' + tip.replace(/'/g, "&#39;") + '" style="display:inline-block;' +
+        'min-width:34px;padding:3px 7px;border-radius:4px;font-size:11px;text-align:center;' +
+        'cursor:default;background:' + t.bg + ';color:' + t.fg + ';">' + r.name + '</span>';
+    });
+    html += "</div>";
+  });
+  el.innerHTML = html;
 }
 
 function renderFactor(f) {
@@ -1943,6 +2284,286 @@ function renderCalib(rows, outs) {
       {name: "做多", type: "line", itemStyle: {color: UP}, data: outs.map(function (o) { return o.long_winrate == null ? null : +o.long_winrate.toFixed(4); })},
       {name: "做空", type: "line", itemStyle: {color: DOWN}, data: outs.map(function (o) { return o.short_winrate == null ? null : +o.short_winrate.toFixed(4); })}
     ]
+  });
+}
+
+function renderJykc(d) {
+  if (!d || !d.rows || !d.rows.length) {
+    empty("c-jykc", "暂无仓单数据：装置 daemon 采集交易可查仓单(wr)后自动出图（阶段D可视化）。");
+    document.getElementById("jykc-chips").innerHTML = "";
+    return;
+  }
+  var up = d.rows.filter(function (r) { return r.chge_rate > 0; }).length;
+  var chips = [
+    ["数据日", d.data_date || "--", ""], ["品种数", d.n + " 个", ""],
+    ["仓单增加", up + " 个", "down"], ["仓单减少", (d.n - up) + " 个", "up"]
+  ];
+  document.getElementById("jykc-chips").innerHTML = chips.map(function (t) {
+    return '<span class="chip ' + t[2] + '">' + t[0] + ' <b>' + t[1] + '</b></span>';
+  }).join("");
+  var names = d.rows.map(function (r) { return r.name; });
+  mk("c-jykc").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+      formatter: function (ps) {
+        var r = d.rows[ps[0].dataIndex];
+        var vol = r.total_vol == null ? "--" : r.total_vol.toLocaleString();
+        return r.name + "<br/>当日变动 " + (r.chge_rate > 0 ? "+" : "") + r.chge_rate + "%" +
+          "（" + (r.chge_rate > 0 ? "仓单增加·偏空" : "仓单减少·偏多") + "）<br/>仓单总量 " + vol;
+      }},
+    grid: baseGrid({left: 64, right: 40, top: 30}),
+    xAxis: {type: "value", name: "当日变动(%)",
+            axisLabel: {color: AXIS, formatter: function (v) { return v + "%"; }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: names, axisLabel: {color: AXIS, fontSize: 11},
+            axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "仓单当日变动", type: "bar", barWidth: 9,
+      data: d.rows.map(function (r) {
+        return {value: r.chge_rate, itemStyle: {color: r.chge_rate >= 0 ? UP : DOWN}};
+      }),
+      markLine: {silent: true, symbol: "none", lineStyle: {color: "#777", type: "dashed"},
+                 data: [{xAxis: 0}]}}]
+  });
+}
+
+function renderPcrVol(d) {
+  if (!d || !d.rows || !d.rows.length) {
+    empty("c-pcrvol", "暂无成交量PCR：tools/pcr_vol_collector.py（天勤+AKShare）按日入库后自动出图。");
+    document.getElementById("pcrvol-chips").innerHTML = "";
+    return;
+  }
+  var bull = d.rows.filter(function (r) { return r.pcr_vol < d.base; }).length;
+  var chips = [
+    ["数据日", d.trade_date || "--", ""], ["品种数", d.n + " 个", ""],
+    ["偏多(<1)", bull + " 个", "up"], ["偏空(>1)", (d.n - bull) + " 个", "down"]
+  ];
+  document.getElementById("pcrvol-chips").innerHTML = chips.map(function (t) {
+    return '<span class="chip ' + t[2] + '">' + t[0] + ' <b>' + t[1] + '</b></span>';
+  }).join("");
+  var syms = d.rows.map(function (r) { return r.sym; });
+  mk("c-pcrvol").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+      formatter: function (ps) {
+        var r = d.rows[ps[0].dataIndex];
+        var line = r.sym + " 成交量PCR <b>" + r.pcr_vol.toFixed(3) + "</b>";
+        line += r.pcr_vol >= d.base ? "（偏空）" : "（偏多）";
+        if (r.total_vol != null) line += "<br/>买卖期权总成交 " + r.total_vol.toLocaleString();
+        return line;
+      }},
+    grid: baseGrid({left: 46, right: 40, top: 30}),
+    xAxis: {type: "value", name: "成交量PCR",
+            axisLabel: {color: AXIS, formatter: function (v) { return v.toFixed(2); }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: syms, axisLabel: {color: AXIS, fontSize: 11},
+            axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "成交量PCR", type: "bar", barWidth: 7,
+      data: d.rows.map(function (r) {
+        return {value: r.pcr_vol, itemStyle: {color: r.pcr_vol >= d.base ? UP : DOWN}};
+      }),
+      markLine: {silent: true, symbol: "none", lineStyle: {color: "#aaa", type: "dashed"},
+                 label: {formatter: "中性1.0", color: "#aaa"},
+                 data: [{xAxis: d.base}]}}]
+  });
+}
+
+function renderSpreadBp(d) {
+  if (!d || !d.rows || !d.rows.length) {
+    empty("c-spreadbp", "暂无盘口价差：G14 一档盘口快照（orderbook_snapshot）积累样本（≥60）后自动出图。");
+    document.getElementById("spreadbp-chips").innerHTML = "";
+    return;
+  }
+  var min = d.rows[0], max = d.rows[d.rows.length - 1];
+  var chips = [
+    ["品种数", d.n + " 个", ""],
+    ["最流动", min.sym + " " + min.spread_bp_median + "bp", "up"],
+    ["最不流动", max.sym + " " + max.spread_bp_median + "bp", "down"]
+  ];
+  document.getElementById("spreadbp-chips").innerHTML = chips.map(function (t) {
+    return '<span class="chip ' + t[2] + '">' + t[0] + ' <b>' + t[1] + '</b></span>';
+  }).join("");
+  var syms = d.rows.map(function (r) { return r.sym; });
+  mk("c-spreadbp").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+      formatter: function (ps) {
+        var r = d.rows[ps[0].dataIndex];
+        return r.sym + "<br/>价差中位 <b>" + r.spread_bp_median + "bp</b>（均值 " + r.spread_bp_avg + "bp）" +
+          "<br/>样本 " + r.n + " 个";
+      }},
+    grid: baseGrid({left: 46, right: 40, top: 30}),
+    xAxis: {type: "value", name: "价差中位数(bp)",
+            axisLabel: {color: AXIS, formatter: function (v) { return v + "bp"; }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: syms, axisLabel: {color: AXIS, fontSize: 11},
+            axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "价差中位数", type: "bar", barWidth: 7,
+      data: d.rows.map(function (r) {
+        return {value: r.spread_bp_median,
+                itemStyle: {color: r.spread_bp_median <= 2 ? DOWN : (r.spread_bp_median <= 5 ? GOLD : UP)}};
+      })}]
+  });
+}
+
+function renderSignals(d) {
+  function _emptyAll() {
+    empty("c-sig-latest", "暂无信号：signals 表积累非中性信号后自动出图。");
+    empty("c-sig-trend", "暂无信号趋势数据。");
+  }
+  if (!d) { _emptyAll(); return; }
+  var L = d.latest || [], T = d.trend || [];
+  // ④d：最近一轮信号强度柱状（按 score 降序，红正绿负）
+  if (!L.length) { empty("c-sig-latest", "当轮无非中性信号。"); }
+  else {
+    var cats = L.map(function (r) { return r.variety; });
+    mk("c-sig-latest").setOption({
+      backgroundColor: BG,
+      tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+        formatter: function (ps) { var r = L[ps[0].dataIndex];
+          var d = r.direction > 0 ? "做多" : (r.direction < 0 ? "做空" : "观望");
+          return r.variety + "<br/>score <b>" + r.score.toFixed(2) + "</b>（" + d + "）<br/>" + r.label; }},
+      grid: baseGrid({left: 10, right: 30, top: 20}),
+      dataZoom: [{type: "inside"}, {type: "slider", height: 10, bottom: 2, textStyle: {color: AXIS}}],
+      xAxis: {type: "category", data: cats, axisLabel: {color: AXIS, fontSize: 10, rotate: 45, interval: 0},
+              axisLine: {lineStyle: {color: "#444"}}},
+      yAxis: Object.assign({type: "value"}, axisStyle("|score|")),
+      series: [{type: "bar", barWidth: 7,
+        data: L.map(function (r) {
+          return {value: Math.abs(r.score), itemStyle: {color: r.direction > 0 ? UP : (r.direction < 0 ? DOWN : NEUT)}};
+        }),
+        markLine: {silent: true, symbol: "none", lineStyle: {color: "#777", type: "dashed"},
+                   data: [{yAxis: 2, label: {formatter: "观望阈值", color: "#aaa"}}]}}]
+    });
+  }
+  // ④d2：近14天平均信号强度趋势（柱=信号条数，线=平均|score|）
+  if (!T.length) { empty("c-sig-trend", "暂无信号趋势（信号随监控积累）。"); }
+  else {
+    var trendCats = T.map(function (d) { return d.date.slice(5); });  // MM-DD
+    mk("c-sig-trend").setOption({
+      backgroundColor: BG, tooltip: {trigger: "axis"},
+      legend: {data: ["信号条数", "平均|score|"], textStyle: {color: AXIS}, top: 2},
+      grid: baseGrid({top: 36}),
+      xAxis: {type: "category", data: trendCats, axisLabel: {color: AXIS, interval: 0, rotate: 30, fontSize: 10},
+              axisLine: {lineStyle: {color: "#444"}}},
+      yAxis: [
+        Object.assign({type: "value", minInterval: 1}, axisStyle("条数")),
+        Object.assign({type: "value"}, axisStyle("|score|"))
+      ],
+      series: [
+        {name: "信号条数", type: "bar", itemStyle: {color: "rgba(126,203,255,0.35)"},
+         data: T.map(function (d) { return d.n; })},
+        {name: "平均|score|", yAxisIndex: 1, type: "line", symbolSize: 5, symbol: "circle",
+         itemStyle: {color: GOLD}, lineStyle: {color: GOLD, width: 1.3},
+         data: T.map(function (d) { return d.avg_abs; })}
+      ]
+    });
+  }
+}
+
+function renderRiskAgg(d) {
+  if (!d || !d.accounts || !d.accounts.length) {
+    empty("c-riskagg", "暂无风险聚合：纸面账户（PAPER_ENABLED）开启并撮合后自动出图。");
+    document.getElementById("riskagg-chips").innerHTML = "";
+    return;
+  }
+  var over = d.accounts.filter(function (a) { return a.risk_degree >= 0.7; }).length;
+  var chips = [
+    ["账户数", d.n_accounts + " 个", ""],
+    ["风险≥70%", over + " 个", over ? "down" : "up"],
+    ["最高风险", pct(d.accounts[0].risk_degree, 1), d.accounts[0].risk_degree >= 0.7 ? "down" : "up"]
+  ];
+  document.getElementById("riskagg-chips").innerHTML = chips.map(function (t) {
+    return '<span class="chip ' + t[2] + '">' + t[0] + ' <b>' + t[1] + '</b></span>';
+  }).join("");
+  var cats = d.accounts.map(function (a) { return a.name; });
+  mk("c-riskagg").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+      formatter: function (ps) {
+        var a = d.accounts[ps[0].dataIndex];
+        var line = a.name + "<br/>风险度 <b>" + pct(a.risk_degree, 1) + "</b>｜持仓 " + a.n_pos + " 个｜权益 " + wan(a.equity);
+        if (a.max_conc_sym) line += "<br/>最大集中 " + a.max_conc_sym + " " + pct(a.max_conc_pct);
+        else line += "<br/>无持仓";
+        return line;
+      }},
+    grid: baseGrid({left: 90, right: 40, top: 30}),
+    xAxis: {type: "value", name: "风险度", max: function (v) { return Math.max(v.max, 1.0); },
+            axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(0) + "%"; }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: cats, axisLabel: {color: AXIS, fontSize: 10},
+            axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "风险度", type: "bar", barWidth: 7,
+      data: d.accounts.map(function (a) {
+        return {value: a.risk_degree,
+                itemStyle: {color: a.risk_degree >= 0.7 ? UP : (a.risk_degree >= 0.4 ? GOLD : DOWN)}};
+      }),
+      markLine: {silent: true, symbol: "none", lineStyle: {color: UP, type: "dashed"},
+                 label: {formatter: "预警70%", color: UP},
+                 data: [{xAxis: 0.7}]}}]
+  });
+}
+
+function renderFundBasic(d) {
+  if (!d) {
+    var invEl = document.getElementById("c-fund-inv"), jhdEl = document.getElementById("c-fund-jhd");
+    if (invEl) empty("c-fund-inv", "暂无库存分位：基本面数据日频刷新后自动出图（fundamentals 表）。");
+    if (jhdEl) empty("c-fund-jhd", "暂无龙虎榜净多。");
+    document.getElementById("fund-inv-chips").innerHTML = "";
+    return;
+  }
+  var inv = d.inv || [], jhd = d.jhd || [];
+  // 库存分位卡片
+  if (!inv.length) {
+    empty("c-fund-inv", "该交易日无库存分位数据。");
+    document.getElementById("fund-inv-chips").innerHTML = "";
+  } else {
+    var high = inv.filter(function (r) { return r.pct >= 0.7; }).length;
+    var low = inv.filter(function (r) { return r.pct <= 0.3; }).length;
+    var chipHtml = [
+      ["数据日", d.trade_date, ""],
+      ["品种数", inv.length + " 个", ""],
+      ["高分位(≥70%)", high + " 个", high > 0 ? "down" : ""],
+      ["低分位(≤30%)", low + " 个", low > 0 ? "up" : ""]
+    ].map(function (t) {
+      return '<span class="chip ' + t[2] + '">' + t[0] + ' <b>' + t[1] + '</b></span>';
+    }).join("");
+    document.getElementById("fund-inv-chips").innerHTML = chipHtml;
+    var syms = inv.map(function (r) { return r.sym; });
+    mk("c-fund-inv").setOption({
+      backgroundColor: BG,
+      tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+        formatter: function (ps) { var r = inv[ps[0].dataIndex];
+          var wow = r.wow == null ? "--" : (r.wow >= 0 ? "+" : "") + (r.wow * 100).toFixed(1) + "%";
+          return r.sym + "<br/>库存分位 <b>" + (r.pct * 100).toFixed(1) + "%</b>（周环比 " + wow + "）"; }},
+      grid: baseGrid({left: 46, right: 36, top: 28}),
+      xAxis: {type: "value", name: "库存分位", max: 1.0,
+              axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(0) + "%"; }},
+              splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+      yAxis: {type: "category", data: syms, axisLabel: {color: AXIS, fontSize: 11},
+              axisLine: {lineStyle: {color: "#444"}}},
+      series: [{name: "分位", type: "bar", barWidth: 7,
+        data: inv.map(function (r) { return {value: r.pct, itemStyle: {color: r.pct >= 0.7 ? UP : (r.pct <= 0.3 ? DOWN : NEUT)}}; })}]
+    });
+  }
+  // 龙虎榜净多
+  if (!jhd.length) { empty("c-fund-jhd", "该交易日无龙虎榜数据。"); return; }
+  var syms2 = jhd.map(function (r) { return r.sym; });
+  mk("c-fund-jhd").setOption({
+    backgroundColor: BG,
+    tooltip: {trigger: "axis", axisPointer: {type: "shadow"},
+      formatter: function (ps) { var r = jhd[ps[0].dataIndex];
+        var delta = r.delta == null ? "--" : (r.delta >= 0 ? "+" : "") + (r.delta * 100).toFixed(1) + "%";
+        return r.sym + "<br/>净多 <b>" + (r.net * 100).toFixed(1) + "%</b>（变化 " + delta + "）"; }},
+    grid: baseGrid({left: 46, right: 36, top: 28}),
+    xAxis: {type: "value", name: "净多比",
+            axisLabel: {color: AXIS, formatter: function (v) { return (v * 100).toFixed(0) + "%"; }},
+            splitLine: {lineStyle: {color: SPLIT}}, axisLine: {lineStyle: {color: "#444"}}},
+    yAxis: {type: "category", data: syms2, axisLabel: {color: AXIS, fontSize: 11},
+            axisLine: {lineStyle: {color: "#444"}}},
+    series: [{name: "净多比", type: "bar", barWidth: 7,
+      data: jhd.map(function (r) { return {value: r.net, itemStyle: {color: r.net >= 0 ? UP : DOWN}}; }),
+      markLine: {silent: true, symbol: "none", lineStyle: {color: "#777", type: "dashed"},
+                 data: [{xAxis: 0}]}}]
   });
 }
 
@@ -2495,6 +3116,12 @@ function loadAndRender() {
     renderCross(D.cross_section);
     renderFactor(D.factor_ic);
     renderCalib(D.calibration, D.outcomes);
+    renderJykc(D.jykc);
+    renderPcrVol(D.pcr_vol);
+    renderSpreadBp(D.spread_bp);
+    renderSignals(D.signals);
+    renderRiskAgg(D.risk_agg);
+    renderFundBasic(D.fund_basic);
     renderPaper(D.paper);
     renderPaperMulti(D.paper_multi);
     renderTear(D.tear);
@@ -2511,6 +3138,7 @@ function loadAndRender() {
   sc.onerror = function () { sc.remove(); setGen(
     "未找到 chart_data.js（运行一轮监控后自动生成；各图先显示空态）");
     renderEquity(null); renderCross(null); renderFactor(null); renderCalib(null, null);
+    renderJykc(null); renderPcrVol(null); renderSpreadBp(null); renderSignals(null); renderRiskAgg(null); renderFundBasic(null);
     renderPaper(null); renderPaperMulti([]); renderTear(null); renderPnav(null); renderCreview(null); renderAttr(null);
     renderSpread(null); renderJournal(null); renderPrisk(null);
     renderWf(null); renderFh(null); renderShadow(null); };

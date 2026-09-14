@@ -438,6 +438,10 @@ except Exception:
     pass
 SINA_SERVER_URLS = _sina_ip_list or []
 SINA_SERVER_TIMEOUT = 20.0  # 单次服务器请求超时（秒）
+# ---- 第156轮 A3：云服务器健康度页签（看板"云服务器健康"页签） ----
+SERVER_HEALTH_FILE = os.path.join(BASE_DIR, "reports", "server_health.json")
+SERVER_HEALTH_INTERVAL = 300  # 健康探测线程周期（秒，5分钟）
+SERVER_HEALTH_TIMEOUT = 3.0  # 单台 /health 探测超时（秒，失败记离线）
 MINUTE_LOOP_INTERVAL = 300  # 交易时段常驻增量自采间隔（秒，5分钟，对齐1/5分钟bar）
 MINUTE_OFFPEAK_INTERVAL = 1800  # 非交易时段自采间隔（秒，30分钟；返回的仍是收盘bar，去重后不膨胀）
 MINUTE_BARS_RETENTION_DAYS = 400  # 分钟K保留天数（长期自采库，到期prune；sqlite可轻松承载）

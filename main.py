@@ -82,6 +82,7 @@ import paper_broker
 import paper_ticker
 import report
 import risk_gate
+import server_health
 import signal_calibrator
 import sina_news
 import storage
@@ -579,6 +580,7 @@ def startup_device_daemon():
 def close_device_daemon():
     """退出时联动关闭 main 拉起的装置 daemon（只杀自己拉起的实例；taskkill 树杀，
     装置被硬杀不执行其 finally 属预期——Legend/同花顺由 main 自己负责关闭）。"""
+    global _DEVICE_DAEMON_PID
     pid = _DEVICE_DAEMON_PID
     _DEVICE_DAEMON_PID = None
     if not pid:
@@ -1672,6 +1674,7 @@ def main():
         threading.Thread(target=minute_bars_loop, args=(state,), daemon=True).start()
     threading.Thread(target=watchdog_loop, args=(state,), daemon=True).start()
     threading.Thread(target=backup_loop, args=(state,), daemon=True).start()  # 第127轮：每日热备
+    threading.Thread(target=server_health.health_loop, args=(state,), daemon=True).start()  # 第156轮 A3：云服务器健康页签
     # 第103轮：纸面撮合独立 ticker 线程（交易时段每分钟撮合；--once/PAPER关闭/间隔0 均不启动，
     # 间隔0=完全回退 run_cycle 同步驱动=旧行为）
     if (

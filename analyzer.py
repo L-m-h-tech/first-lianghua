@@ -672,7 +672,7 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map, var_hist=None):
                 "rank": rank_map.get(key),
                 "basis": (state.fund_basis or {}).get(meta["sym"]),
                 # 第153轮 阶段D：交易可查(jykc)仓单快变量（jykc 按品种中文名 key）
-                "jykc": (state.fund_jykc or {}).get(meta["name"]),
+                "jykc": (state.fund_jykc or {}).get(key),
             }
             try:
                 fut_rows.append(

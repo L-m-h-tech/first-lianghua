@@ -139,6 +139,271 @@ def test_cross_section_payload_mapping():
     assert isinstance(p["rows"][0]["score"], float)
 
 
+# ---------------- 阶段D可视化：交易可查(jykc)仓单当日变动 ----------------
+
+class _JykcState:
+    def __init__(self, d):
+        self.fund_jykc = d
+
+
+def test_jykc_payload_empty_and_missing_safe():
+    assert charts.jykc_payload(None) is None
+    assert charts.jykc_payload(_JykcState(None)) is None
+    assert charts.jykc_payload(_JykcState({})) is None
+    # 全无效行（chge_rate 缺失/非法/NaN）-> None
+    bad = _JykcState({"螺纹": {"chge_rate": None}, "热卷": {"chge_rate": "abc"}, "豆粕": {}})
+    assert charts.jykc_payload(bad) is None
+
+
+def test_jykc_payload_mapping_and_sort():
+    d = {
+        "螺纹": {"total_vol": 12000, "total_chge": 1500, "chge_rate": 14.13, "data_date": "2026-09-13"},
+        "玉米": {"total_vol": 800, "total_chge": -200, "chge_rate": -20.0, "data_date": "2026-09-13"},
+        "豆粕": {"total_vol": None, "total_chge": 0, "chge_rate": 0.0, "data_date": "2026-09-13"},
+    }
+    p = charts.jykc_payload(_JykcState(d))
+    assert p is not None
+    assert p["data_date"] == "2026-09-13" and p["chg_unit"] == "%" and p["n"] == 3
+    # 按 chge_rate 升序（横向柱最大值落顶）：玉米(-20) -> 豆粕(0) -> 螺纹(+14.13)
+    assert [r["name"] for r in p["rows"]] == ["玉米", "豆粕", "螺纹"]
+    assert p["rows"][-1]["chge_rate"] == 14.13
+    # total_vol 容忍 None；chge_rate 已 round 成 float
+    assert p["rows"][1]["total_vol"] is None
+    assert isinstance(p["rows"][0]["chge_rate"], float)
+    json.dumps(p, ensure_ascii=False)  # JSON 安全
+
+
+def test_jykc_payload_build_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(tmp_path / "n.csv"))
+    st = _JykcState({"螺纹": {"total_vol": 100, "chge_rate": 1.5}})
+    p = charts.build_payload(st)
+    assert p["jykc"]["rows"][0]["name"] == "螺纹"
+    decoded = json.loads(charts.payload_to_js(p)[len("window.CHART_DATA = ") : -2])
+    assert decoded["jykc"]["rows"][0]["chge_rate"] == 1.5
+    # 无 state 时 jykc 块安全 None
+    empty = charts.build_payload(None)
+    assert empty["jykc"] is None
+    json.loads(charts.payload_to_js(empty)[len("window.CHART_DATA = ") : -2])
+
+
+# ---------------- A2：期权成交量PCR情绪图 ----------------
+
+class _PcrDb:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def pcr_vol_latest_per_sym(self):
+        return self._rows
+
+
+class _PcrState:
+    def __init__(self, db):
+        self.db = db
+
+
+def test_pcr_vol_payload_empty_and_missing_safe():
+    assert charts.pcr_vol_payload(None) is None
+    assert charts.pcr_vol_payload(_PcrState(object())) is None  # 无方法安全降级
+    assert charts.pcr_vol_payload(_PcrState(_PcrDb([]))) is None
+
+
+def test_pcr_vol_payload_mapping():
+    rows = [
+        {"sym": "RB", "trade_date": "2026-09-13", "pcr_vol": 0.62, "call_vol": 800, "put_vol": 500, "total_vol": 1300},
+        {"sym": "CU", "trade_date": "2026-09-13", "pcr_vol": 1.35, "call_vol": 400, "put_vol": 540, "total_vol": 940},
+        {"sym": "AU", "trade_date": "2026-09-13", "pcr_vol": 1.01, "call_vol": 100, "put_vol": 101, "total_vol": 201},
+    ]
+    p = charts.pcr_vol_payload(_PcrState(_PcrDb(rows)))
+    assert p is not None
+    assert p["trade_date"] == "2026-09-13" and p["base"] == 1.0 and p["n"] == 3
+    # 按 pcr_vol 升序：AU(1.01) -> CU(1.35) 末位为最高
+    assert [r["sym"] for r in p["rows"]] == ["RB", "AU", "CU"]
+    assert p["rows"][-1]["pcr_vol"] == 1.35
+    json.dumps(p, ensure_ascii=False)  # JSON 安全
+
+
+# ---------------- B6：盘口真实价差监控 ----------------
+
+
+class _SpreadDb:
+    def __init__(self, data):
+        self._data = data
+
+    def sym_spread_calibration(self):
+        return self._data
+
+
+class _SpreadState:
+    def __init__(self, db):
+        self.db = db
+
+
+def test_spread_bp_payload_empty_and_mapping():
+    assert charts.spread_bp_payload(None) is None
+    assert charts.spread_bp_payload(_SpreadState(_SpreadDb({}))) is None
+
+    cal = {
+        "AG": {"spread_bp_avg": 0.68, "spread_bp_median": 0.64, "n": 100, "asof": "2026-09-13"},
+        "I": {"spread_bp_avg": 6.79, "spread_bp_median": 6.82, "n": 80, "asof": "2026-09-13"},
+        "RB": {"spread_bp_avg": 1.20, "spread_bp_median": 1.15, "n": 90, "asof": "2026-09-13"},
+    }
+    p = charts.spread_bp_payload(_SpreadState(_SpreadDb(cal)))
+    assert p is not None and p["n"] == 3
+    assert [r["sym"] for r in p["rows"]] == ["AG", "RB", "I"]  # 按 median 升序
+    assert p["rows"][0]["spread_bp_median"] == 0.64
+    json.dumps(p, ensure_ascii=False)
+
+
+# ---------------- B7：信号强度时间序列 ----------------
+
+
+class _SignalsDb:
+    def __init__(self, latest, trend):
+        self._latest = latest
+        self._trend = trend
+
+    def signals_latest_round(self):
+        return self._latest
+
+    def signals_score_trend(self):
+        return self._trend
+
+
+class _SignalsState:
+    def __init__(self, db):
+        self.db = db
+
+
+def test_signals_payload_empty_and_mapping():
+    assert charts.signals_payload(None) is None
+    assert charts.signals_payload(_SignalsState(object())) is None  # 无方法安全降级
+    assert charts.signals_payload(_SignalsState(_SignalsDb([], []))) is None
+
+    latest = [
+        {"variety": "螺纹钢", "score": 7.5, "label": "强多", "direction": 1},
+        {"variety": "玉米", "score": -5.2, "label": "强空", "direction": -1},
+        {"variety": "沪金", "score": 2.1, "label": "轻多", "direction": 1},
+    ]
+    trend = [
+        {"date": "2026-09-01", "avg_abs": 3.1, "n": 12},
+        {"date": "2026-09-02", "avg_abs": 4.4, "n": 9},
+    ]
+    p = charts.signals_payload(_SignalsState(_SignalsDb(latest, trend)))
+    assert p is not None
+    assert len(p["latest"]) == 3 and len(p["trend"]) == 2
+    assert p["latest"][0]["score"] == 7.5 and p["trend"][1]["avg_abs"] == 4.4
+    json.dumps(p, ensure_ascii=False)
+
+
+# ---------------- B8：组合集中度/风险聚合总览 ----------------
+
+
+class _Broker:
+    def __init__(self, positions):
+        self._positions = positions
+
+    def positions_view(self):
+        return self._positions
+
+
+class _RiskState:
+    def __init__(self, papers, last_papers):
+        self.papers = papers
+        self.last_papers = last_papers
+
+
+def test_risk_agg_payload_empty_and_mapping():
+    assert charts.risk_agg_payload(None) is None
+    assert charts.risk_agg_payload(_RiskState({}, {})) is None
+
+    def snap(risk, equity, npos):
+        return {"snapshot": {"risk_degree": risk, "equity": equity, "n_positions": npos}}
+
+    papers = {
+        "10万_激进": _Broker([{"sym": "RB", "margin": 8000}, {"sym": "CU", "margin": 2000}]),
+        "10万_基准": _Broker([{"sym": "AU", "margin": 5000}]),
+        "5000_保守": _Broker([]),
+    }
+    lp = {
+        "10万_激进": snap(0.82, 120000, 2),
+        "10万_基准": snap(0.35, 110000, 1),
+        "5000_保守": snap(0.02, 4900, 0),
+    }
+    d = charts.risk_agg_payload(_RiskState(papers, lp))
+    assert d is not None and d["n_accounts"] == 3
+    assert [a["name"] for a in d["accounts"]] == ["10万_激进", "10万_基准", "5000_保守"]  # 风险降序
+    top = d["accounts"][0]
+    assert top["risk_degree"] == 0.82 and top["max_conc_sym"] == "RB"
+    assert abs(top["max_conc_pct"] - 0.8) < 1e-9  # 8000/10000
+    # 无持仓账户：集中字段空
+    assert d["accounts"][2]["max_conc_sym"] == ""
+    json.dumps(d, ensure_ascii=False)
+
+
+def test_risk_agg_payload_positions_exception_safe():
+    class Boom:
+        def positions_view(self):
+            raise RuntimeError("locked")
+
+    st = _RiskState(
+        {"A": Boom()},
+        {"A": {"snapshot": {"risk_degree": 0.1, "equity": 1000, "n_positions": 1}}},
+    )
+    d = charts.risk_agg_payload(st)
+    assert d is not None and d["accounts"][0]["max_conc_sym"] == ""
+    json.dumps(d, ensure_ascii=False)
+
+
+# ---------------- D14：基本面速览图形化 ----------------
+
+
+class _FundDb:
+    def __init__(self, data):
+        self._data = data
+
+    def fundamentals_latest_for_charts(self):
+        return self._data
+
+
+class _FundState:
+    def __init__(self, db):
+        self.db = db
+
+
+def test_fund_basic_payload_empty_and_mapping():
+    assert charts.fund_basic_payload(None) is None
+    assert charts.fund_basic_payload(_FundState(_FundDb({}))) is None
+
+    d = {
+        "trade_date": "2026-09-14",
+        "rows": [
+            {"sym": "RB", "inv_pct": 0.82, "inv_wow": 0.03, "jhd_net": 0.2, "jhd_delta": 0.01},
+            {"sym": "CU", "inv_pct": 0.15, "inv_wow": -0.05, "jhd_net": -0.1, "jhd_delta": -0.02},
+            {"sym": "AU", "inv_pct": None, "inv_wow": None, "jhd_net": 0.05, "jhd_delta": 0.0},
+            {"sym": "AG", "inv_pct": 0.5, "inv_wow": 0.0, "jhd_net": None, "jhd_delta": None},
+        ],
+    }
+    p = charts.fund_basic_payload(_FundState(_FundDb(d)))
+    assert p is not None and p["trade_date"] == "2026-09-14"
+    # 库存分位：AU 无库存被剔除，按分位降序 RB(0.82)->AG(0.5)->CU(0.15)
+    assert [r["sym"] for r in p["inv"]] == ["RB", "AG", "CU"]
+    # 龙虎榜：AG 无净多被剔除，按净多降序 RB(0.2)->AU(0.05)->CU(-0.1)
+    assert [r["sym"] for r in p["jhd"]] == ["RB", "AU", "CU"]
+    json.dumps(p, ensure_ascii=False)
+
+
+def test_pcr_vol_payload_build_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(charts.config, "PORTFOLIO_EQUITY_FILE", str(tmp_path / "n.csv"))
+    rows = [{"sym": "RB", "trade_date": "2026-09-13", "pcr_vol": 0.9, "call_vol": 100, "put_vol": 90, "total_vol": 190}]
+    st = _PcrState(_PcrDb(rows))
+    p = charts.build_payload(st)
+    assert p["pcr_vol"]["rows"][0]["sym"] == "RB"
+    decoded = json.loads(charts.payload_to_js(p)[len("window.CHART_DATA = ") : -2])
+    assert decoded["pcr_vol"]["rows"][0]["pcr_vol"] == 0.9
+    # 无 db 时安全 None
+    assert charts.build_payload(None)["pcr_vol"] is None
+
+
 # ---------------- 校准 / 分周期胜率 ----------------
 
 
@@ -350,6 +615,50 @@ def test_paper_payload_respects_cap():
     assert p["dt"][0] and p["dt"][-1]  # 首尾保留
 
 
+# ---------------- B5：纸面多账户并排净值曲线（papers_payload，26账户） ----------------
+
+
+class _PaperBroker:
+    def __init__(self, name, eq0, rows):
+        self.name = name
+        self.fill_mode = "next"
+        self.db = _PaperDB(rows)
+
+        class _Pf:
+            equity0 = eq0
+
+        self.pf = _Pf()
+
+
+class _PapersState:
+    def __init__(self, papers):
+        self.papers = papers
+
+
+def test_papers_payload_empty_and_multiple():
+    assert charts.papers_payload(None) == []
+    assert charts.papers_payload(_PapersState({})) == []
+
+    rows = _paper_rows(4)
+    st = _PapersState(
+        {
+            "10万_基准": _PaperBroker("10万_基准", 100_000, rows),
+            "1万_基准": _PaperBroker("1万_基准", 10_000, rows),
+            "5000_基准": _PaperBroker("5000_基准", 5_000, rows),
+        }
+    )
+    out = charts.papers_payload(st)
+    assert len(out) == 3
+    # 每账户归一化首快照=1.0、同源曲线同长度、资金档颜色分配
+    for s in out:
+        assert abs(s["norm"][0] - 1.0) < 1e-12
+        assert len(s["equity"]) == len(s["dt"]) == len(s["norm"])
+        assert s["color"]
+    # 不同资金档颜色不同（tier 色系区分）
+    assert out[0]["color"] != out[1]["color"]
+    json.dumps(out, ensure_ascii=False)
+
+
 # ---------------- 汇总 / JS / 落盘 ----------------
 
 
@@ -494,6 +803,14 @@ CHART_IDS = (
     "c-mono",
     "c-cal",
     "c-out",
+    "c-jykc",
+    "c-pcrvol",
+    "c-spreadbp",
+    "c-sig-latest",
+    "c-sig-trend",
+    "c-riskagg",
+    "c-fund-inv",
+    "c-fund-jhd",
     "c-paper",
     "c-paper-dd",
     "c-paper-risk",
@@ -548,12 +865,16 @@ def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
 
     monkeypatch.setattr(report.config, "PAPER_ENABLED", True)  # 启用态下纸面页签才渲染
     h = report._dashboard_html()
-    # 外层看板只引一次本地 echarts、只含一个面板容器，12 个图直接内嵌
-    assert h.count('src="assets/echarts.min.js"') == 1
+    # D15：ECharts 懒加载——实时看板不再急切引 echarts.min.js，改由 ensureEcharts 首次激活图表页签时注入
+    assert 'src="assets/echarts.min.js"' not in h
+    assert "ensureEcharts" in h
     assert 'id="charts-panel"' in h
     assert "window.ChartPanel" in h and "(function () {" in h
     for cid in CHART_IDS:
         assert 'id="%s"' % cid in h
+    # A4：横截面强弱热力图容器（HTML 色块网格，非 ECharts 容器）
+    assert 'id="c-xs-grid"' in h
+    assert "强弱热力图" in h
     # 图表页签为内嵌标记，不再 iframe 套独立页
     assert 'data-src="__charts__"' in h
     assert 'data-src="图表看板.html"' not in h
@@ -570,7 +891,7 @@ def test_realtime_dashboard_embeds_charts_panel(monkeypatch):
     # 占位符必须全部被真实片段替换
     assert "/*__CP_" not in h
     # 初始仍停在第一个文本页签，面板默认隐藏、懒加载
-    assert '<iframe id="view" src="latest_report.txt"></iframe>' in h
+    assert 'iframe id="view" src="latest_report.txt"' in h
     assert "#charts-panel { display: none;" in h
 
 
