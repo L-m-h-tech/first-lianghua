@@ -305,7 +305,8 @@ def _restart_ths():
 
 def ensure_running():
     """确保期货通以调试模式在运行：先确保调试配置；未运行则拉起并等待；
-    已运行但无 DevTools 调试窗口则自动重启（应用调试开关）；已带调试窗口直接返回True。"""
+    已运行但无 DevTools 调试窗口则自动重启（应用调试开关）；已带调试窗口直接返回True。
+    第150轮：增加启动失败重试（最多 THS_LAUNCH_RETRIES 次、间隔5秒），提高偶发打不开的容错。"""
     ensure_debug_mode()
     if find_ths_windows():
         if find_debug_window():
@@ -314,8 +315,18 @@ def ensure_running():
             LOG.info("检测到同花顺期货通已运行但无调试(DevTools)窗口，自动重启以应用调试模式...")
             if _restart_ths() and _wait_for_ready():
                 return True
-            return True  # 重启失败/窗口未现也保持现状，不阻断主程序
-        return True
-    if launch_ths():
-        return _wait_for_ready()
+        return True  # 重启失败/窗口未现也保持现状，不阻断主程序
+    # 首次启动 + 失败重试（_launched_once 需在重试前重置，否则 launch_ths 直接跳过）
+    retries = getattr(config, "THS_LAUNCH_RETRIES", 3)
+    for attempt in range(1, retries + 1):
+        global _launched_once
+        _launched_once = False  # 本轮尝试可启动
+        if launch_ths() and _wait_for_ready():
+            return True
+        if attempt < retries:
+            LOG.warning(
+                "同花顺启动/就绪失败（第%d/%d次），5秒后重试...", attempt, retries
+            )
+            time.sleep(5)
+    LOG.warning("同花顺启动失败（已重试%d次）", retries)
     return False

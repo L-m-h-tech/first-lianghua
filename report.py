@@ -985,7 +985,8 @@ def _paper_compare_html():
         '<tr><th>账户</th><th class="th-num">权益</th><th class="th-num">收益率</th>'
         '<th class="th-num">最大回撤</th><th class="th-num">风险度</th>'
         '<th class="th-num">期/权持仓</th><th class="th-num">已实现</th>'
-        '<th class="th-num">手续费</th><th>可交易性</th><th>详情</th></tr>'
+        '<th class="th-num">手续费</th><th class="th-num">近60日夏普</th><th class="th-num">近60日回撤</th>'
+        '<th>可交易性</th><th>详情</th></tr>'
     )
     style_order = {"激进": 0, "基准": 1, "保守": 2, "赌徒": 3}
     for eq0k in tier_order:
@@ -995,7 +996,7 @@ def _paper_compare_html():
         grp.sort(key=lambda r: style_order.get(r.get("style"), 9))
         parts.append(
             f'<tr class="tier-row" style="background:#1f1f1f;font-weight:bold;color:#7ecbff;">'
-            f'<td colspan="10">{tier_label.get(eq0k, str(eq0k))}（初始 {eq0k:,.0f} 元）</td></tr>'
+            f'<td colspan="12">{tier_label.get(eq0k, str(eq0k))}（初始 {eq0k:,.0f} 元）</td></tr>'
         )
         # 第111轮续：档位聚合查看——该档全部账户的成交/挂单明细合并（各账户各保留 50 条，按时间合并排序）
         _agg_trades, _agg_orders = [], []
@@ -1057,7 +1058,7 @@ def _paper_compare_html():
             _agg_html += "</table>"
         if _agg_html:
             parts.append(
-                f'<tr class="tier-agg"><td colspan="10">'
+                f'<tr class="tier-agg"><td colspan="12">'
                 f'<details class="dd"><summary>查看该档成交/挂单聚合（成交 {len(_agg_trades)} 笔 · 挂单 {len(_agg_orders)} 条）</summary>'
                 f"{_agg_html}</details></td></tr>"
             )
@@ -1110,6 +1111,10 @@ def _paper_compare_html():
                 f'<td class="num">{r.get("n_fut_pos") or 0} / {r.get("n_opt_pos") or 0}</td>'
                 f'<td class="num">{r.get("realized") or 0:,.0f}</td>'
                 f'<td class="num">{r.get("fees") or 0:,.0f}</td>'
+                # 第150轮：近60日滚动夏普/回撤（策略衰减直观信号；None=样本不足诚实缺项）
+                f'<td class="num {"neg" if (r.get("roll_sharpe_60") or 0) < 0 else "pos"}">'
+                f'{r.get("roll_sharpe_60") if r.get("roll_sharpe_60") is not None else "--"}</td>'
+                f'<td class="num">{_pct(r.get("roll_maxdd_60")) if r.get("roll_maxdd_60") is not None else "--"}</td>'
                 f'<td class="wrap">{aff_html}</td>'
                 f"<td>{dd}</td>"
                 f"</tr>"
@@ -2338,6 +2343,11 @@ def write_paper_account(state):
                     "avg_loss": perf.get("avg_loss"),
                     "pl_ratio": perf.get("pl_ratio"),
                     "avg_risk": perf.get("avg_risk"),
+                    # 第150轮：滚动绩效（策略衰减直观信号，perf 来自 Portfolio.performance）
+                    "roll_sharpe_20": perf.get("roll_sharpe_20"),
+                    "roll_sharpe_60": perf.get("roll_sharpe_60"),
+                    "roll_maxdd_20": perf.get("roll_maxdd_20"),
+                    "roll_maxdd_60": perf.get("roll_maxdd_60"),
                     # 第111轮：执纪/风控与委托状态计数
                     "n_liquidations": a.get("n_liquidations", 0),
                     "n_skipped": a.get("n_skipped", 0),
