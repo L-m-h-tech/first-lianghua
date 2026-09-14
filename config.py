@@ -377,6 +377,8 @@ FUND_CARRY_WEIGHT = (
     0.20  # 期限结构carry子权重（Back近高远低=现货紧=偏多，零新增请求，复用第11轮term）
 )
 FUND_BASIS_WEIGHT = 0.10  # 基差子权重（现货升水偏多；生意社反爬缺失时自动按可得子项归一化）
+FUND_JYKC_WEIGHT = 0.10  # 第153轮 阶段D：交易可查(jykc)仓单因子子权重（当日仓单变动率，快变量补东财慢分位）
+FUND_JYKC_K = 0.05  # jykc 仓单变动率 tanh 灵敏度（当日仓单 ±5% 变动即接近饱和）
 FUND_INV_MIN_SAMPLES = 15  # 库存时序最少样本数，不足不给库存分（东财免费窗口约3个月，宁缺毋滥）
 FUND_INV_WOW_DAYS = 5  # 库存周环比间隔（约5个交易日）
 FUND_INV_WOW_K = 0.10  # 库存周环比 tanh 灵敏度（10%的周变化即接近饱和）

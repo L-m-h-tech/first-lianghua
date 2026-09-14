@@ -854,6 +854,53 @@ class MonitorDB:
                 continue
         return out
 
+    # ---------------- 第153轮 阶段D：交易可查(jykc)仓单读取（装置 device_jykc 表） ----------------
+
+    def latest_jykc_wr(self, as_of_date=None):
+        """读取 device_jykc 表最新一天的仓单(wr)数据 → {品种名: {total_vol, total_chge, chge_rate, data_date}}。
+
+        as_of_date: 指定数据日（'YYYY-MM-DD'）；None 取最新一天。
+        jykc 的 chge_rate 单位为百分数（如 14.13 = 当日仓单 +14.13%），消费端转小数。
+        装置 daemon 常驻写入（cycle 每10秒 / daemon 每30分钟），表主键 (item_type, code, data_date)。"""
+        import json as _json_mod
+
+        with self.lock:
+            if as_of_date:
+                row = self.conn.execute(
+                    "SELECT data_date FROM device_jykc WHERE item_type='wr' AND data_date=? LIMIT 1",
+                    (str(as_of_date)[:10],),
+                ).fetchone()
+                if not row:
+                    return {}
+                d = str(as_of_date)[:10]
+            else:
+                row = self.conn.execute(
+                    "SELECT MAX(data_date) AS d FROM device_jykc WHERE item_type='wr'"
+                ).fetchone()
+                if not row or not row["d"]:
+                    return {}
+                d = row["d"]
+            rows = self.conn.execute(
+                "SELECT variety, value_json FROM device_jykc WHERE item_type='wr' AND data_date=?",
+                (d,),
+            ).fetchall()
+        out = {}
+        for r in rows:
+            try:
+                v = _json_mod.loads(r["value_json"])
+            except Exception:
+                continue
+            name = (r["variety"] or "").strip()
+            if not name:
+                continue
+            out[name] = {
+                "total_vol": v.get("total_vol"),
+                "total_chge": v.get("total_chge"),
+                "chge_rate": v.get("chge_rate"),
+                "data_date": d,
+            }
+        return out
+
     # ---------------- 写入/读取：分钟K线（第14轮 WP-D0 常驻自采库） ----------------
 
     def insert_minute_bars(self, bars):

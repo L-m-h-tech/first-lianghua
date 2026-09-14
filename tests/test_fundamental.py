@@ -135,3 +135,52 @@ def test_build_fundamental_as_of_uses_max_across_subs():
     basis = ff.basis_factor(0.05)
     out = ff.build_fundamental(inv=inv, rank=rank, basis=basis)
     assert out["as_of"] == "2026-09-10"
+
+
+# ---------------- 第153轮 阶段D：jykc 仓单因子 ----------------
+def test_jykc_factor_sign_direction():
+    """仓单增=偏空（负分），仓单减=偏多（正分），None/非法=返回 None。"""
+    import fundamental_factors as ff
+
+    up = ff.jykc_factor(14.13)   # 仓单+14.13% → 强偏空
+    assert up is not None and up[0] < 0
+    assert up[1]["chge_rate"] == 0.1413  # 百分数转小数
+    down = ff.jykc_factor(-4.2)  # 仓单-4.2% → 偏多
+    assert down is not None and down[0] > 0
+    assert ff.jykc_factor(None) is None
+    assert ff.jykc_factor("abc") is None
+
+
+def test_jykc_factor_build_fundamental_integration():
+    """build_fundamental 加入 jykc 第5子项（缺其他子项时单独可用）。"""
+    import fundamental_factors as ff
+
+    jk = ff.jykc_factor(-4.2)   # 偏多
+    pack = ff.build_fundamental(inv=None, rank=None, carry=None, basis=None, jykc=jk)
+    assert pack is not None
+    assert "jykc仓单" in pack["parts"]
+    assert pack["parts"]["jykc仓单"] > 0
+    assert "jykc仓单当日" in pack["note"]
+    # 全缺仍返回 None
+    assert ff.build_fundamental(inv=None, rank=None, carry=None, basis=None, jykc=None) is None
+
+
+def test_jykc_factor_weighted_with_inv():
+    """inv + jykc 组合：缺项归一，两者都参与加权。"""
+    import fundamental_factors as ff
+
+    inv_series = [{"date": f"2026-09-0{i}", "stock": 100 - i, "chg": -1} for i in range(1, 17)]
+    inv_f = ff.inventory_factor(inv_series)
+    assert inv_f is not None
+    jk = ff.jykc_factor(14.13)  # 偏空（仓单增）
+    pack = ff.build_fundamental(inv=inv_f, rank=None, carry=None, basis=None, jykc=jk)
+    assert pack is not None
+    assert "库存仓单" in pack["parts"] and "jykc仓单" in pack["parts"]
+    # 权重和=1（inv 0.40 + jykc 0.10 都可得 → 归一 0.50 起算）
+    import config as cfg
+
+    wsum = cfg.FUND_INV_WEIGHT + cfg.FUND_JYKC_WEIGHT
+    expected_raw = (
+        cfg.FUND_INV_WEIGHT * ff._clamp(inv_f[0]) + cfg.FUND_JYKC_WEIGHT * ff._clamp(jk[0])
+    ) / wsum
+    assert abs(pack["raw"] - expected_raw) < 1e-6

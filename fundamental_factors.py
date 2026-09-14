@@ -113,10 +113,30 @@ def basis_factor(basis_rate):
     return _tanh(basis_rate, 1.0 / config.FUND_BASIS_K), {"basis_rate": basis_rate}
 
 
-def build_fundamental(inv=None, rank=None, carry=None, basis=None):
+def jykc_factor(chge_rate):
+    """第153轮 阶段D：交易可查(jykc)仓单因子（当日仓单变动率，快变量）。
+
+    chge_rate: 当日仓单变动率（**jykc 源单位为百分数**，如 14.13 = 当日仓单 +14.13%）。
+    仓单增加=可交割货源增加=偏空（与东财库存分位方向一致：累库偏空）；负值=仓单注销=偏多。
+    返回 (score∈[-1,1], detail) 或 None（无效值）。"""
+    if chge_rate is None:
+        return None
+    try:
+        chg_pct = float(chge_rate)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(chg_pct):
+        return None
+    chg = chg_pct / 100.0  # jykc 源为百分数，转小数
+    # 仓单增 → 负分偏空；仓单减 → 正分偏多
+    score = -_tanh(chg, 1.0 / config.FUND_JYKC_K)
+    return score, {"chge_rate": round(chg, 4)}
+
+
+def build_fundamental(inv=None, rank=None, carry=None, basis=None, jykc=None):
     """把各子因子按 config 权重加权（缺失子项的权重按可得项重新归一化），产出基本面因子包。
 
-    各入参为 inventory_factor/rank_factor/carry_factor/basis_factor 的 (score, detail) 结果或 None。
+    各入参为 inventory_factor/rank_factor/carry_factor/basis_factor/jykc_factor 的 (score, detail) 结果或 None。
     返回:
       None（四个子项全缺）或
       {"score":贡献分(带正负, 已乘FUND_MAX_SCORE), "parts":{子项:裸分}, "sub":明细, "note":紧凑文本}
@@ -126,6 +146,7 @@ def build_fundamental(inv=None, rank=None, carry=None, basis=None):
         ("龙虎榜", config.FUND_RANK_WEIGHT, rank),
         ("期限carry", config.FUND_CARRY_WEIGHT, carry),
         ("基差", config.FUND_BASIS_WEIGHT, basis),
+        ("jykc仓单", config.FUND_JYKC_WEIGHT, jykc),
     ]
     avail = [(name, w, r) for name, w, r in items if r is not None]
     if not avail:
@@ -164,12 +185,15 @@ def build_fundamental(inv=None, rank=None, carry=None, basis=None):
     bs = sub.get("基差")
     if bs:
         seg.append(f"基差率{bs['basis_rate'] * 100:+.1f}%")
+    jk = sub.get("jykc仓单")
+    if jk:
+        seg.append(f"jykc仓单当日{jk['chge_rate'] * 100:+.1f}%")
     tone = "偏多" if raw > 0.12 else ("偏空" if raw < -0.12 else "中性")
     note = f"基本面{tone}(综合{score:+.2f})：" + "；".join(seg)
     # 第145轮 #9 PIT对齐：数据日 as_of = 各子项中最晚的数据日期（库存/龙虎/基差各自带 date/last_date）；
     # 无任何子项带日期（纯 carry 或纯数值）时 as_of=None——消费端回退采集日。
     dates = []
-    for nm in ("库存仓单", "龙虎榜", "基差", "期限carry"):
+    for nm in ("库存仓单", "龙虎榜", "基差", "期限carry", "jykc仓单"):
         d = (sub.get(nm) or {}).get("date") or (sub.get(nm) or {}).get("last_date")
         if d:
             dates.append(str(d)[:10])

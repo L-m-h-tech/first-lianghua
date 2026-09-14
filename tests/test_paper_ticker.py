@@ -258,6 +258,7 @@ def _full_state(prio="futures_first"):
     st.breader = _MockObj(page_info=lambda key: None)
     st.fund_inv = {}
     st.fund_basis = None
+    st.fund_jykc = {}  # 第153轮 阶段D：交易可查仓单
     st.fetcher = _MockObj(em_code=lambda sym: "", rank_totals=lambda *a: None)
     # 账户表（给 tick_once 用，parity 本身不需要）
     b = make_broker(fill="close", priority=prio)

@@ -351,3 +351,60 @@ def test_fundamentals_asof_returns_correct_pit_data(tmp_path):
     # PIT：目标在数据之前 → 空
     pit_07 = db.fundamentals_asof("2026-09-07")
     assert pit_07 == {}
+
+
+# ---------------- 第153轮 阶段D：latest_jykc_wr 读取 ----------------
+def test_latest_jykc_wr_reads_latest_day(tmp_path):
+    """latest_jykc_wr 读取 device_jykc 表最新一天 wr 数据。"""
+    import json
+
+    from storage import MonitorDB
+
+    db = MonitorDB(str(tmp_path / "jykc.db"))
+    db.conn.execute(
+        """CREATE TABLE IF NOT EXISTS device_jykc(
+            item_type TEXT NOT NULL, code TEXT NOT NULL, variety TEXT,
+            data_date TEXT NOT NULL, value_json TEXT, source TEXT, updated_real REAL,
+            PRIMARY KEY(item_type, code, data_date))"""
+    )
+    db.conn.execute(
+        """INSERT OR REPLACE INTO device_jykc(item_type,code,variety,data_date,value_json,source)
+           VALUES('wr','螺纹钢','螺纹钢','2026-09-13',?,'jiaoyikecha')""",
+        (json.dumps({"total_vol": 100.0, "total_chge": 5.0, "chge_rate": 5.0}),),
+    )
+    db.conn.execute(
+        """INSERT OR REPLACE INTO device_jykc(item_type,code,variety,data_date,value_json,source)
+           VALUES('wr','螺纹钢','螺纹钢','2026-09-14',?,'jiaoyikecha')""",
+        (json.dumps({"total_vol": 105.0, "total_chge": 5.0, "chge_rate": 5.0}),),
+    )
+    db.conn.commit()
+    wr = db.latest_jykc_wr()
+    assert "螺纹钢" in wr
+    assert wr["螺纹钢"]["data_date"] == "2026-09-14"  # 取最新一天
+    assert wr["螺纹钢"]["total_vol"] == 105.0
+
+
+def test_latest_jykc_wr_asof_date(tmp_path):
+    """as_of_date 指定数据日时取该日（PIT 对齐支持）。"""
+    import json
+
+    from storage import MonitorDB
+
+    db = MonitorDB(str(tmp_path / "jykc2.db"))
+    db.conn.execute(
+        """CREATE TABLE IF NOT EXISTS device_jykc(
+            item_type TEXT NOT NULL, code TEXT NOT NULL, variety TEXT,
+            data_date TEXT NOT NULL, value_json TEXT, source TEXT, updated_real REAL,
+            PRIMARY KEY(item_type, code, data_date))"""
+    )
+    db.conn.execute(
+        """INSERT OR REPLACE INTO device_jykc(item_type,code,variety,data_date,value_json,source)
+           VALUES('wr','PTA','PTA','2026-09-13',?,'jiaoyikecha')""",
+        (json.dumps({"total_vol": 10.0, "total_chge": -1.0, "chge_rate": -9.09}),),
+    )
+    db.conn.commit()
+    wr = db.latest_jykc_wr(as_of_date="2026-09-13")
+    assert wr["PTA"]["chge_rate"] == -9.09
+    assert wr["PTA"]["data_date"] == "2026-09-13"
+    # 无该日数据返回空
+    assert db.latest_jykc_wr(as_of_date="2026-09-10") == {}

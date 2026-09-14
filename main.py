@@ -237,6 +237,7 @@ class State:
         self.fetcher = fundamental_data.FundamentalFetcher()
         self.fund_inv = {}  # sym大写 -> 库存/仓单时序（日频）
         self.fund_basis = None  # 生意社全市场基差表 {sym: 基差率}，反爬时为None
+        self.fund_jykc = {}  # 第153轮 阶段D：交易可查仓单 {品种名(中文): {total_vol,chge_rate}}
         self.fund_day = ""  # 最近一次完成日频刷新的自然日
         # 分钟K：新浪主连全周期(含1m)唯一采集器（第118轮：删除东财/通达信分钟K源，常驻自采落 minute_bars 表）
         self.minute_collector = intraday_bars.MinuteCollector()
@@ -374,6 +375,12 @@ def refresh_fundamentals(state, force=False):
             series = list(ex.map(state.fetcher.inventory_series, syms))
         state.fund_inv = {sym: ser for sym, ser in zip(syms, series, strict=False) if ser}
         state.fund_basis = state.fetcher.basis_table()
+        # 第153轮 阶段D：交易可查(jykc)仓单快变量（装置 daemon 写入 device_jykc 表，wr 类型）
+        try:
+            jykc_wr = state.db.latest_jykc_wr()
+            state.fund_jykc = jykc_wr
+        except Exception:
+            state.fund_jykc = {}
         state.fund_day = today
         nb = (
             "反爬不可用(已降级,由carry/库存/龙虎榜补位)"

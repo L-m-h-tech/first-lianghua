@@ -145,11 +145,17 @@ def analyze_variety(
     inv_in = (fund_raw or {}).get("inv")
     rank_in = (fund_raw or {}).get("rank")
     basis_in = (fund_raw or {}).get("basis")
+    jykc_in = (fund_raw or {}).get("jykc")
     inv_f = fundamental_factors.inventory_factor(inv_in) if inv_in else None
     rank_f = fundamental_factors.rank_factor(*rank_in) if rank_in else None
     carry_f = fundamental_factors.carry_factor(term)
     basis_f = fundamental_factors.basis_factor(basis_in) if basis_in is not None else None
-    fund_pack = fundamental_factors.build_fundamental(inv_f, rank_f, carry_f, basis_f)
+    jykc_f = (
+        fundamental_factors.jykc_factor(jykc_in.get("chge_rate"))
+        if jykc_in and jykc_in.get("chge_rate") is not None
+        else None
+    )
+    fund_pack = fundamental_factors.build_fundamental(inv_f, rank_f, carry_f, basis_f, jykc_f)
     if fund_pack and abs(fund_pack["score"]) > 0.01:
         parts["基本面"] = fund_pack["score"]
 
@@ -665,6 +671,8 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map, var_hist=None):
                 "inv": state.fund_inv.get(meta["sym"]),
                 "rank": rank_map.get(key),
                 "basis": (state.fund_basis or {}).get(meta["sym"]),
+                # 第153轮 阶段D：交易可查(jykc)仓单快变量（jykc 按品种中文名 key）
+                "jykc": (state.fund_jykc or {}).get(meta["name"]),
             }
             try:
                 fut_rows.append(
