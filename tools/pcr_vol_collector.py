@@ -527,7 +527,8 @@ def run(
         finally:
             api.close()
     sina_rows = list(sina_covered.values())
-    n = write_rows(monitor_db, sina_rows + list(ak_covered.values()) + tq_rows)
+    ak_rows = list(ak_covered.values())
+    n = write_rows(monitor_db, sina_rows + ak_rows + tq_rows)
     return {
         "written": n,
         "mode": mode,
@@ -538,6 +539,7 @@ def run(
         "ok_syms": len(expiries) - len(errors),
         "errors": errors,
         "dates": dates,
+        "rows": sina_rows + ak_rows + tq_rows,
     }
 
 
@@ -707,7 +709,7 @@ def main(argv=None):
         return selftest()
     syms = set(s.strip().upper() for s in args.syms.split(",") if s.strip()) or None
     res = run(backfill=args.backfill, syms=syms, limit=args.limit, mode=args.mode)
-    res.pop("rows")
+    res.pop("rows", None)
     res["generated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(render(res))
     return 0

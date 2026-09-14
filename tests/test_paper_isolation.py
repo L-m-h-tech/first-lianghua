@@ -76,11 +76,10 @@ class PaperIsolationTest(unittest.TestCase):
         直接检查 analyzer 模块的默认参数绑定行为：用真实函数签名中的默认值分支逻辑
         （var_hist is None → 用 state.var_hist），通过刺探 _tick_momentum 的输入确认。
         """
-        import analyzer as _an
-
         # 真实入口的默认值分支：不传 var_hist → 读 state.var_hist
-
         import inspect
+
+        import analyzer as _an
 
         sig = inspect.signature(_an.analyze_all_varieties)
         self.assertIsNone(sig.parameters["var_hist"].default)
