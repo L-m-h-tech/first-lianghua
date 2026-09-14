@@ -343,7 +343,7 @@ def test_tick_once_reprice_drives_on_cycle(monkeypatch):
     st, meta = _full_state(prio="futures_first")
     called = []
 
-    def _fake_analyze(state, watchlist, quotes, flow_map):
+    def _fake_analyze(state, watchlist, quotes, flow_map, var_hist=None):
         called.append(len(watchlist))
         return [row("RB", score=_FULL_SCORE)]  # score=5.0 ≥ entry 4.0
 

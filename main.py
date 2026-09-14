@@ -110,8 +110,12 @@ class State:
         self.klines = futures_data.KlineCache()  # 日线指标缓存
         self.contracts = contracts.ContractCache()  # 主力合约月份缓存
         self.opt_chains = option_chain.OptionChainCache()  # 第11轮：期权完整T链/PCR缓存
-        self.var_hist = {}  # 各品种盘中价格序列
-        self.flow_tracker = flow_tracker.FlowTracker()  # 成交量/持仓量资金流因子
+        self.var_hist = {}  # 各品种盘中价格序列（主报告口径）
+        self.flow_tracker = flow_tracker.FlowTracker()  # 成交量/持仓量资金流因子（主报告口径）
+        # 第152轮：纸面独立 var_hist/flow_tracker——paper_ticker 每分钟写入独立实例，
+        # 不再污染主报告 `_tick_momentum` 与 flow 因子的轮距口径（主报告仍用上面两个）。
+        self.paper_var_hist = {}
+        self.paper_flow_tracker = flow_tracker.FlowTracker()
         self.db = storage.MonitorDB()  # SQLite 结构化落库与信号效果追踪
         self.alerts = alerts.AlertManager()  # 声音/Webhook 主动告警
         self.watchlist = universe  # [(品种名, meta)] 即分析范围

@@ -26,6 +26,7 @@ import contracts
 import iv_surface
 import option_analyzer
 import option_strategies
+from flow_tracker import FlowTracker
 
 
 def paper_analyze(state, quotes, watchlist=None):
@@ -46,15 +47,25 @@ def paper_analyze(state, quotes, watchlist=None):
 
     # 1. 期货综合分（与主报告同一评分路径；内部只读共享缓存）
     now_ts = time.time()
+    # 第152轮：写入独立 var_hist/flow_tracker——ticker 每分钟的追加/快照只进
+    # state.paper_var_hist / state.paper_flow_tracker，不再污染主报告口径。
+    pv_hist = getattr(state, "paper_var_hist", None)
+    if pv_hist is None:
+        pv_hist = {}
+        state.paper_var_hist = pv_hist
+    pv_flow = getattr(state, "paper_flow_tracker", None)
+    if pv_flow is None:
+        pv_flow = FlowTracker()
+        state.paper_flow_tracker = pv_flow
     try:
         for key, meta in watchlist:
             q = quotes.get(meta["code"])
             if q and q.get("latest"):
-                state.var_hist.setdefault(key, deque(maxlen=240)).append((now_ts, q["latest"]))
-        flow_map = (
-            state.flow_tracker.update(quotes, now_ts) if hasattr(state, "flow_tracker") else {}
+                pv_hist.setdefault(key, deque(maxlen=240)).append((now_ts, q["latest"]))
+        flow_map = pv_flow.update(quotes, now_ts)
+        fut_rows = analyzer.analyze_all_varieties(
+            state, watchlist, quotes, flow_map, var_hist=pv_hist
         )
-        fut_rows = analyzer.analyze_all_varieties(state, watchlist, quotes, flow_map)
     except Exception:
         fut_rows = []
     if not fut_rows:

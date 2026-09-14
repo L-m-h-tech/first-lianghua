@@ -598,7 +598,7 @@ def _tick_momentum(hist):
     return clip(m, -1.5, 1.5)
 
 
-def analyze_all_varieties(state, watchlist, quotes, flow_map):
+def analyze_all_varieties(state, watchlist, quotes, flow_map, var_hist=None):
     """共享全品种分析：逐品种综合分 + 非交易时段预测走向（run_cycle 与 paper_ticker 共用）。
 
     - 与主报告同一份评分路径（analyze_variety + forecast_line），保证开仓信号口径一致；
@@ -606,6 +606,8 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
       ticker 每分钟调用不产生高频网络（命中 TTL 缓存，唯一 fetch 是调用方传入的 quotes）；
     - 不写 state.last_forecasts（由 run_cycle 调用方赋值，报告侧输出）；
     - 不调用期权链预热（期权沿用 run_cycle 快照，Policy A）；
+    - var_hist：默认用 state.var_hist（主报告口径）；纸面 ticker 传独立
+      state.paper_var_hist，避免其分钟级写入污染主报告 `_tick_momentum` 轮距。
     - 并发安全：内部持 _analyze_lock，与 run_cycle 互斥 factor_parts 注册表全局。
     """
     from utils import (
@@ -613,6 +615,8 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
         is_variety_trading,  # 局部 import，避免 analyzer 顶层依赖 utils 循环
     )
 
+    if var_hist is None:
+        var_hist = state.var_hist
     with _analyze_lock:
         inst_map = state.webdata.views_snapshot()
         intraday_map = state.klines.warm_intraday(
@@ -655,7 +659,7 @@ def analyze_all_varieties(state, watchlist, quotes, flow_map):
             ind["intraday"] = intraday_map.get(meta["code"], ({}, False))[0]
             n_score, n_hits = state.news.score(meta["cat"], variety=key)
             o_score = state.oil.combined_score() if meta["oil_w"] > 0 else 0.0
-            t_mom = _tick_momentum(state.var_hist.get(key))
+            t_mom = _tick_momentum(var_hist.get(key))
             cinfo = state.contracts.get(meta["sym"])
             fund_raw = {
                 "inv": state.fund_inv.get(meta["sym"]),
