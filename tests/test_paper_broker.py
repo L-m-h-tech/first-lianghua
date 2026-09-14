@@ -1118,3 +1118,44 @@ def test_option_buy_sees_frozen_futures_margin():
     ua = b.unified_account(chain_map=chain)
     assert ua["pending_margin_locked"] > 0
     assert ua["margin_used"] >= ua["pending_margin_locked"]
+
+
+# ---------------- 第149轮：空 contract_code 兜底（_known_contract 回填） ----------------
+def test_fill_falls_back_known_contract():
+    """restore 后 pending 空合约订单成交时，从 _known_contract 兜底补齐合约代码。"""
+    b = make_broker(fill_mode="next", equity0=1_000_000)
+    # 预置 _known_contract（模拟 restore 从历史成交恢复该品种合约）
+    b._known_contract["RB"] = ("rb2610", "2610")
+    # 构造 contract_code 为空的 pending open 订单（模拟上一 session 遗留的旧挂单）
+    order = {
+        "ts": "t1", "sym": "RB", "name": "螺纹钢", "sector": "黑色",
+        "action": "open", "side": "buy", "direction": 1, "lots": 0,
+        "signal_price": 3100.0, "score": 6.0, "fill_mode": "next",
+        "status": "pending", "contract_code": "", "main_month": "",
+        "raw": {"atr": None},
+    }
+    b.pending["RB"] = [order]
+    s = b.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 6.0, 3100.0)])
+    pos = b.pf.positions.get("RB")
+    assert getattr(pos, "contract_code", "") == "rb2610"
+    assert getattr(pos, "main_month", "") == "2610"
+    trades = [t for t in s["trades"] if t.get("side") == "open"]
+    assert trades and trades[0].get("contract_code") == "rb2610"
+    assert trades and trades[0].get("main_month") == "2610"
+
+
+def test_fill_no_known_contract_keeps_empty():
+    """_known_contract 无记录时，空合约保持为空（不编造）。"""
+    b = make_broker(fill_mode="next", equity0=1_000_000)
+    order = {
+        "ts": "t1", "sym": "RB", "name": "螺纹钢", "sector": "黑色",
+        "action": "open", "side": "buy", "direction": 1, "lots": 0,
+        "signal_price": 3100.0, "score": 6.0, "fill_mode": "next",
+        "status": "pending", "contract_code": "", "main_month": "",
+        "raw": {"atr": None},
+    }
+    b.pending["RB"] = [order]
+    s = b.on_cycle("t2", [row("RB", "螺纹钢", "黑色", 6.0, 3100.0)])
+    pos = b.pf.positions.get("RB")
+    # _known_contract 空 → 空合约保留（不编造）
+    assert getattr(pos, "contract_code", "") == ""

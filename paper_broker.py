@@ -611,6 +611,16 @@ class PaperBroker:
         atr = (order.get("raw") or {}).get("atr")
 
         if is_open:
+            # 第149轮：空 contract_code 兜底——从 _known_contract 取最近已知值，避免 session
+            # 初期/restore 后 pending 订单成交时缺失具体合约（影响看板显示）
+            cc = order.get("contract_code") or ""
+            mm = order.get("main_month") or ""
+            if (not cc or not mm) and sym in self._known_contract:
+                known_cc, known_mm = self._known_contract[sym]
+                if not cc and known_cc:
+                    cc = known_cc
+                if not mm and known_mm:
+                    mm = known_mm
             pos = pf.open(
                 sym,
                 order["name"],
@@ -621,8 +631,8 @@ class PaperBroker:
                 atr=atr,
                 score=order.get("score"),
                 owner=self._owner_of(ts),
-                contract_code=order.get("contract_code") or "",
-                main_month=order.get("main_month") or "",
+                contract_code=cc,
+                main_month=mm,
             )
             if pos is None:
                 why = pf.skipped[-1]["reason"] if pf.skipped else "未成交"
@@ -639,6 +649,9 @@ class PaperBroker:
             lots = pos.lots
             notional = fill_price * pos.mult * lots
             slip_yuan = abs(fill_price - raw_price) * pos.mult * lots
+            # 第149轮：成交时把兜底后的具体合约写回 order，保证 paper_trades/orders 记录完整
+            order["contract_code"] = cc
+            order["main_month"] = mm
             t = {
                 "ts": ts,
                 "pos_ref": pos_ref,
@@ -663,8 +676,8 @@ class PaperBroker:
                 "entry_price": fill_price,
                 "score": order.get("score"),
                 "margin_rate": pos.margin_rate,
-                "contract_code": order.get("contract_code") or pos.contract_code or "",
-                "main_month": order.get("main_month") or pos.main_month or "",
+                "contract_code": cc or pos.contract_code or "",
+                "main_month": mm or pos.main_month or "",
             }
             self._ins_trade(t)
             self._upd_order(
