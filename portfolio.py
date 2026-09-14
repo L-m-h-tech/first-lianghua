@@ -1191,7 +1191,7 @@ def load_minute_feed(item, args, fee_table, margin_table):
     import storage
 
     sym, code, name = item
-    db = storage.MonitorDB()
+    db = storage.MonitorDB(skip_prune=True)
     try:
         raw, _src = ib.load_minute_bars(db, sym, args.period, args.lookback, args.aggregate_from)
     finally:
@@ -1719,6 +1719,10 @@ def main(argv=None):
 
         items = ib.resolve_items(args.codes, args.limit)
         label = f"分钟{args.period}m组合：{len(items)}品种"
+    # 第152轮：统一 prune 一次（避免多线程 load_minute_feed 各自 prune 导致 SQLite database is locked）
+    import storage as _storage
+
+    _storage.MonitorDB().close()
     print(
         label
         + f"，初始权益{args.equity:,.0f}元，手数策略{args.sizing}，保证金表{len(margin_table)}品种"

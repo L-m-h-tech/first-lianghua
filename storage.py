@@ -67,7 +67,7 @@ def score_band_name(score):
 class MonitorDB:
     """线程安全的 SQLite 封装；主循环与后台新闻线程都可调用。"""
 
-    def __init__(self, path=None):
+    def __init__(self, path=None, *, skip_prune=False):
         self.path = path or config.MONITOR_DB
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self.lock = threading.RLock()
@@ -79,7 +79,8 @@ class MonitorDB:
         # 非交易时段接口会持续返回同一份快照；用内存签名跳过重复行情，避免数据库在周末空转膨胀。
         self._last_quote_sig = {}
         self._init_schema()
-        self.prune()
+        if not skip_prune:
+            self.prune()
 
     def close(self):
         with self.lock:

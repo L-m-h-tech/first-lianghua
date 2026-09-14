@@ -500,7 +500,7 @@ def _pct(x, d=3):
 # ------------------------- 单品种任务 -------------------------
 def run_symbol(item, args, fee_table):
     sym, code, name = item
-    db = storage.MonitorDB()
+    db = storage.MonitorDB(skip_prune=True)
     try:
         raw, src = load_minute_bars(db, sym, args.period, args.lookback, args.aggregate_from)
     finally:
@@ -933,6 +933,8 @@ def main(argv=None):
         args.real_fees = False
     # 不给 --codes 时默认全品种；支持 RB/RB0/中文名
     items = resolve_items(args.codes, args.limit)
+    # 第152轮：统一 prune 一次（避免多线程 run_symbol 各自 prune 导致 SQLite database is locked）
+    storage.MonitorDB().close()
     print(
         f"日内/平今回测：{len(items)}个品种，{args.period}分钟，"
         f"{'日内' if args.flat_eod else '摆动'}模式，真实费率{len(fee_table)}个品种"
