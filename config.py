@@ -423,23 +423,18 @@ SINA_REQ_GAP = 3.0
 # SINA_SERVER_ENABLED=True 时 MinuteCollector.collect 优先从云服务器拉分钟K（失败自动回落本机链路）；
 # 服务器地址即 tools/sina_proxy_server.py 部署实例（每台上跑 --port 9001 --gap 0.7）。
 SINA_SERVER_ENABLED = True
-SINA_SERVER_URLS = [
-    "http://39.98.124.48:9001",
-    "http://39.98.109.77:9001",
-    "http://39.98.109.41:9001",
-    "http://39.98.116.205:9001",
-    "http://39.98.126.36:9001",
-    "http://39.98.120.140:9001",
-    "http://39.98.38.222:9001",
-    "http://47.92.227.207:9001",
-    "http://47.92.235.76:9001",
-    "http://47.92.250.150:9001",
-    "http://47.92.228.10:9001",
-    "http://47.92.165.206:9001",
-    "http://47.92.97.197:9001",
-    "http://47.92.31.72:9001",
-    "http://47.92.36.98:9001",
-]
+# 第151轮修正：IP 从 data/server_ips.txt 动态读取，每天 IP 变化只需改这一个文件
+IP_FILE = os.path.join(DATA_DIR, "server_ips.txt")
+_sina_ip_list = []
+try:
+    with open(IP_FILE, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#"):
+                _sina_ip_list.append(f"http://{_line}:9001")
+except Exception:
+    pass
+SINA_SERVER_URLS = _sina_ip_list or []
 SINA_SERVER_TIMEOUT = 20.0  # 单次服务器请求超时（秒）
 MINUTE_LOOP_INTERVAL = 300  # 交易时段常驻增量自采间隔（秒，5分钟，对齐1/5分钟bar）
 MINUTE_OFFPEAK_INTERVAL = 1800  # 非交易时段自采间隔（秒，30分钟；返回的仍是收盘bar，去重后不膨胀）

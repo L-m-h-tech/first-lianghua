@@ -10,23 +10,19 @@ import time
 
 import paramiko
 
-IPS = [
-    "39.98.124.48",
-    "39.98.109.77",
-    "39.98.109.41",
-    "39.98.116.205",
-    "39.98.126.36",
-    "39.98.120.140",
-    "39.98.38.222",
-    "47.92.227.207",
-    "47.92.235.76",
-    "47.92.250.150",
-    "47.92.228.10",
-    "47.92.165.206",
-    "47.92.97.197",
-    "47.92.31.72",
-    "47.92.36.98",
-]
+
+# 第151轮：从 data/server_ips.txt 动态读取（每天 IP 变化只需改该文件）；
+# 读取失败/为空时回退到空列表（CLI --ips 仍可覆盖）。
+def _load_ips():
+    ip_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "server_ips.txt")
+    try:
+        with open(ip_file, encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+    except Exception:
+        return []
+
+
+IPS = _load_ips()
 USER = "ecs-user"
 PWD = "Lmh204929182"
 PORT = 9001

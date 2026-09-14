@@ -29,25 +29,25 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.request import Request, urlopen
 
+
 # ---- 服务器候选列表（填满可用的，最多 MAX_SERVERS 台） ----
-# 格式：["http://IP:PORT", ...]；在线探测自动剔除不可达的。
-SERVERS = [
-    "http://39.98.124.48:9001",
-    "http://39.98.109.77:9001",
-    "http://39.98.109.41:9001",
-    "http://39.98.116.205:9001",
-    "http://39.98.126.36:9001",
-    "http://39.98.120.140:9001",
-    "http://39.98.38.222:9001",
-    "http://47.92.227.207:9001",
-    "http://47.92.235.76:9001",
-    "http://47.92.250.150:9001",
-    "http://47.92.228.10:9001",
-    "http://47.92.165.206:9001",
-    "http://47.92.97.197:9001",
-    "http://47.92.31.72:9001",
-    "http://47.92.36.98:9001",
-]
+# 第151轮：从 data/server_ips.txt 动态读取（每天 IP 变化只需改该文件）；
+# 读取失败/为空时回退到空列表（由调用方判断在线服务器数）。
+def _load_servers():
+    ips_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "server_ips.txt")
+    try:
+        with open(ips_path, encoding="utf-8") as f:
+            urls = [
+                "http://%s:9001" % line.strip()
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
+        return urls
+    except Exception:
+        return []
+
+
+SERVERS = _load_servers()
 MAX_SERVERS = 20  # 最多同时使用的服务器数（候选多于它时取前 MAX 台在线）
 HEALTH_TIMEOUT = 5  # 健康探测超时（秒）
 REQUEST_TIMEOUT = 30  # 单请求超时（秒）
