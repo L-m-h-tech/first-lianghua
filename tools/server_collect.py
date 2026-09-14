@@ -10,13 +10,13 @@
   python tools/server_collect.py --mode=incr
 
 核心特性（v2：动态适应服务器数量）：
-  - 支持最多 MAX_SERVERS 台服务器（默认 11），实际几台在线就用几台分摊；
+  - 支持最多 MAX_SERVERS 台服务器（默认 20），实际几台在线就用几台分摊；
   - 启动时自动探测在线服务器（/health），掉线的跳过、不阻塞；
   - 任务 round-robin 分摊到【在线服务器】上，服务器少→单台任务多但继续跑；
   - 单任务失败自动换下一台在线服务器重试（故障容错，不拖慢整体）；
   - 中途某台挂掉：该台未完成任务由其他台兜底重试。
 
-配置：SERVERS 填满候选列表（可 11 台或更多），在线探测自动决定用几台。
+配置：SERVERS 填满候选列表（可 20 台或更多），在线探测自动决定用几台。
 """
 
 import argparse
@@ -32,19 +32,24 @@ from urllib.request import Request, urlopen
 # ---- 服务器候选列表（填满可用的，最多 MAX_SERVERS 台） ----
 # 格式：["http://IP:PORT", ...]；在线探测自动剔除不可达的。
 SERVERS = [
-    "http://8.156.69.136:9001",
-    "http://8.156.73.52:9001",
-    "http://8.156.69.2:9001",
-    "http://8.156.73.27:9001",
-    "http://8.156.72.196:9001",
-    "http://47.109.195.37:9001",
-    "http://8.156.69.191:9001",
-    "http://8.156.78.133:9001",
-    "http://8.156.66.174:9001",
-    "http://8.137.94.172:9001",
-    "http://47.108.206.1:9001",
+    # 第148轮：清退原 11 台（8.156.x/47.109.x/47.108.x），仅保留本批 15 台（阿里云 39.98.x/47.92.x）
+    "http://39.98.126.36:9001",
+    "http://39.98.127.34:9001",
+    "http://39.98.123.54:9001",
+    "http://39.98.124.195:9001",
+    "http://39.98.120.5:9001",
+    "http://39.98.126.250:9001",
+    "http://47.92.228.10:9001",
+    "http://47.92.250.150:9001",
+    "http://47.92.235.76:9001",
+    "http://39.98.38.222:9001",
+    "http://47.92.227.207:9001",
+    "http://47.92.97.197:9001",
+    "http://47.92.74.76:9001",
+    "http://47.92.31.72:9001",
+    "http://47.92.165.206:9001",
 ]
-MAX_SERVERS = 11  # 最多同时使用的服务器数（候选多于它时取前 MAX 台在线）
+MAX_SERVERS = 20  # 最多同时使用的服务器数（候选多于它时取前 MAX 台在线）
 HEALTH_TIMEOUT = 5  # 健康探测超时（秒）
 REQUEST_TIMEOUT = 30  # 单请求超时（秒）
 
@@ -209,7 +214,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=REQUEST_TIMEOUT, help="单请求超时（秒）")
     parser.add_argument("--workers", type=int, default=0, help="并发数（默认=在线服务器数）")
     parser.add_argument(
-        "--max-servers", type=int, default=MAX_SERVERS, help="最多使用服务器数（默认 11）"
+        "--max-servers", type=int, default=MAX_SERVERS, help="最多使用服务器数（默认 20）"
     )
     args = parser.parse_args()
     MAX_SERVERS = args.max_servers

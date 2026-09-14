@@ -5,7 +5,7 @@
 用于 MinuteCollector.collect 的优先出口：本机 IP 不碰新浪 stock2，永不被封。
 
 特性：
-- 11 台服务器 round-robin 轮换（自动跳过 456/失败的）
+- 多台服务器 round-robin 轮换（自动跳过 456/失败的）
 - 并发安全：每线程独立选择服务器，互不竞争
 - 超时快速失败：单请求超时 20s，不影响主流程
 - 返回格式与 fetch_sina_minute 完全一致：[{d,o,h,l,c,v,p,s}, ...]

@@ -625,8 +625,9 @@ def fetch_intraday_kline(symbol, period=30, retry=1):
     2026-09-01 晚补测（第14轮曾误判"新浪无1分钟"）：type=1 一分钟K同样固定返回1023根、
     64/64品种全覆盖、零断连（约覆盖最近2.5个交易日），主连与具体合约均可取；故1m主源
     由东财push2his（本机持续限流）切换为新浪主连。
-    云服务器优先（2026-09-11 第120轮）：SINA_SERVER_ENABLED=True 时分钟K先走云服务器出口
-    （11 台 round-robin，本机 IP 不碰新浪 stock2，永不被封），失败回落本机直连。"""
+    云服务器优先（2026-09-11 第120轮；2026-09-14 第148轮扩容至 15 台并清退原 11 台）：
+    SINA_SERVER_ENABLED=True 时分钟K先走云服务器出口（15 台 round-robin，本机 IP 不碰新浪
+    stock2，永不被封），失败回落本机直连。"""
     period = int(period)
     if period not in (1, 5, 15, 30, 60):
         raise ValueError(f"不支持的分钟周期: {period}")
